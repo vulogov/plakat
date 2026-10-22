@@ -63,6 +63,9 @@ impl BrushProfile {
             "knife" => BrushProfile { radius_scale: 1.25, len: 1.10, streak: 0.00, round: 0.15, waver: 0.05 },
             // A graphite point: narrow, fairly short, a little streaky (the tooth), a hand's waver.
             "pencil" => BrushProfile { radius_scale: 0.35, len: 0.90, streak: 0.30, round: 0.80, waver: 0.08 },
+            // A steel nib: narrow, long, no streak (the ink is even across the point, the paper smooth), a steady hand,
+            // and a FLAT section — the point lays its ink whole to a hard edge (round, a hairline was a grey falloff).
+            "pen" => BrushProfile { radius_scale: 0.30, len: 1.00, streak: 0.0, round: 0.15, waver: 0.05 },
             // A tempera brush: small, short, clean, even — the strokes read as a woven net.
             "tempera" => BrushProfile { radius_scale: 0.60, len: 0.60, streak: 0.15, round: 0.65, waver: 0.06 },
             // broad, long, soft, thin — watercolour / sky washes
@@ -188,6 +191,18 @@ pub struct PaintParams {
     /// pickup so strands stay distinct instead of smearing into mud, longer and narrower marks tapering to a
     /// point, and a minority of marks allowed to break the silhouette (see the seam below).
     pub hair_mask: Option<Vec<f32>>,
+    /// NIB EYES (see `MediumProfile::nib_eyes`): an animal's eyes and nose as the detector found them, 0..1 (soft
+    /// boxes); taken out of `hair_mask` in the CLI and outlined after the bone.
+    pub nib_feature_mask: Option<Vec<f32>>,
+    /// NIB OBJECT (see `MediumProfile::nib_object`): the rigid things a figure holds (an umbrella, a stick), 0..1 —
+    /// joined to the figure under `nib_figure` and outlined with it.
+    pub nib_object_mask: Option<Vec<f32>>,
+    /// NIB TUFT (see `MediumProfile::nib_tuft`): where the picture is grass, 0..1 — the tufts only there, none without it.
+    pub nib_grass_mask: Option<Vec<f32>>,
+    /// NIB PEOPLE (see `MediumProfile::nib_people`): every person found, 0..1 — joined to the figure under `nib_figure`.
+    pub nib_person_mask: Option<Vec<f32>>,
+    /// NIB DEPTH (see `MediumProfile::nib_depth`): the picture's depth, 0..1, larger = nearer (Depth-Anything).
+    pub nib_depth_map: Option<Vec<f32>>,
     /// What a stroke follows where the picture gives it nothing to follow. See [`FlowInfill`]; `Flat` is the
     /// long-standing behaviour and the default.
     pub infill: FlowInfill,
@@ -595,6 +610,68 @@ pub struct PaintParams {
     pub clip: f32,
     /// TIERS (0..1, 0 = off): the hatching in tonal layers: lights blank, half-tones single, shadows crossed (see `MediumProfile::tiers`).
     pub tiers: f32,
+    /// NIB (0..1, 0 = off): a steel nib: every line full black, the tone by how many (see `MediumProfile::nib`).
+    pub nib: f32,
+    /// NIBS (count, 0 = off): pens of several sizes in layers, broad to fine (see `MediumProfile::nibs`).
+    pub nibs: f32,
+    /// NIB TONE (0..1, 0 = off): each pen only where the tone is dark enough for its width (see `MediumProfile::nib_tone`).
+    pub nib_tone: f32,
+    /// NIB WHITE (0..1, 0 = off): the share of the paper a cell always keeps (see `MediumProfile::nib_white`).
+    pub nib_white: f32,
+    /// NIB ANCHOR (0..1, 0 = off): the deep cast-shadow touches that set things on the ground (see `MediumProfile::nib_anchor`).
+    pub nib_anchor: f32,
+    /// NIB HINT (0..1, 0 = off): the fine pen's rare short dashes in the lights (see `MediumProfile::nib_hint`).
+    pub nib_hint: f32,
+    /// NIB FACE (0..1, 0 = off): a face drawn with the finest pen, its lights kept (see `MediumProfile::nib_face`).
+    pub nib_face: f32,
+    /// NIB GAP (0..1, 0 = off): a sliver of paper kept along the long contours (see `MediumProfile::nib_gap`).
+    pub nib_gap: f32,
+    /// NIB RELIEF (0..1, 0 = off): the hatching thinned on the form's highlights (see `MediumProfile::nib_relief`).
+    pub nib_relief: f32,
+    /// NIB FAR (0..1, 0 = off): the far ground and the sky in the finest pen only (see `MediumProfile::nib_far`).
+    pub nib_far: f32,
+    /// NIB OCCLUDE (0..1, 0 = off): the broad nib only in the cast shadows (see `MediumProfile::nib_occlude`).
+    pub nib_occlude: f32,
+    /// NIB EYES (0..1, 0 = off): the eyes and nose taken out of the fur and outlined (see `MediumProfile::nib_eyes`).
+    pub nib_eyes: f32,
+    /// NIB FUR (0..1, 0 = off): the fur thinned on the body's lit bulges (see `MediumProfile::nib_fur`).
+    pub nib_fur: f32,
+    /// NIB LIFT (0..1, 0 = off): the figure's half-tones lifted, the deep folds kept (see `MediumProfile::nib_lift`).
+    pub nib_lift: f32,
+    /// NIB CONTACT (0..1, 0 = off): a contact shadow under the subject (see `MediumProfile::nib_contact`).
+    pub nib_contact: f32,
+    /// NIB FIGURE (0..1, 0 = off): a figure drawn in parallel hatching with bold contours (see `MediumProfile::nib_figure`).
+    pub nib_figure: f32,
+    /// NIB OBJECT (0..1, 0 = off): the held objects outlined with the figure (see `MediumProfile::nib_object`).
+    pub nib_object: f32,
+    /// NIB TUFT (0..1, 0 = off): the near grass as fans of blades from one root (see `MediumProfile::nib_tuft`).
+    pub nib_tuft: f32,
+    /// NIB CLOSE (0..1, 0 = off): the figure's outline gaps closed (see `MediumProfile::nib_close`).
+    pub nib_close: f32,
+    /// NIB MASS (0..1, 0 = off): the dark grass's tufts crossed into one mass (see `MediumProfile::nib_mass`).
+    pub nib_mass: f32,
+    /// NIB RIM (0..1, 0 = off): the figure's outline in a line of changing weight (see `MediumProfile::nib_rim`).
+    pub nib_rim: f32,
+    /// NIB POOL (0..1, 0 = off): the contact shadows solid black under the figure (see `MediumProfile::nib_pool`).
+    pub nib_pool: f32,
+    /// NIB AIR (0..1, 0 = off): the far planes thinned to a few fine lines (see `MediumProfile::nib_air`).
+    pub nib_air: f32,
+    /// NIB PEOPLE (0..1, 0 = off): every person found is the figure, with or without a face (see `MediumProfile::nib_people`).
+    pub nib_people: f32,
+    /// NIB VALUE (0..1, 0 = off): the figure's tone read against the whole picture, its lights kept light (see `MediumProfile::nib_value`).
+    pub nib_value: f32,
+    /// NIB FINE FACE (0..1, 0 = off): a small face drawn with the finest pen, its features found at a lower threshold (see `MediumProfile::nib_fine_face`).
+    pub nib_fine_face: f32,
+    /// NIB SCATTER (0..1, 0 = off): the tufts scattered in clusters, not one per cell (see `MediumProfile::nib_scatter`).
+    pub nib_scatter: f32,
+    /// NIB FALLOFF (0..1, 0 = off): the contact shadow solid only at the contact, broken into dashes beyond (see `MediumProfile::nib_falloff`).
+    pub nib_falloff: f32,
+    /// NIB DEPTH (0..1, 0 = off): the far planes by the picture's depth drawn with the finest pen (see `MediumProfile::nib_depth`).
+    pub nib_depth: f32,
+    /// NIB LUSH (0..1, 0 = off): the found grass grown thick, its tufts denser (see `MediumProfile::nib_lush`).
+    pub nib_lush: f32,
+    /// NIB GLINT (0..1, 0 = off): the specular highlights kept white, no mark through them (see `MediumProfile::nib_glint`).
+    pub nib_glint: f32,
     /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
     /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
     pub sumi_dark: f32,
@@ -609,7 +686,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -2612,6 +2689,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let lap = |name: &'static str, acc: &mut Vec<(&'static str, f64)>, t: &mut std::time::Instant| { if prof_on { acc.push((name, t.elapsed().as_secs_f64())); *t = std::time::Instant::now(); } };
     // The subject as given, before it is reduced to an armature: the fine layers look at it for TEXTURE.
     let source: &RgbImage = input;
+    // (Kept apart for NIB FIGURE: a pen draws a face's features, and the armature has none.)
+    let original: &RgbImage = input;
     // HAIR FLOW (see `hair_flow_field`): which way hair GROWS, as one angle per armature cell. Built here,
     // from the picture as given, because two lines below `input` becomes the armature and the growth
     // direction is precisely what the armature has thrown away. Only computed where there is hair to paint.
@@ -3283,6 +3362,46 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let clip_edge: Option<Vec<bool>> = (p.clip > 0.0 && w >= 8 && h >= 8).then(|| {
         let value = box_blur(&crate::paint::ink::value_map(input), w, h, 1);
         crate::paint::ink::edge_map(&value, w as usize, h as usize, p.clip.clamp(0.0, 1.0))
+    });
+    // THE PEN'S FIELDS (see `MediumProfile::nib_relief`, `nib_occlude`, `nib_gap`): the picture's smoothed value
+    // and its mean over a 100th of the sheet (the relief), the cast shadows' field (the broad nib's places), and the
+    // band of white kept along the picture's long contours.
+    let nib_val: Option<Vec<f32>> = (p.nib > 0.0 && (p.nib_relief > 0.0 || p.nib_occlude > 0.0 || p.nib_gap > 0.0 || p.nib_lift > 0.0 || p.nib_fur > 0.0) && w >= 8 && h >= 8).then(|| box_blur(&crate::paint::ink::value_map(input), w, h, 1));
+    let nib_mean: Option<Vec<f32>> = nib_val.as_ref().filter(|_| p.nib_relief > 0.0).map(|v| box_blur(v, w, h, (w.max(h) / 100).max(2) as i32));
+    // NIB FUR (see `MediumProfile::nib_fur`): the relief at the body's scale — the value over a 60th of the sheet
+    // against its mean over a 15th.
+    let nib_fur_rel: Option<Vec<f32>> = nib_val.as_ref().filter(|_| p.nib_fur > 0.0 && p.hair_mask.is_some()).map(|v| {
+        let body = box_blur(v, w, h, (w.max(h) / 60).max(2) as i32);
+        let wide = box_blur(&body, w, h, (w.max(h) / 15).max(4) as i32);
+        body.iter().zip(&wide).map(|(b, m)| (b - m).max(0.0)).collect()
+    });
+    // NIB FIGURE (see `MediumProfile::nib_figure`): the figure — the silhouette, when a face is found.
+    let nib_fig: Option<Vec<bool>> = nib_figure_mask(p, w, h);
+    // NIB TUFT (see `MediumProfile::nib_tuft`): the grass's cells, drawn as tufts after the bone.
+    let nib_tufts: Option<(usize, usize, Vec<f32>)> = (p.nib > 0.0 && p.nib_tuft > 0.0 && w >= 16 && h >= 16).then(|| nib_tuft_field(&box_blur(&crate::paint::ink::value_map(original), w, h, 1), p, ma_field.as_deref(), w, h));
+    // NIB EYES (see `MediumProfile::nib_eyes`): the eyes and the nose kept from the hatching, drawn after the bone.
+    let nib_feat: Option<Vec<bool>> = p.nib_feature_mask.as_deref().filter(|m| p.nib > 0.0 && p.nib_eyes > 0.0 && m.len() == (w * h) as usize).map(|m| m.iter().map(|v| *v > 0.5).collect());
+    // NIB GLINT (see `MediumProfile::nib_glint`): the specular highlights, no mark through them.
+    let nib_glint: Option<Vec<bool>> = nib_glint_mask(original, p);
+    if let (Some(g), Some(dir)) = (&nib_glint, std::env::var_os("PLAKAT_PAINT_MASKS")) {
+        let _ = image::GrayImage::from_fn(w, h, |x, y| image::Luma([if g[(y * w + x) as usize] { 255 } else { 0 }])).save(std::path::Path::new(&dir).join("nib_glint.png"));
+    }
+    let nib_occl: Option<Vec<f32>> = nib_val.as_ref().filter(|_| p.nib_occlude > 0.0).map(|v| nib_anchor_field(v, p, w, h));
+    let nib_band: Option<Vec<bool>> = nib_val.as_ref().filter(|_| p.nib_gap > 0.0).map(|v| {
+        let (wu, hu) = (w as usize, h as usize);
+        let edge = crate::paint::ink::edge_map(v, wu, hu, 0.6);
+        let chains = crate::paint::ink::trace_chains(&edge, wu, hu, (w.max(h) / 30).max(8) as usize);
+        let mut m = vec![0f32; wu * hu];
+        for c in &chains {
+            for q in c {
+                let (x, y) = (q[0].round() as i64, q[1].round() as i64);
+                if x >= 0 && y >= 0 && (x as usize) < wu && (y as usize) < hu {
+                    m[y as usize * wu + x as usize] = 1.0;
+                }
+            }
+        }
+        let g = (p.nib_gap.clamp(0.0, 1.0) * w.max(h) as f32 / 400.0).round().max(1.0) as i32;
+        box_blur(&m, w, h, g).iter().map(|x| *x > 1e-6).collect()
     });
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
@@ -4079,6 +4198,54 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 } else {
                     target
                 };
+                // NIB TONE (see `MediumProfile::nib_tone`): a pen laid only where the tone is dark enough for its
+                // width — the broad nib in the deep shadows, the middle one in the shadows and half-tones, the fine
+                // one everywhere but the lights — and the darkness read against the eye's attention (`ma`), so the
+                // far ground and the sky are the fine pen's (soft over ±0.05 by a hash, as `tiers`).
+                let at_i = iy as usize * w as usize + ix as usize;
+                let mut nib_far_fine = false;
+                if p.nib > 0.0 && p.nibs >= 2.0 && p.nib_tone > 0.0 && !glazing && !cresting {
+                    let n = p.nibs.round().max(2.0);
+                    let (rc, rf) = (passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius), passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius));
+                    let dl = if rc > rf + 1e-6 { ((rc / radius.max(1e-3)).ln() / (rc / rf).ln()).clamp(0.0, 1.0) } else { 0.0 };
+                    let q = (dl * n).floor().min(n - 1.0) / (n - 1.0);
+                    let v = color::linear_luma(color::srgb_to_linear(target)).max(0.0).powf(1.0 / 2.2);
+                    let attn = ma_field.as_ref().and_then(|m| m.get(at_i)).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+                    // NIB DEPTH (see `MediumProfile::nib_depth`): the attention capped by how near the picture is there.
+                    let attn = match p.nib_depth_map.as_deref().filter(|_| p.nib_depth > 0.0).and_then(|m| m.get(at_i)) {
+                        Some(&z) => {
+                            let u = ((z - 0.1) / 0.4).clamp(0.0, 1.0);
+                            attn.min(1.0 - p.nib_depth.clamp(0.0, 1.0) * (1.0 - u * u * (3.0 - 2.0 * u)))
+                        }
+                        None => attn,
+                    };
+                    // NIB FAR (see `MediumProfile::nib_far`): off the eye's attention every pen is the finest — its
+                    // marks kept, drawn at the finest width (dropped, the far slope the broad passes hatched was bare:
+                    // the fine passes do not reach it), gated by its own pen's tone (by the finest's, the sky and the
+                    // sea were hatched over).
+                    nib_far_fine = p.nib_far > 0.0 && q < 0.99 && attn < 0.6 * p.nib_far.clamp(0.0, 1.0);
+                    let dark = (1.0 - v) * (0.4 + 0.6 * attn);
+                    let thr = p.nib_tone.clamp(0.0, 1.0) * (0.12 + 0.6 * (1.0 - q));
+                    let t = ((dark - thr) / 0.1 + 0.5).clamp(0.0, 1.0);
+                    if jitter(p.seed ^ 0x9E7_70, k.wrapping_add(97)) + 0.5 >= t * t * (3.0 - 2.0 * t) {
+                        return None;
+                    }
+                    // NIB FACE (see `MediumProfile::nib_face`): a face drawn with the finest pen alone.
+                    if p.nib_face > 0.0 && on_face && q < 0.99 && jitter(p.seed ^ 0xFAC_E, k.wrapping_add(103)) + 0.5 < p.nib_face {
+                        return None;
+                    }
+                    // NIB OCCLUDE (see `MediumProfile::nib_occlude`): the broad nib only in the cast shadows.
+                    if p.nib_occlude > 0.0 && q < 0.01 && nib_occl.as_ref().and_then(|m| m.get(at_i)).copied().unwrap_or(0.0) < 0.3 * p.nib_occlude.clamp(0.0, 1.0) {
+                        return None;
+                    }
+                    // NIB AIR (see `MediumProfile::nib_air`): the far planes kept to a few fine lines.
+                    if p.nib_air > 0.0 && attn < 0.5 {
+                        let t = ((0.5 - attn) / 0.4).clamp(0.0, 1.0);
+                        if jitter(p.seed ^ 0xA14_0, k.wrapping_add(107)) + 0.5 < 0.7 * p.nib_air.clamp(0.0, 1.0) * t * t * (3.0 - 2.0 * t) {
+                            return None;
+                        }
+                    }
+                }
                 // PAPER (see `MediumProfile::paper`): charcoal only darkens — a mark goes where the sheet is
                 // lighter than the picture asks, charged for the residual; where it is darker, in the lights,
                 // the ERASER (see `MediumProfile::erase`) lifts it; otherwise nothing is laid.
@@ -4086,6 +4253,26 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let mut erase_wet: Option<f32> = None;
                 if p.paper > 0.0 && !glazing && !cresting {
                     let under = color::linear_luma(color::srgb_to_linear(cv.color_at(ix, iy))).max(0.004);
+                    // NIB (see `MediumProfile::nib`): the sheet read over the mark's cell (a window of 1.2 radii,
+                    // every other pixel), not at one pixel — a black line beside a white gap is a grey.
+                    let under = if p.nib > 0.0 {
+                        let rr = (radius * 1.2).clamp(2.0, 16.0) as i64;
+                        let (mut sum, mut cnt) = (0.0f32, 0.0f32);
+                        let mut yy = (iy as i64 - rr).max(0);
+                        while yy <= (iy as i64 + rr).min(h as i64 - 1) {
+                            let mut xx = (ix as i64 - rr).max(0);
+                            while xx <= (ix as i64 + rr).min(w as i64 - 1) {
+                                sum += color::linear_luma(color::srgb_to_linear(cv.color_at(xx as u32, yy as u32)));
+                                cnt += 1.0;
+                                xx += 2;
+                            }
+                            yy += 2;
+                        }
+                        let mean = (sum / cnt.max(1.0)).max(0.004);
+                        under + (mean - under) * p.nib.clamp(0.0, 1.0)
+                    } else {
+                        under
+                    };
                     let tl = color::linear_luma(color::srgb_to_linear(target)).max(0.004);
                     // PAPER TOP (see `MediumProfile::paper_top`): the value read against the picture's light end.
                     // (The gain at most PAPER_TOP_GAIN and weighted by the square of the value's share of the
@@ -4138,8 +4325,51 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     } else {
                         tl
                     };
+                    // NIB WHITE (see `MediumProfile::nib_white`): a cell never asked darker than this share of the paper,
+                    // so the deepest shadow keeps the paper's flecks between its lines.
+                    // NIB RELIEF (see `MediumProfile::nib_relief`): a place lighter than its surroundings (the bulge of
+                    // a fold) lifted toward the paper by three times its excess, so the hatching thins on it. Not on
+                    // the fur: every lock of a coat is lighter than its neighbour, and the fox's body broke into white islands.
+                    let tl = match (&nib_val, &nib_mean) {
+                        (Some(vv), Some(mm)) if p.nib > 0.0 && !hair_here => {
+                            let at = iy as usize * w as usize + ix as usize;
+                            let ex = (vv.get(at).copied().unwrap_or(0.0) - mm.get(at).copied().unwrap_or(0.0)).max(0.0);
+                            tl + (charcoal_paper_l - tl).max(0.0) * (3.0 * p.nib_relief.clamp(0.0, 1.0) * ex).clamp(0.0, 1.0)
+                        }
+                        _ => tl,
+                    };
+                    // NIB FUR (see `MediumProfile::nib_fur`): on the fur, the body's lit bulges lifted smoothly.
+                    let tl = match &nib_fur_rel {
+                        Some(fr) if p.nib > 0.0 && hair_here => {
+                            let ex = fr.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(0.0);
+                            let k = p.nib_fur.clamp(0.0, 1.0);
+                            let u = nib_val.as_ref().map(|vv| ((vv.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(0.0) - 0.12) / 0.23).clamp(0.0, 1.0)).unwrap_or(0.0);
+                            tl + (charcoal_paper_l - tl).max(0.0) * ((3.0 * k * ex).clamp(0.0, 1.0) + 0.5 * k * u * u * (3.0 - 2.0 * u)).clamp(0.0, 1.0)
+                        }
+                        _ => tl,
+                    };
+                    // NIB LIFT (see `MediumProfile::nib_lift`): on a figure (a face found) off the fur, the half-tones
+                    // lifted, the deep folds kept. (Not on a subject without a face: a pale bird's wings lost their shading.)
+                    let tl = match &nib_val {
+                        Some(vv) if p.nib > 0.0 && p.nib_lift > 0.0 && !hair_here && p.face_mask.is_some() => {
+                            let at = iy as usize * w as usize + ix as usize;
+                            let s = p.subject_mask.as_deref().and_then(|m| m.get(at)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                            let u = ((vv.get(at).copied().unwrap_or(0.0) - 0.12) / 0.23).clamp(0.0, 1.0);
+                            tl + (charcoal_paper_l - tl).max(0.0) * 0.8 * p.nib_lift.clamp(0.0, 1.0) * s * u * u * (3.0 - 2.0 * u)
+                        }
+                        _ => tl,
+                    };
+                    // NIB FACE: the face's value lifted by 0.4 of the key toward the paper.
+                    let tl = if p.nib > 0.0 && p.nib_face > 0.0 && on_face { tl + (charcoal_paper_l - tl).max(0.0) * 0.4 * p.nib_face.clamp(0.0, 1.0) } else { tl };
+                    let white = p.nib_white.clamp(0.0, 1.0) + if p.nib_face > 0.0 && on_face { 0.3 * p.nib_face.clamp(0.0, 1.0) } else { 0.0 } + if p.nib_fur > 0.0 && hair_here { 0.15 * p.nib_fur.clamp(0.0, 1.0) } else { 0.0 };
+                    let tl = if p.nib > 0.0 && white > 0.0 { tl.max(charcoal_paper_l * white) } else { tl };
                     if under > tl * (1.0 + PAPER_TOL) {
                         paper_need = Some((tl / under).clamp(0.03, 0.99).powf(1.0 / PAPER_OVERLAP));
+                        // NIB: the ink laid black — the residual's charge pulled to the fullest by the key, the
+                        // tone left to how many lines the cell takes.
+                        if p.nib > 0.0 {
+                            paper_need = paper_need.map(|n| n + (0.03 - n) * p.nib.clamp(0.0, 1.0));
+                        }
                     } else if p.erase > 0.0 && !block_in && !velvet_here && rel_g > 1.0 / 3.0 && under < tl * (1.0 - PAPER_TOL) && p.lift > 1e-3 {
                         // The film that reads `l` over the paper: alpha = (paper − l)/(paper − black), and the
                         // wipe's share takes the film from the one alpha's to the other's.
@@ -4333,6 +4563,32 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let rw = if sk > 0.0 { (rw * (1.0 - 0.5 * sk)).max(p.min_brush * 0.5) } else { rw };
                 let rw = if glinted { (rw * (1.0 - 0.3 * p.glint)).max(p.min_brush * 0.5) } else { rw };
                 let rw = if sided { rw * (1.0 + 0.6 * p.side) } else { rw };
+                // NIB (see `MediumProfile::nib`): a steel point is never a brush's breadth — the width held under the
+                // nib of the pass (a 600th of the sheet's long side on the broadest pass, a third of it on the
+                // finest; a broad brush's mark laid in black was a blunt bar).
+                // NIBS (see `MediumProfile::nibs`): the passes drawn with that many pens, each a fixed width — the
+                // broadest a 500th of the long side, the finest an 1800th, the ones between in a geometric
+                // series — the k-th pen taking the k-th share of the ladder, coarse to fine.
+                // (Under `nibs` the pen's width is the mark's — a fine pass's mark is widened to its pen as a broad one
+                // is narrowed: held only under a cap, nearly every mark was the finest passes' hairline and the
+                // layers drew with one pen.)
+                let rw = if p.nib > 0.0 {
+                    let pen = if p.nibs >= 1.0 {
+                        // (The ladder's place read on the LOG of the radius — the passes halve — so each pen takes an even
+                        // share of them; on the radius itself the broad pen had the block-in alone.)
+                        let n = p.nibs.round().max(1.0);
+                        let dl = if r_coarse > r_fine + 1e-6 { ((r_coarse / radius.max(1e-3)).ln() / (r_coarse / r_fine).ln()).clamp(0.0, 1.0) } else { 0.0 };
+                        let i = (dl * n).floor().min(n - 1.0);
+                        let q = if n > 1.0 { i / (n - 1.0) } else { 0.0 };
+                        let q = if nib_far_fine { 1.0 } else { q };
+                        (w.max(h) as f32 / 500.0) * (500.0f32 / 1800.0).powf(q)
+                    } else {
+                        rw.min(((w.max(h) as f32 / 600.0) * (0.35 + 0.65 * (1.0 - depth_t))).max(p.min_brush * 0.5))
+                    };
+                    rw + (pen - rw) * p.nib.clamp(0.0, 1.0)
+                } else {
+                    rw
+                };
                 // THE FLAT BRUSH (see `MediumProfile::flat_brush`): on the passes before the finest, off the faces
                 // and the hair, this share of the marks on a flat passage (by its flatness) a flat brush's patch.
                 let flat_mark = p.flat_brush > 0.0 && !last_pass && !glazing && !cresting && !on_face && hair <= 0.0 && !accented && !lost_here && !glinted && !hatched && !sided
@@ -4361,6 +4617,36 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     Some(ce) if !glazing && !cresting && !lost_here && off_subject => clip_at_edge(&path, ce, w as usize, h as usize, 2.0),
                     _ => path,
                 };
+                // NIB GAP (see `MediumProfile::nib_gap`): the hatching held off the long contours — cut where it enters
+                // the band of white along them, not laid when it starts in it. Not on the fur (as `clip`): a coat's
+                // every lock is a contour, and the band parted the fox's mass into islands.
+                let path = match &nib_band {
+                    Some(bd) if !glazing && !cresting && !hair_here => cut_at_band(&path, bd, w as usize, h as usize)?,
+                    _ => path,
+                };
+                let path = match &nib_feat {
+                    Some(fb) if !glazing && !cresting => cut_at_band(&path, fb, w as usize, h as usize)?,
+                    _ => path,
+                };
+                let path = match &nib_glint {
+                    Some(gb) => cut_at_band(&path, gb, w as usize, h as usize)?,
+                    _ => path,
+                };
+                // NIB FIGURE: the figure is hatched in its own pass, not by these marks (the key's share dropped).
+                if let Some(fm) = &nib_fig {
+                    let (sx, sy) = (path[0][0].round().clamp(0.0, (w - 1) as f32) as usize, path[0][1].round().clamp(0.0, (h - 1) as f32) as usize);
+                    if fm[sy * w as usize + sx] && jitter(p.seed ^ 0xF16_0, k.wrapping_add(29)) + 0.5 < p.nib_figure.clamp(0.0, 1.0) {
+                        return None;
+                    }
+                }
+                // NIB TUFT: the grass is drawn in tufts — the marks starting in a tuft's cell dropped by `0.6·key·strength`.
+                if let Some((cell, cols, ts)) = &nib_tufts {
+                    let (sx, sy) = (path[0][0].round().clamp(0.0, (w - 1) as f32) as usize, path[0][1].round().clamp(0.0, (h - 1) as f32) as usize);
+                    let s = ts[(sy / cell) * cols + sx / cell];
+                    if s > 0.0 && jitter(p.seed ^ 0x7F7_0, k.wrapping_add(31)) + 0.5 < 0.6 * p.nib_tuft.clamp(0.0, 1.0) * s {
+                        return None;
+                    }
+                }
                 // Laid less wet (0.7, jittered) so strokes sit ON the canvas rather than dissolving into the wet
                 // paint beneath — distinct marks, not a smear. Some wetness remains for light harmonisation.
                 // DETAIL marks are laid DRIER still: a fine accent that resolves a feature (an eye, a window, a
@@ -4732,6 +5018,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let pressure = if sided { (pvar * (1.0 - 0.5 * p.side)).clamp(0.3, 1.0) } else { pvar.clamp(0.4, 1.0) };
                 let pressure = match paper_need {
                     Some(_) if velvet_here => 1.0,
+                    // NIB: the steel point lays its ink whole, at any pressure.
+                    Some(_) if p.nib > 0.0 => pressure + (1.0 - pressure) * p.nib.clamp(0.0, 1.0),
                     Some(_) if p.touch > 0.0 => {
                         let dark = (1.0 - (color::linear_luma(color::srgb_to_linear(target)) / charcoal_paper_l.max(1e-3)).clamp(0.0, 1.0).powf(1.0 / 2.2)).clamp(0.0, 1.0);
                         pressure + (0.38 + 0.6 * dark.powf(0.7) - pressure) * p.touch.clamp(0.0, 1.0)
@@ -5114,10 +5402,35 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // subject, they don't only shade it. Laid before the bleed so a smudgy medium softens the lines a touch.
     // (Density media draw their contours in `ink_drawing`; this pass would stack its row-ordered dashes on top,
     // thickening whatever lies in the first rows until its cap hits.)
+    // NIB FIGURE (see `MediumProfile::nib_figure`): the figure's tone in parallel hatching, before its bone.
+    if p.nib > 0.0 && p.nib_figure > 0.0 && placed < p.budget {
+        if let Some(fm) = nib_figure_mask(p, w, h) {
+            canvas.dry(0.0);
+            nib_figure_hatch(&mut canvas, &mut score, original, p, &fm, &mut placed, &mut k);
+        }
+    }
     // THE BONE (see `MediumProfile::bone`): the structure's contours as calligraphic brush lines, over the washes.
     if p.bone > 0.0 && placed < p.budget {
         canvas.dry(0.0);
         bone_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), ma_field.as_deref(), &mut placed, &mut k);
+    }
+    // NIB POOL and NIB RIM (see `MediumProfile::nib_pool`, `nib_rim`): the contact shadows and the figure's outline.
+    // (the replay dries once when the stage turns to `nib`, so the accents after it go on without a second drying)
+    let mut nib_wet = false;
+    if p.nib > 0.0 && p.nib_figure > 0.0 && (p.nib_pool > 0.0 || p.nib_rim > 0.0) && placed < p.budget {
+        if let Some(fm) = nib_figure_mask(p, w, h) {
+            canvas.dry(0.0);
+            let before = placed;
+            nib_figure_rim_pool(&mut canvas, &mut score, original, p, &fm, &mut placed, &mut k);
+            nib_wet = placed > before;
+        }
+    }
+    // THE PEN'S ACCENTS (see `MediumProfile::nib_anchor`, `nib_hint`): the cast-shadow touches and the shorthand dashes.
+    if p.nib > 0.0 && (p.nib_anchor > 0.0 || p.nib_hint > 0.0 || p.nib_tuft > 0.0 || (p.nib_eyes > 0.0 && p.nib_feature_mask.is_some())) && placed < p.budget {
+        if !nib_wet {
+            canvas.dry(0.0);
+        }
+        nib_accents(&mut canvas, &mut score, input, original, p, ma_field.as_deref(), &mut placed, &mut k);
     }
     // SUMI-E: over the wash painting, the darkest masses as bold dry-brush black shapes (the second register).
     if p.sumi && placed < p.budget {
@@ -6063,6 +6376,1178 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
 /// so the cap keeps the composition's lines; where the eye does not go (`ma`, the focal field and the subject)
 /// a chain must run up to twice as far to be drawn. Off the protected paper. Replay-exact.
 #[allow(clippy::too_many_arguments)]
+/// The cast shadows' field (see `MediumProfile::nib_anchor`): per pixel, how much a place is much darker than its
+/// surroundings (a 90th of the sheet round it), or lies just under the subject's silhouette (a 120th of the sheet
+/// deep, fading downward), 0..1. `value` is the picture's smoothed value.
+fn nib_anchor_field(value: &[f32], p: &PaintParams, w: u32, h: u32) -> Vec<f32> {
+    let (wu, hu) = (w as usize, h as usize);
+    let mean = box_blur(value, w, h, (w.max(h) / 90).max(2) as i32);
+    let sil = p.silhouette_mask.as_deref().or(p.subject_mask.as_deref());
+    // NIB CONTACT (see `MediumProfile::nib_contact`): the band under the silhouette deepened to `key` · a 40th of the
+    // sheet, on a ground up to 0.8.
+    let contact = p.nib_contact.clamp(0.0, 1.0);
+    let band = if contact > 0.0 { ((w.max(h) as f32 / 40.0 * contact) as usize).max((w.max(h) / 120).max(2) as usize) } else { (w.max(h) / 120).max(2) as usize };
+    let (v_lo, v_span) = if contact > 0.0 { (0.4 + 0.25 * contact, 0.4 - 0.25 * contact) } else { (0.4, 0.4) };
+    (0..wu * hu)
+        .map(|i| {
+            let (cy, v) = (i / wu, value[i]);
+            let c = ((mean[i] - v) / 0.25).clamp(0.0, 1.0) * (1.0 - v / 0.5).clamp(0.0, 1.0);
+            let crev = c * c * (3.0 - 2.0 * c);
+            let under = match sil {
+                Some(m) if m.get(i).copied().unwrap_or(0.0) < 0.5 => {
+                    let mut best = 0.0f32;
+                    for dy in 1..=band.min(cy) {
+                        if m.get(i - dy * wu).copied().unwrap_or(0.0) >= 0.5 {
+                            best = 1.0 - (dy - 1) as f32 / band as f32;
+                            break;
+                        }
+                    }
+                    best * (1.0 - (v - v_lo) / v_span).clamp(0.0, 1.0)
+                }
+                _ => 0.0,
+            };
+            crev.max(under)
+        })
+        .collect()
+}
+
+/// NIB EYES (see `MediumProfile::nib_eyes`): an animal's eyes found in the picture, as a 0..1 mask, inside the
+/// hair/fur region. An eye joins the dark markings round it (and a dark smooth blob is as often a patch of a dark
+/// tail), so it is found by its CATCHLIGHT: a light point (over 0.7) ringed, a 100th of the sheet out, by the dark
+/// (14 of 16 samples under 0.25) — the eye a disc as far as the dark runs from it (1.3 times the third-shortest of
+/// 16 rays, at most a 25th of the sheet). The hatching keeps off
+/// them; after the bone their contours and their dark (close diagonals, the lights left) are drawn in.
+pub fn nib_eye_field(src: &RgbImage, hair: &[f32]) -> Vec<f32> {
+    let (w, h) = src.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    let n = wu * hu;
+    let mut out = vec![0f32; n];
+    if w < 16 || h < 16 || hair.len() != n {
+        return out;
+    }
+    let long = w.max(h) as f32;
+    let value = box_blur(&crate::paint::ink::value_map(src), w, h, 1);
+    // The eyes, by their catchlights.
+    let ring = (long / 100.0).max(3.0);
+    let rmax = (long / 25.0).max(ring * 1.5);
+    let at = |x: f32, y: f32| -> f32 {
+        let (xi, yi) = (x.round() as i64, y.round() as i64);
+        if xi < 0 || yi < 0 || xi as usize >= wu || yi as usize >= hu { 1.0 } else { value[yi as usize * wu + xi as usize] }
+    };
+    let dirs: Vec<(f32, f32)> = (0..16).map(|j| { let a = j as f32 * std::f32::consts::PI / 8.0; (a.cos(), a.sin()) }).collect();
+    let step = (ring / 3.0).max(1.0) as usize;
+    let mut eyes: Vec<(f32, f32, f32)> = Vec::new();
+    for y in (0..hu).step_by(step) {
+        for x in (0..wu).step_by(step) {
+            let i = y * wu + x;
+            if value[i] <= 0.7 || hair[i] < 0.3 {
+                continue;
+            }
+            let (fx, fy) = (x as f32, y as f32);
+            if eyes.iter().any(|&(ex, ey, er)| (ex - fx).hypot(ey - fy) < er.max(ring) * 1.5) {
+                continue;
+            }
+            if dirs.iter().filter(|d| at(fx + d.0 * ring, fy + d.1 * ring) < 0.25).count() < 14 {
+                continue;
+            }
+            let mut rays: Vec<f32> = dirs
+                .iter()
+                .map(|d| {
+                    let mut r = ring;
+                    while r < rmax && at(fx + d.0 * (r + 1.0), fy + d.1 * (r + 1.0)) < 0.35 {
+                        r += 1.0;
+                    }
+                    r
+                })
+                .collect();
+            rays.sort_by(|a, b| a.total_cmp(b));
+            eyes.push((fx, fy, rays[2] * 1.3));
+        }
+    }
+    if std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok() {
+        eprintln!("nib eyes: {w}x{h}, catchlights {:?}", eyes);
+    }
+    for &(ex, ey, er) in &eyes {
+        let (x0, x1) = ((ex - er).max(0.0) as usize, ((ex + er) as usize).min(wu - 1));
+        let (y0, y1) = ((ey - er).max(0.0) as usize, ((ey + er) as usize).min(hu - 1));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if (x as f32 - ex).hypot(y as f32 - ey) <= er {
+                    out[y * wu + x] = 1.0;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// NIB TUFT (see `MediumProfile::nib_tuft`): the grass's cells — on a grid of a 70th of the sheet, off the subject and
+/// the fur and the blank lights (a cell half over 0.85 is the sky behind a stem, not ground), and inside the grass the
+/// detector found (half the cell; no grass found, no cell) — these −1 — a cell's
+/// strength as a tuft: its texture (the mean gradient) ranked among the frame's cells (from the 60th to the 90th
+/// percentile), times how upright it stands (the horizontal gradient against the vertical, from 1.15 to 1.5), times
+/// the eye's attention (`0.4 + 0.6·attn`). Returns `(cell, columns, strengths)`.
+fn nib_tuft_field(value: &[f32], p: &PaintParams, attn: Option<&[f32]>, w: u32, h: u32) -> (usize, usize, Vec<f32>) {
+    let (wu, hu) = (w as usize, h as usize);
+    let cell = (w.max(h) as usize / 70).max(6);
+    let (cols, rows) = (wu.div_ceil(cell), hu.div_ceil(cell));
+    let (gx, gy) = sobel(value, w, h);
+    let subj = p.silhouette_mask.as_deref().or(p.subject_mask.as_deref()).filter(|m| m.len() == wu * hu);
+    let hair = p.hair_mask.as_deref().filter(|m| m.len() == wu * hu);
+    let mut tex = vec![-1f32; cols * rows];
+    // the grass the detector found; none, no tufts
+    let Some(grass) = p.nib_grass_mask.as_deref().filter(|m| m.len() == wu * hu) else { return (cell, cols, vec![-1.0; cols * rows]) };
+    let mut up = vec![0f32; cols * rows];
+    let mut at = vec![1f32; cols * rows];
+    for cj in 0..rows {
+        for ci in 0..cols {
+            let (mut sx, mut sy, mut sv, mut so, mut sa, mut sl, mut sg, mut nn) = (0f32, 0f32, 0f32, 0f32, 0f32, 0f32, 0f32, 0f32);
+            for y in cj * cell..((cj + 1) * cell).min(hu) {
+                for x in ci * cell..((ci + 1) * cell).min(wu) {
+                    let i = y * wu + x;
+                    sx += gx[i].abs();
+                    sy += gy[i].abs();
+                    sv += value[i];
+                    sl += if value[i] > 0.85 { 1.0 } else { 0.0 };
+                    sg += if grass[i] >= 0.5 { 1.0 } else { 0.0 };
+                    let off = subj.map(|m| m[i] >= 0.5).unwrap_or(false) || hair.map(|m| m[i] >= 0.5).unwrap_or(false);
+                    so += if off { 1.0 } else { 0.0 };
+                    sa += attn.and_then(|m| m.get(i)).copied().unwrap_or(1.0);
+                    nn += 1.0;
+                }
+            }
+            let c = cj * cols + ci;
+            if nn < 1.0 || so / nn > 0.15 || sv / nn > 0.9 || sl / nn > 0.5 || sg / nn < 0.5 {
+                continue;
+            }
+            tex[c] = (sx + sy) / nn;
+            up[c] = sx / sy.max(1e-6);
+            at[c] = (sa / nn).clamp(0.0, 1.0);
+        }
+    }
+    let mut ranked: Vec<f32> = tex.iter().copied().filter(|t| *t >= 0.0).collect();
+    let mut out = vec![0f32; cols * rows];
+    if ranked.len() < 10 {
+        return (cell, cols, out);
+    }
+    ranked.sort_by(|a, b| a.total_cmp(b));
+    let (t60, t90) = (ranked[ranked.len() * 6 / 10], ranked[ranked.len() * 9 / 10]);
+    let ss = |x: f32| { let x = x.clamp(0.0, 1.0); x * x * (3.0 - 2.0 * x) };
+    for c in 0..cols * rows {
+        if tex[c] < 0.0 {
+            out[c] = -1.0;
+            continue;
+        }
+        out[c] = ss((tex[c] - t60) / (t90 - t60).max(1e-6)) * ss((up[c] - 1.15) / 0.35) * (0.4 + 0.6 * at[c]);
+    }
+    (cell, cols, out)
+}
+
+/// NIB FIGURE (see `MediumProfile::nib_figure`): the figure — the silhouette (the matte and SAM, no boxes) when a
+/// face is found, and under `nib_people` every person found and every face; `None` when the key is off or there is
+/// no figure.
+fn nib_figure_mask(p: &PaintParams, w: u32, h: u32) -> Option<Vec<bool>> {
+    if p.nib <= 0.0 || p.nib_figure <= 0.0 {
+        return None;
+    }
+    let n = (w * h) as usize;
+    let people = p.nib_person_mask.as_deref().filter(|m| p.nib_people > 0.0 && m.len() == n);
+    let sil = p.silhouette_mask.as_deref().filter(|m| p.face_mask.is_some() && m.len() == n);
+    let mut fig: Vec<bool> = match (sil, people) {
+        (Some(s), _) => s.iter().map(|v| *v >= 0.5).collect(),
+        (None, Some(_)) => vec![false; n],
+        (None, None) => return None,
+    };
+    // NIB PEOPLE (see `MediumProfile::nib_people`): every person found, and every face, joined to the figure.
+    if let Some(pm) = people {
+        let faces = p.face_mask.as_deref().filter(|m| m.len() == n);
+        for (i, f) in fig.iter_mut().enumerate() {
+            *f |= pm[i] >= 0.5 || faces.map(|m| m[i] > 0.5).unwrap_or(false);
+        }
+    }
+    // NIB OBJECT (see `MediumProfile::nib_object`): the things the figure holds joined to it.
+    if let Some(om) = nib_object_mask(p, w, h) {
+        for (f, o) in fig.iter_mut().zip(&om) {
+            *f |= *o;
+        }
+    }
+    Some(fig)
+}
+
+/// NIB OBJECT (see `MediumProfile::nib_object`): the held objects, when the key is on and the CLI found any.
+fn nib_object_mask(p: &PaintParams, w: u32, h: u32) -> Option<Vec<bool>> {
+    if p.nib <= 0.0 || p.nib_figure <= 0.0 || p.nib_object <= 0.0 {
+        return None;
+    }
+    p.nib_object_mask.as_deref().filter(|m| m.len() == (w * h) as usize).map(|m| m.iter().map(|v| *v >= 0.5).collect())
+}
+
+/// NIB FIGURE: one run of a hatching line laid as pen strokes of about `max_len`, each a little off the line, a few
+/// degrees off its angle and a little unsteady.
+#[allow(clippy::too_many_arguments)]
+fn nib_figure_strokes(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, brush: &BrushConfig, ink: usize, n: usize, run: &[[f32; 2]], s: f32, width: f32, max_len: f32, (nx, ny): (f32, f32), li: usize, placed: &mut usize, k: &mut u64) {
+    if (run.len() as f32) < s.max(4.0) {
+        return;
+    }
+    let pieces = ((run.len() as f32 / max_len).ceil() as usize).max(1);
+    let per = run.len() / pieces;
+    for q in 0..pieces {
+        if *placed >= p.budget {
+            return;
+        }
+        let (i0, i1) = (q * per, if q + 1 == pieces { run.len() - 1 } else { (q + 1) * per });
+        if i1 <= i0 + 1 {
+            continue;
+        }
+        *k += 1;
+        let sh = jitter(p.seed ^ 0xF16_1 ^ li as u64, *k) * 0.4 * s;
+        let (a0, a1) = (run[i0], run[i1]);
+        // the ends carried a little past the run, so a line meets its neighbour across a cell's edge
+        let (ux, uy) = (a1[0] - a0[0], a1[1] - a0[1]);
+        let ul = (ux * ux + uy * uy).sqrt().max(1e-3);
+        let ext = (1.5 * width).max(2.0);
+        let (a0, a1) = ([a0[0] - ux / ul * ext, a0[1] - uy / ul * ext], [a1[0] + ux / ul * ext, a1[1] + uy / ul * ext]);
+        let tw = jitter(p.seed ^ 0xF16_2 ^ li as u64, *k) * 0.12;
+        let (mx, my) = (0.5 * (a0[0] + a1[0]) + nx * sh, 0.5 * (a0[1] + a1[1]) + ny * sh);
+        let (hx, hy) = (0.5 * (a1[0] - a0[0]), 0.5 * (a1[1] - a0[1]));
+        let (c, sn) = (tw.cos(), tw.sin());
+        let (rx, ry) = (hx * c - hy * sn, hx * sn + hy * c);
+        let path = waver_path(&[[mx - rx, my - ry], [mx, my], [mx + rx, my + ry]], 0.15 * width, p.seed ^ 0xF16_3, *k);
+        let mut load = vec![0f32; n];
+        load[ink] = p.charge * 2.0;
+        let st = Stroke { path, width0: width, width1: (width * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
+        st.rasterize(canvas, brush);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+    }
+}
+
+/// NIB FIGURE (see `MediumProfile::nib_figure`): the figure's tone as a pen draws it — straight parallel lines in four
+/// layers, each laid where the value is darker than its threshold, broken at the contours into patches and into
+/// strokes of a pen's length.
+fn nib_figure_hatch(canvas: &mut Canvas, score: &mut StrokeScore, src: &RgbImage, p: &PaintParams, fig: &[bool], placed: &mut usize, k: &mut u64) {
+    let (w, h) = (src.width(), src.height());
+    let (wu, hu) = (w as usize, h as usize);
+    if w < 16 || h < 16 || fig.len() != wu * hu {
+        return;
+    }
+    let long = w.max(h) as f32;
+    let raw = crate::paint::ink::value_map(src);
+    let value = box_blur(&raw, w, h, (w.max(h) / 400).max(1) as i32);
+    let edge = crate::paint::ink::edge_map(&box_blur(&raw, w, h, 1), wu, hu, 0.6);
+    // The figure's own range: its value read from its 5th to its 95th percentile (off the face), so a coat that is a
+    // middle grey in the picture is the figure's dark and goes to the cross-hatching.
+    let on_face = |i: usize| p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.5;
+    let mut vs: Vec<f32> = (0..wu * hu).filter(|&i| fig[i] && !on_face(i)).map(|i| value[i]).collect();
+    if vs.len() < 64 {
+        return;
+    }
+    vs.sort_by(|a, b| a.total_cmp(b));
+    let (lo, hi) = (vs[vs.len() / 20], vs[vs.len() * 19 / 20]);
+    let span = (hi - lo).max(0.05);
+    // The face read against its own range (the coat's would make all of it a half-tone), then lifted toward the
+    // paper by `0.8·nib_face`: its lit side blank, its shadow side in a layer or two, its darkest points closed.
+    let mut fv: Vec<f32> = (0..wu * hu).filter(|&i| fig[i] && on_face(i)).map(|i| value[i]).collect();
+    fv.sort_by(|a, b| a.total_cmp(b));
+    // (from its 30th percentile: the face's box takes in the hair, whose dark would set the face's floor)
+    let (flo, fspan) = if fv.len() >= 64 { (fv[fv.len() * 3 / 10], (fv[fv.len() * 19 / 20] - fv[fv.len() * 3 / 10]).max(0.05)) } else { (lo, span) };
+    // NIB PEOPLE (see `MediumProfile::nib_people`): each face against its own range — a group's faces are lit
+    // differently, and one's beard would set another's floor. (A face's patch, 4-connected; a patch under 64 pixels
+    // keeps the faces' common range.)
+    let mut face_id: Vec<u32> = Vec::new();
+    let mut face_range: Vec<(f32, f32)> = Vec::new();
+    // NIB FINE FACE (see `MediumProfile::nib_fine_face`): which of the patches is a small face (under an eighth of the
+    // sheet across, by the root of its area).
+    let mut face_small: Vec<bool> = Vec::new();
+    if (p.nib_people > 0.0 || p.nib_fine_face > 0.0) && fv.len() >= 64 {
+        face_id = vec![u32::MAX; wu * hu];
+        for s0 in 0..wu * hu {
+            if face_id[s0] != u32::MAX || !(fig[s0] && on_face(s0)) {
+                continue;
+            }
+            let id = face_range.len() as u32;
+            let mut stack = vec![s0];
+            let mut vals: Vec<f32> = Vec::new();
+            face_id[s0] = id;
+            while let Some(i) = stack.pop() {
+                vals.push(value[i]);
+                let (x, y) = (i % wu, i / wu);
+                for j in [(x > 0).then(|| i - 1), (x + 1 < wu).then(|| i + 1), (y > 0).then(|| i - wu), (y + 1 < hu).then(|| i + wu)].into_iter().flatten() {
+                    if face_id[j] == u32::MAX && fig[j] && on_face(j) {
+                        face_id[j] = id;
+                        stack.push(j);
+                    }
+                }
+            }
+            vals.sort_by(|a, b| a.total_cmp(b));
+            face_small.push(p.nib_fine_face > 0.0 && (vals.len() as f32).sqrt() < long / 8.0);
+            if std::env::var_os("PLAKAT_PAINT_MASKS").is_some() {
+                eprintln!("nib face patch {id}: {} px across{}", (vals.len() as f32).sqrt() as u32, if face_small[id as usize] { " — small, the finest pen" } else { "" });
+            }
+            face_range.push(if p.nib_people <= 0.0 { (flo, fspan) } else if vals.len() >= 64 { (vals[vals.len() * 3 / 10], (vals[vals.len() * 19 / 20] - vals[vals.len() * 3 / 10]).max(0.05)) } else { (flo, fspan) });
+        }
+    }
+    let small = |i: usize| -> bool { face_id.get(i).map(|&f| f != u32::MAX && face_small[f as usize]).unwrap_or(false) };
+    let any_small = face_small.iter().any(|&b| b);
+    let fine_w = (long / 1800.0).max(1.0);
+    let face_lift = 0.8 * p.nib_face.clamp(0.0, 1.0);
+    // NIB VALUE: a value's rank in the whole picture (the share of the sheet darker than it).
+    let rank: Vec<f32> = if p.nib_value > 0.0 {
+        let mut hist = [0usize; 256];
+        for v in &value {
+            hist[((v.clamp(0.0, 1.0) * 255.0) as usize).min(255)] += 1;
+        }
+        let mut acc = 0usize;
+        hist.iter().map(|c| { acc += c; acc as f32 / value.len().max(1) as f32 }).collect()
+    } else {
+        Vec::new()
+    };
+    let tone = |i: usize| -> f32 {
+        if on_face(i) {
+            let (flo, fspan) = face_id.get(i).and_then(|&f| face_range.get(f as usize)).copied().unwrap_or((flo, fspan));
+            let v = ((value[i] - flo) / fspan).clamp(0.0, 1.0);
+            v + (1.0 - v) * face_lift
+        } else {
+            let t = ((value[i] - lo) / span).clamp(0.0, 1.0);
+            // NIB VALUE (see `MediumProfile::nib_value`): where it is light in the whole picture, lifted toward its rank.
+            if p.nib_value > 0.0 {
+                let r = rank[((value[i].clamp(0.0, 1.0) * 255.0) as usize).min(255)];
+                let u = ((r - 0.35) / 0.3).clamp(0.0, 1.0);
+                t + p.nib_value.clamp(0.0, 1.0) * u * u * (3.0 - 2.0 * u) * (r - t).max(0.0)
+            } else {
+                t
+            }
+        }
+    };
+    if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+        let _ = image::GrayImage::from_fn(w, h, |x, y| { let i = (y * w + x) as usize; image::Luma([if fig[i] { (tone(i) * 255.0) as u8 } else { 0 }]) }).save(std::path::Path::new(&dir).join("nib_figure_tone.png"));
+        let _ = image::GrayImage::from_fn(w, h, |x, y| { let i = (y * w + x) as usize; image::Luma([if on_face(i) { if small(i) { 255 } else { 128 } } else { 0 }]) }).save(std::path::Path::new(&dir).join("nib_face_small.png"));
+    }
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let n = p.palette.pigments.len();
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.0;
+    brush.round = 0.15;
+    let width = (long / 900.0).max(1.0);
+    let gap = (long / 280.0).max(3.0);
+    let max_len = (long / 45.0).max(10.0);
+    // THE FORM's direction: the structure tensor of the value smoothed to a 200th of the sheet, averaged over a cell
+    // (a 40th of the sheet) — the way the folds and the forms run. Where it agrees on no direction, the hand's 55°.
+    let cell = (long / 40.0).max(12.0);
+    let (gx, gy) = sobel(&box_blur(&raw, w, h, (w.max(h) / 200).max(1) as i32), w, h);
+    let mut jc = vec![0f32; wu * hu];
+    let mut js = vec![0f32; wu * hu];
+    let mut je = vec![0f32; wu * hu];
+    for i in 0..wu * hu {
+        jc[i] = gx[i] * gx[i] - gy[i] * gy[i];
+        js[i] = 2.0 * gx[i] * gy[i];
+        je[i] = gx[i] * gx[i] + gy[i] * gy[i];
+    }
+    let rr = (cell * 0.5) as i32;
+    let (jc, js, je) = (box_blur(&jc, w, h, rr), box_blur(&js, w, h, rr), box_blur(&je, w, h, rr));
+    let form_angle = |x: f32, y: f32| -> f32 {
+        let i = (y.clamp(0.0, (hu - 1) as f32) as usize) * wu + x.clamp(0.0, (wu - 1) as f32) as usize;
+        let mag = (jc[i] * jc[i] + js[i] * js[i]).sqrt();
+        if mag < 0.2 * je[i].max(1e-9) {
+            return 55f32.to_radians();
+        }
+        // along the isophote: a quarter turn from the gradient's double-angle mean
+        0.5 * js[i].atan2(jc[i]) + std::f32::consts::FRAC_PI_2
+    };
+    // A pixel's cell, its boundary wavering by a quarter of a cell so the patches do not read as a grid.
+    let owner = |x: f32, y: f32| -> (i64, i64) {
+        let wx = x + 0.25 * cell * (y / cell * 2.1 + 0.7).sin();
+        let wy = y + 0.25 * cell * (x / cell * 1.7 + 1.9).sin();
+        ((wx / cell).floor() as i64, (wy / cell).floor() as i64)
+    };
+    // The figure's box.
+    let (mut bx0, mut by0, mut bx1, mut by1) = (wu, hu, 0usize, 0usize);
+    for i in 0..wu * hu {
+        if fig[i] {
+            let (x, y) = (i % wu, i / wu);
+            bx0 = bx0.min(x);
+            by0 = by0.min(y);
+            bx1 = bx1.max(x);
+            by1 = by1.max(y);
+        }
+    }
+    if bx1 <= bx0 || by1 <= by0 {
+        return;
+    }
+    // (the turn off the form's direction, the value it is laid under, the spacing's share): along the form first, then
+    // across it, then the dark closed to a solid black — its lines broken at the contours, so the folds' edges stay
+    // white in it. (Three and four crossing directions read as a printed screen, not a pen.)
+    let layers = [(0.0f32, 0.85f32, 1.0f32), (60.0, 0.55, 1.0), (0.0, 0.25, 0.35)];
+    // NIB GLINT (see `MediumProfile::nib_glint`): the lines broken over the specular highlights
+    let glint = nib_glint_mask(src, p);
+    let (ci0, cj0) = owner(bx0 as f32 - cell, by0 as f32 - cell);
+    let (ci1, cj1) = owner(bx1 as f32 + cell, by1 as f32 + cell);
+    // (under `nib_fine_face` the small faces in a pass of their own, at the finest width and closer, each layer's
+    // threshold lowered by `0.04·key`: a small face's skin sits at the lift's floor, just under the first layer's
+    // threshold, and was hatched over whole — now only what is darker than the face's 30th percentile, its hair and
+    // its deep shadow, is hatched)
+    for fine_pass in [false, true] {
+    if fine_pass && !any_small {
+        break;
+    }
+    let width = if fine_pass { fine_w } else { width };
+    for (li, &(turn, thr, share)) in layers.iter().enumerate() {
+        let s = if fine_pass { (0.5 * gap * share).max(width * 0.9) } else { (gap * share).max(width * 0.9) };
+        for cj in cj0..=cj1 {
+            for ci in ci0..=ci1 {
+                let (ccx, ccy) = ((ci as f32 + 0.5) * cell, (cj as f32 + 0.5) * cell);
+                if ccx < bx0 as f32 - cell || ccx > bx1 as f32 + cell || ccy < by0 as f32 - cell || ccy > by1 as f32 + cell {
+                    continue;
+                }
+                let a = form_angle(ccx, ccy) + turn.to_radians();
+                let (dx, dy) = (a.cos(), a.sin());
+                let (nx, ny) = (-dy, dx);
+                // the lines' phase from the sheet's origin, so neighbouring cells at one angle meet line to line
+                let base = (ccx * nx + ccy * ny) / s;
+                let reach = cell * 1.1;
+                let mut off = (base.floor() - (reach / s).ceil()) * s - (ccx * nx + ccy * ny);
+                while off <= reach {
+                    let mut run: Vec<[f32; 2]> = Vec::new();
+                    let mut t = -reach;
+                    while t <= reach {
+                        let (x, y) = (ccx + dx * t + nx * off, ccy + dy * t + ny * off);
+                        t += 1.0;
+                        let (xi, yi) = (x.round() as i64, y.round() as i64);
+                        let ok = xi >= 0 && yi >= 0 && (xi as usize) < wu && (yi as usize) < hu && owner(x, y) == (ci, cj) && {
+                            let i = yi as usize * wu + xi as usize;
+                            fig[i] && !edge[i] && !glint.as_ref().map(|g| g[i]).unwrap_or(false) && tone(i) < if fine_pass { thr - 0.04 * p.nib_fine_face.clamp(0.0, 1.0) } else { thr } && small(i) == fine_pass
+                        };
+                        if ok {
+                            run.push([x, y]);
+                        } else if !run.is_empty() {
+                            nib_figure_strokes(canvas, score, p, &brush, ink, n, &run, s, width, max_len, (nx, ny), li, placed, k);
+                            run.clear();
+                        }
+                        if *placed >= p.budget {
+                            return;
+                        }
+                    }
+                    if !run.is_empty() {
+                        nib_figure_strokes(canvas, score, p, &brush, ink, n, &run, s, width, max_len, (nx, ny), li, placed, k);
+                    }
+                    off += s;
+                }
+            }
+        }
+    }
+    }
+    // The face's features — the profile, the brow, the eye, the nostril, the lips — as the picture's own contours
+    // on the face, read from the picture as given, each a black line at the hatching's width.
+    let fine = box_blur(&raw, w, h, 1);
+    let fedge = crate::paint::ink::edge_map(&fine, wu, hu, 0.5);
+    // NIB FINE FACE: on a small face the contours found among the small faces' own gradients (the picture off them
+    // flattened to their mean, so the shelves and the folds do not set the threshold) and opened by half the key, drawn
+    // with the finest pen.
+    let sedge: Option<Vec<bool>> = any_small.then(|| {
+        let near = box_blur(&(0..wu * hu).map(|i| if small(i) { 1.0 } else { 0.0 }).collect::<Vec<f32>>(), w, h, (long / 200.0).max(2.0) as i32);
+        let (mut sum, mut cnt) = (0f32, 0f32);
+        for i in 0..wu * hu {
+            if small(i) {
+                sum += fine[i];
+                cnt += 1.0;
+            }
+        }
+        let c = sum / cnt.max(1.0);
+        let field: Vec<f32> = (0..wu * hu).map(|i| {
+            let m = if near[i] > 1e-6 { p.face_mask.as_deref().and_then(|f| f.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0) } else { 0.0 };
+            fine[i] * m + c * (1.0 - m)
+        }).collect();
+        crate::paint::ink::edge_map(&field, wu, hu, 0.5 + 0.5 * p.nib_fine_face.clamp(0.0, 1.0))
+    });
+    let on: Vec<bool> = (0..wu * hu).map(|i| on_face(i) && if small(i) { sedge.as_ref().map(|e| e[i]).unwrap_or(false) } else { fedge[i] }).collect();
+    let chains = crate::paint::ink::trace_chains(&on, wu, hu, (long / 200.0).max(4.0) as usize);
+    for c in &chains {
+        if *placed >= p.budget {
+            return;
+        }
+        let path: Vec<[f32; 2]> = c.iter().step_by(2).copied().chain(c.last().copied()).collect();
+        if path.len() < 2 {
+            continue;
+        }
+        *k += 1;
+        let mut load = vec![0f32; n];
+        load[ink] = p.charge * 2.0;
+        // (a small face's at the finest width)
+        let width = if any_small && { let q = path[path.len() / 2]; small((q[1].round().clamp(0.0, (hu - 1) as f32) as usize) * wu + q[0].round().clamp(0.0, (wu - 1) as f32) as usize) } { fine_w } else { width };
+        let st = Stroke { path, width0: width, width1: (width * 0.6).max(1.0), load, pressure: 1.0, wetness: 0.3 };
+        st.rasterize(canvas, &brush);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+    }
+    // NIB OBJECT (see `MediumProfile::nib_object`): a held object's contours — the picture's edges inside it and on its
+    // rim (its mask grown by two pixels) — as firm black lines, `1 + 1.5·key` times the hatching's width.
+    if let Some(om) = nib_object_mask(p, w, h) {
+        let grown = box_blur(&om.iter().map(|&o| if o { 1.0 } else { 0.0 }).collect::<Vec<f32>>(), w, h, 2);
+        let oedge = crate::paint::ink::edge_map(&fine, wu, hu, 0.35);
+        let on: Vec<bool> = (0..wu * hu).map(|i| oedge[i] && grown[i] > 1e-6).collect();
+        let chains = crate::paint::ink::trace_chains(&on, wu, hu, (long / 300.0).max(4.0) as usize);
+        let ow = width * (1.0 + 1.5 * p.nib_object.clamp(0.0, 1.0));
+        for c in &chains {
+            if *placed >= p.budget {
+                return;
+            }
+            let path: Vec<[f32; 2]> = c.iter().step_by(2).copied().chain(c.last().copied()).collect();
+            if path.len() < 2 {
+                continue;
+            }
+            *k += 1;
+            let mut load = vec![0f32; n];
+            load[ink] = p.charge * 2.0;
+            let st = Stroke { path, width0: ow, width1: (ow * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
+            st.rasterize(canvas, &brush);
+            *placed += 1;
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+        }
+    }
+}
+
+/// NIB POOL and NIB RIM (see `MediumProfile::nib_pool`, `MediumProfile::nib_rim`), after the bone: the contact shadows
+/// under the figure closed to black with the broadest pen, then the figure's outline in one line of changing weight.
+fn nib_figure_rim_pool(canvas: &mut Canvas, score: &mut StrokeScore, src: &RgbImage, p: &PaintParams, fig: &[bool], placed: &mut usize, k: &mut u64) {
+    let (w, h) = (src.width(), src.height());
+    let (wu, hu) = (w as usize, h as usize);
+    if w < 16 || h < 16 || fig.len() != wu * hu {
+        return;
+    }
+    let long = w.max(h) as f32;
+    let value = box_blur(&crate::paint::ink::value_map(src), w, h, (w.max(h) / 400).max(1) as i32);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let n = p.palette.pigments.len();
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.0;
+    brush.round = 0.15;
+    let fine_w = (long / 1800.0).max(1.0);
+    let ss = |x: f32| { let x = x.clamp(0.0, 1.0); x * x * (3.0 - 2.0 * x) };
+    if p.nib_pool > 0.0 {
+        // how far each pixel is under the figure, by column
+        let reach = (p.nib_pool.clamp(0.0, 1.0) * long / 40.0).max(2.0);
+        let mut pool = vec![false; wu * hu];
+        // (how far under the figure each pool pixel is, a share of the reach — for `nib_falloff`)
+        let mut pool_d = vec![0f32; wu * hu];
+        // Each figure's own height (its connected piece of the mask): the pool is cast only from its lowest quarter —
+        // where it meets the ground, not under an outstretched arm or a coat's hem in the air.
+        let mut comp = vec![u32::MAX; wu * hu];
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for start in 0..wu * hu {
+            if !fig[start] || comp[start] != u32::MAX {
+                continue;
+            }
+            let id = spans.len() as u32;
+            let (mut y0, mut y1) = (hu, 0usize);
+            let mut stack = vec![start];
+            comp[start] = id;
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % wu, i / wu);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+                for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+                    if nx < wu && ny < hu {
+                        let j = ny * wu + nx;
+                        if fig[j] && comp[j] == u32::MAX {
+                            comp[j] = id;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+            spans.push((y0, y1));
+        }
+        let low = |i: usize| -> bool {
+            let (y0, y1) = spans[comp[i] as usize];
+            (i / wu) as f32 >= y0 as f32 + 0.75 * (y1 - y0) as f32
+        };
+        for x in 0..wu {
+            let mut last: Option<usize> = None;
+            for y in 0..hu {
+                let i = y * wu + x;
+                if fig[i] {
+                    last = low(i).then_some(y);
+                    continue;
+                }
+                if let Some(ly) = last {
+                    let d = (y - ly) as f32;
+                    if d > reach {
+                        last = None;
+                        continue;
+                    }
+                    pool[i] = (1.0 - d / reach).sqrt() * (0.5 + 0.5 * ss((0.75 - value[i]) / 0.35)) > 0.5;
+                    pool_d[i] = d / reach;
+                }
+            }
+        }
+        if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+            let _ = image::GrayImage::from_fn(w, h, |x, y| image::Luma([if pool[(y * w + x) as usize] { 255 } else { 0 }])).save(std::path::Path::new(&dir).join("nib_pool.png"));
+        }
+        let width = long / 500.0;
+        let max_len = (long / 30.0).max(10.0);
+        let a = (-10f32).to_radians();
+        let (dx, dy) = (a.cos(), a.sin());
+        let (nx, ny) = (-dy, dx);
+        let diag = ((wu * wu + hu * hu) as f32).sqrt();
+        let (cx, cy) = (wu as f32 * 0.5, hu as f32 * 0.5);
+        // NIB FALLOFF (see `MediumProfile::nib_falloff`): solid only in the contact's band; beyond it, broken dashes at
+        // twice the spacing, kept by `key·(1 − d)^1.5`.
+        let fall = p.nib_falloff.clamp(0.0, 1.0);
+        let core = (long / 600.0).max(3.0) / reach;
+        let sweeps: Vec<(Vec<bool>, f32, bool)> = if fall > 0.0 {
+            vec![
+                (pool.iter().zip(&pool_d).map(|(q, d)| *q && *d <= core).collect(), width, false),
+                (pool.iter().zip(&pool_d).map(|(q, d)| *q && *d > core).collect(), 2.0 * width, true),
+            ]
+        } else {
+            vec![(pool, width, false)]
+        };
+        let dash = (long / 60.0).max(8.0) as usize;
+        for (mask, s, dashed) in &sweeps {
+            let s = *s;
+            let lay = |canvas: &mut Canvas, score: &mut StrokeScore, run: &[[f32; 2]], placed: &mut usize, k: &mut u64| {
+                if !dashed {
+                    nib_figure_strokes(canvas, score, p, &brush, ink, n, run, s, width, max_len, (nx, ny), 7, placed, k);
+                    return;
+                }
+                for piece in run.chunks(dash) {
+                    let q = piece[0];
+                    let d = pool_d[(q[1].round().clamp(0.0, (hu - 1) as f32) as usize) * wu + q[0].round().clamp(0.0, (wu - 1) as f32) as usize];
+                    *k += 1;
+                    if jitter(p.seed ^ 0xFA1_0, *k) + 0.5 < fall * (1.0 - d).max(0.0).powf(1.5) {
+                        nib_figure_strokes(canvas, score, p, &brush, ink, n, piece, s, width, max_len, (nx, ny), 8, placed, k);
+                    }
+                }
+            };
+            let mut off = -diag * 0.5;
+            while off <= diag * 0.5 {
+                let mut run: Vec<[f32; 2]> = Vec::new();
+                let mut t = -diag * 0.5;
+                while t <= diag * 0.5 {
+                    let (x, y) = (cx + dx * t + nx * off, cy + dy * t + ny * off);
+                    t += 1.0;
+                    let (xi, yi) = (x.round() as i64, y.round() as i64);
+                    let ok = xi >= 0 && yi >= 0 && (xi as usize) < wu && (yi as usize) < hu && mask[yi as usize * wu + xi as usize];
+                    if ok {
+                        run.push([x, y]);
+                    } else if !run.is_empty() {
+                        lay(canvas, score, &run, placed, k);
+                        run.clear();
+                    }
+                    if *placed >= p.budget {
+                        return;
+                    }
+                }
+                if !run.is_empty() {
+                    lay(canvas, score, &run, placed, k);
+                }
+                off += s;
+            }
+        }
+    }
+    if p.nib_rim > 0.0 {
+        let bound: Vec<bool> = (0..wu * hu)
+            .map(|i| {
+                let (x, y) = (i % wu, i / wu);
+                fig[i] && x > 0 && y > 0 && x + 1 < wu && y + 1 < hu && (!fig[i - 1] || !fig[i + 1] || !fig[i - wu] || !fig[i + wu])
+            })
+            .collect();
+        let chains = crate::paint::ink::trace_chains(&bound, wu, hu, (long / 150.0).max(6.0) as usize);
+        // the darkness just inside the outline: the darkest of the figure's pixels round the point
+        let r = (long / 400.0).max(2.0) as i64;
+        let shade = |q: [f32; 2]| -> f32 {
+            let (x, y) = (q[0].round() as i64, q[1].round() as i64);
+            let mut v = 1.0f32;
+            for yy in (y - r).max(0)..=(y + r).min(hu as i64 - 1) {
+                for xx in (x - r).max(0)..=(x + r).min(wu as i64 - 1) {
+                    let i = yy as usize * wu + xx as usize;
+                    if fig[i] {
+                        v = v.min(value[i]);
+                    }
+                }
+            }
+            1.0 - v
+        };
+        let piece = (long / 60.0).max(8.0) as usize;
+        let key = p.nib_rim.clamp(0.0, 1.0);
+        for c in &chains {
+            // the staircase of the mask's edge smoothed over five points
+            let sm: Vec<[f32; 2]> = (0..c.len())
+                .map(|j| {
+                    let (a, b) = (j.saturating_sub(2), (j + 2).min(c.len() - 1));
+                    let m = (b - a + 1) as f32;
+                    let (sx, sy) = c[a..=b].iter().fold((0.0, 0.0), |(sx, sy), q| (sx + q[0], sy + q[1]));
+                    [sx / m, sy / m]
+                })
+                .collect();
+            let mut j = 0;
+            while j + 2 < sm.len() {
+                if *placed >= p.budget {
+                    return;
+                }
+                let e = (j + piece).min(sm.len() - 1);
+                let path: Vec<[f32; 2]> = sm[j..=e].iter().step_by(3).copied().chain(std::iter::once(sm[e])).collect();
+                let (w0, w1) = (fine_w * (1.0 + 4.0 * key * shade(sm[j])), fine_w * (1.0 + 4.0 * key * shade(sm[e])));
+                *k += 1;
+                let mut load = vec![0f32; n];
+                load[ink] = p.charge * 2.0;
+                let st = Stroke { path, width0: w0, width1: w1, load, pressure: 1.0, wetness: 0.3 };
+                st.rasterize(canvas, &brush);
+                *placed += 1;
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+                j = e;
+            }
+        }
+    }
+}
+
+/// NIB GLINT (see `MediumProfile::nib_glint`): the specular highlights — a spot of the picture over `1 − 0.08·key`
+/// and a tenth brighter than its surroundings (a 60th of the sheet round it), no larger than a 30th of the sheet
+/// across, opened by a 400th of the sheet. `None` when the key is off or there is none.
+fn nib_glint_mask(src: &RgbImage, p: &PaintParams) -> Option<Vec<bool>> {
+    if p.nib <= 0.0 || p.nib_glint <= 0.0 {
+        return None;
+    }
+    let (w, h) = (src.width(), src.height());
+    let (wu, hu) = (w as usize, h as usize);
+    let long = w.max(h) as f32;
+    let v = box_blur(&crate::paint::ink::value_map(src), w, h, 1);
+    let m = box_blur(&v, w, h, (long / 60.0).max(3.0) as i32);
+    let floor = 1.0 - 0.08 * p.nib_glint.clamp(0.0, 1.0);
+    let hot: Vec<bool> = (0..wu * hu).map(|i| v[i] > floor && v[i] - m[i] > 0.1).collect();
+    // each spot by its 8-connected extent; a broad one is a lit plane, not a glint
+    let max_side = (long / 30.0) as usize;
+    let mut out = vec![false; wu * hu];
+    let mut seen = vec![false; wu * hu];
+    let mut stack = Vec::new();
+    let mut any = false;
+    for s0 in 0..wu * hu {
+        if !hot[s0] || seen[s0] {
+            continue;
+        }
+        let mut px = Vec::new();
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        seen[s0] = true;
+        stack.push(s0);
+        while let Some(i) = stack.pop() {
+            px.push(i);
+            let (x, y) = (i % wu, i / wu);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+            for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < wu && (ny as usize) < hu {
+                    let j = ny as usize * wu + nx as usize;
+                    if hot[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        if x1 - x0 < max_side && y1 - y0 < max_side {
+            any = true;
+            for i in px {
+                out[i] = true;
+            }
+        }
+    }
+    any.then(|| dilate_bool(&out, wu, hu, (long / 400.0).max(1.0) as usize))
+}
+
+/// NIB GAP (see `MediumProfile::nib_gap`): `path` cut where it first enters `band` (a step of half a pixel); `None`
+/// when it starts inside it.
+fn cut_at_band(path: &[[f32; 2]], band: &[bool], w: usize, h: usize) -> Option<Vec<[f32; 2]>> {
+    let inside = |q: [f32; 2]| {
+        let (x, y) = (q[0].round() as i64, q[1].round() as i64);
+        x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && band[y as usize * w + x as usize]
+    };
+    if path.is_empty() || inside(path[0]) {
+        return None;
+    }
+    let mut out = vec![path[0]];
+    for seg in path.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        let steps = (len / 0.5).ceil().max(1.0) as usize;
+        for st in 1..=steps {
+            let t = st as f32 / steps as f32;
+            let q = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            if inside(q) {
+                let t0 = (st - 1) as f32 / steps as f32;
+                let q0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+                if (q0[0] - out[out.len() - 1][0]).abs() + (q0[1] - out[out.len() - 1][1]).abs() > 1e-3 {
+                    out.push(q0);
+                }
+                return (out.len() >= 2).then_some(out);
+            }
+        }
+        out.push(b);
+    }
+    Some(out)
+}
+
+/// THE PEN'S ACCENTS (see `MediumProfile::nib_anchor`, `MediumProfile::nib_hint`), laid after the hatching and
+/// the bone, in the score as stage `nib` (the replay dries the sheet before it, as the painter does).
+/// ANCHORS: on a grid of a 150th of the sheet, where the picture is much darker than its surroundings (a 90th of the
+/// sheet round it) or just under the subject's silhouette (a 120th of the sheet deep), a cluster of short black
+/// strokes at the middle pen's width along the local edge, crossed — `1 + 3·strength` of them, by the key.
+/// HINTS: on a grid of a 60th of the sheet, in a light cell (value over 0.6) with a sharp contrast of its own, one
+/// short dash at the finest pen's width along the edge there, by `key·contrast` of the cells.
+fn nib_accents(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, original: &RgbImage, p: &PaintParams, attn: Option<&[f32]>, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    if w < 8 || h < 8 {
+        return;
+    }
+    let (wu, hu) = (w as usize, h as usize);
+    let long = w.max(h) as f32;
+    let value = box_blur(&crate::paint::ink::value_map(input), w, h, 1);
+    let (gx, gy) = sobel(&value, w, h);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let n = p.palette.pigments.len();
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.0;
+    brush.round = 0.15;
+    // The direction along the edge at a point: square to the gradient summed over a little window (the hand's
+    // diagonal where the picture has none).
+    let along = |x: usize, y: usize, r: usize| -> (f32, f32) {
+        let (mut sx, mut sy) = (0.0f32, 0.0f32);
+        for yy in y.saturating_sub(r)..=(y + r).min(hu - 1) {
+            for xx in x.saturating_sub(r)..=(x + r).min(wu - 1) {
+                let i = yy * wu + xx;
+                // the double angle, so opposite gradients agree
+                sx += gx[i] * gx[i] - gy[i] * gy[i];
+                sy += 2.0 * gx[i] * gy[i];
+            }
+        }
+        if sx.abs() + sy.abs() < 1e-6 {
+            return (std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2);
+        }
+        let a = 0.5 * sy.atan2(sx) + std::f32::consts::FRAC_PI_2;
+        (a.cos(), a.sin())
+    };
+    let lay = |canvas: &mut Canvas, score: &mut StrokeScore, x: f32, y: f32, d: (f32, f32), len: f32, width: f32, placed: &mut usize| {
+        let path = vec![[x - d.0 * len * 0.5, y - d.1 * len * 0.5], [x + d.0 * len * 0.5, y + d.1 * len * 0.5]];
+        let mut load = vec![0f32; n];
+        load[ink] = p.charge * 2.0;
+        let s = Stroke { path, width0: width, width1: (width * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
+        s.rasterize(canvas, &brush);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+    };
+    if p.nib_anchor > 0.0 {
+        let field = nib_anchor_field(&value, p, w, h);
+        let cell = (long / 150.0).max(4.0) as usize;
+        let mid_w = long / 500.0 * (500.0f32 / 1800.0).sqrt();
+        for cy in (cell / 2..hu).step_by(cell) {
+            for cx in (cell / 2..wu).step_by(cell) {
+                if *placed >= p.budget {
+                    return;
+                }
+                let i = cy * wu + cx;
+                let a = field[i] * p.nib_anchor.clamp(0.0, 1.0);
+                if a < 0.35 {
+                    continue;
+                }
+                let d = along(cx, cy, 2);
+                let count = (1.0 + 3.0 * a).round() as usize;
+                for j in 0..count {
+                    *k += 1;
+                    let (jx, jy) = (jitter(p.seed ^ 0xA9C_0, *k) * cell as f32, jitter(p.seed ^ 0xA9C_1, *k) * cell as f32);
+                    // every other stroke crossed at a third of a right angle
+                    let t: f32 = if j % 2 == 1 { 0.5 } else { 0.0 };
+                    let dd = (d.0 * t.cos() - d.1 * t.sin(), d.0 * t.sin() + d.1 * t.cos());
+                    lay(canvas, score, cx as f32 + jx, cy as f32 + jy, dd, cell as f32 * 1.6, mid_w, placed);
+                }
+            }
+        }
+    }
+    if p.nib_hint > 0.0 {
+        let range = local_range(&value, wu, hu, 2);
+        let glint = nib_glint_mask(original, p);
+        let cell = (long / 60.0).max(6.0) as usize;
+        let fine_w = long / 1800.0;
+        for cy in (cell / 2..hu).step_by(cell) {
+            for cx in (cell / 2..wu).step_by(cell) {
+                if *placed >= p.budget {
+                    return;
+                }
+                // the cell's sharpest light point
+                let (mut best, mut bx, mut by) = (0.0f32, cx, cy);
+                for yy in cy.saturating_sub(cell / 2)..(cy + cell / 2).min(hu) {
+                    for xx in cx.saturating_sub(cell / 2)..(cx + cell / 2).min(wu) {
+                        let i = yy * wu + xx;
+                        if value[i] > 0.6 && range[i] > best {
+                            best = range[i];
+                            bx = xx;
+                            by = yy;
+                        }
+                    }
+                }
+                let c = ((best - 0.15) / 0.2).clamp(0.0, 1.0);
+                // (NIB GLINT: no dash at a specular highlight)
+                let c = if glint.as_ref().map(|g| g[by * wu + bx]).unwrap_or(false) { 0.0 } else { c };
+                *k += 1;
+                if c <= 0.0 || jitter(p.seed ^ 0x41_A7, *k) + 0.5 >= p.nib_hint.clamp(0.0, 1.0) * c {
+                    continue;
+                }
+                let d = along(bx, by, 2);
+                lay(canvas, score, bx as f32, by as f32, d, cell as f32 * (0.4 + 0.4 * (jitter(p.seed ^ 0x41_A8, *k) + 0.5)), fine_w, placed);
+            }
+        }
+    }
+    // NIB TUFT (see `MediumProfile::nib_tuft`): the near grass as tufts — a fan of blades from one root at a cell's
+    // foot, leaning with the grass, the side blades shorter and bent outward, at the middle pen tapering to the finest.
+    if p.nib_tuft > 0.0 {
+        // (the grass read from the picture as given: under a new painting `input` is the smoothed armature)
+        let value = box_blur(&crate::paint::ink::value_map(original), w, h, 1);
+        let (cell, cols, ts) = nib_tuft_field(&value, p, attn, w, h);
+        let mut mass_dbg: Option<Vec<(f32, f32, f32)>> = std::env::var_os("PLAKAT_PAINT_MASKS").map(|_| vec![(0.0, 0.0, 0.0); ts.len()]);
+        let contact = (p.nib_contact > 0.0 || p.nib_anchor > 0.0).then(|| nib_anchor_field(&value, p, w, h));
+        let sil = p.silhouette_mask.as_deref().filter(|m| m.len() == wu * hu);
+        let mid_w = long / 500.0 * (500.0f32 / 1800.0).sqrt();
+        let fine_w = (long / 1800.0).max(1.0);
+        let key = p.nib_tuft.clamp(0.0, 1.0);
+        let cf = cell as f32;
+        let lush = p.nib_lush.clamp(0.0, 1.0);
+        // NIB SCATTER (see `MediumProfile::nib_scatter`): the roots by Poisson-disk sampling — candidates on a jittered
+        // grid of a third of a cell, each kept when no root lies nearer than its radius, the radius from half a cell (in a
+        // clump) to two cells as a smooth noise of five cells falls; under `0.3·key` a clearing, no root. Without it, one
+        // site per cell, rooted at its foot.
+        let sites: Vec<(usize, Option<(f32, f32)>)> = if p.nib_scatter > 0.0 {
+            let key_s = p.nib_scatter.clamp(0.0, 1.0);
+            let lat = 5.0 * cf;
+            let node = |a: i64, b: i64| jitter(p.seed ^ 0x5CA_7, (a as u64).wrapping_mul(0x9E37_79B9).wrapping_add(b as u64)) + 0.5;
+            let noise = |x: f32, y: f32| -> f32 {
+                let (gx, gy) = (x / lat, y / lat);
+                let (ix, iy) = (gx.floor() as i64, gy.floor() as i64);
+                let (fx, fy) = (gx - ix as f32, gy - iy as f32);
+                let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+                let top = node(ix, iy) * (1.0 - sx) + node(ix + 1, iy) * sx;
+                let bot = node(ix, iy + 1) * (1.0 - sx) + node(ix + 1, iy + 1) * sx;
+                top * (1.0 - sy) + bot * sy
+            };
+            let step = (cf / 3.0).max(2.0);
+            let (gcols, grows) = ((wu as f32 / cf).ceil() as usize + 1, (hu as f32 / cf).ceil() as usize + 1);
+            let mut bins: Vec<Vec<(f32, f32)>> = vec![Vec::new(); gcols * grows];
+            let mut out = Vec::new();
+            let mut y = 0.5 * step;
+            let mut q = 0u64;
+            while y < hu as f32 {
+                let mut x = 0.5 * step;
+                while x < wu as f32 {
+                    q += 1;
+                    let (px, py) = ((x + jitter(p.seed ^ 0x5CA_8, q) * step).clamp(0.0, (wu - 1) as f32), (y + jitter(p.seed ^ 0x5CA_9, q) * step).clamp(0.0, (hu - 1) as f32));
+                    x += step;
+                    let c = (py as usize / cell) * cols + px as usize / cell;
+                    if c >= ts.len() || ts[c] < 0.0 {
+                        continue;
+                    }
+                    let nz = noise(px, py);
+                    if nz < 0.3 * key_s {
+                        continue;
+                    }
+                    // (NIB LUSH: closer where the grass is dark — the roots of a deep clump half the spacing)
+                    let dk = { let t = ((0.65 - value[py as usize * wu + px as usize]) / 0.3).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+                    let r = cf * (0.5 + 1.5 * (1.0 - nz)) * (1.0 - 0.4 * lush * (0.5 + 0.5 * dk));
+                    let (bi, bj) = ((px / cf) as i64, (py / cf) as i64);
+                    let reach = (r / cf).ceil() as i64;
+                    let mut free = true;
+                    'scan: for dj in -reach..=reach {
+                        for di in -reach..=reach {
+                            let (ni, nj) = (bi + di, bj + dj);
+                            if ni < 0 || nj < 0 || ni as usize >= gcols || nj as usize >= grows {
+                                continue;
+                            }
+                            for &(ox, oy) in &bins[nj as usize * gcols + ni as usize] {
+                                if (ox - px).hypot(oy - py) < r {
+                                    free = false;
+                                    break 'scan;
+                                }
+                            }
+                        }
+                    }
+                    if free {
+                        bins[bj as usize * gcols + bi as usize].push((px, py));
+                        out.push((c, Some((px, py))));
+                    }
+                }
+                y += step;
+            }
+            out
+        } else {
+            (0..ts.len()).map(|c| (c, None)).collect()
+        };
+        for &(c, root) in &sites {
+            let s = ts[c];
+            if *placed >= p.budget {
+                return;
+            }
+            let (ci, cj) = (c % cols, c / cols);
+            let (x0, y0) = (ci * cell, cj * cell);
+            let (x1, y1) = ((x0 + cell).min(wu), (y0 + cell).min(hu));
+            if x1 <= x0 + 1 || y1 <= y0 + 1 {
+                continue;
+            }
+            let (mx, my) = ((x0 + x1) / 2, (y0 + y1) / 2);
+            // under the silhouette, the contact's band: the tufts doubled and always laid (off the figure itself)
+            let in_sil = |y: usize| sil.map(|m| m[y * wu + mx] >= 0.5).unwrap_or(false);
+            let under = contact.as_ref().map(|f| f[my * wu + mx]).unwrap_or(0.0) > 0.3 && !in_sil(my) && (1..=2).any(|t| my >= t * cell && in_sil(my - t * cell));
+            let mut mv = 0f32;
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    mv += value[y * wu + x];
+                }
+            }
+            let mv = mv / ((x1 - x0) * (y1 - y0)) as f32;
+            // NIB MASS (see `MediumProfile::nib_mass`): in the dark grass more fans, rooted anywhere in the cell, crossing
+            // into one mass; a cell of a dark clump (half its neighbours grass) always drawn.
+            let dark = { let t = ((0.6 - mv) / 0.25).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+            // (a clump, not a lone tuft: the share of the eight neighbouring cells that are grass too, from 0.25 to 0.6)
+            let share = {
+                let (mut g, mut m) = (0f32, 0f32);
+                for (di, dj) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                    let (ni, nj) = (ci as i64 + di, cj as i64 + dj);
+                    if ni >= 0 && nj >= 0 && (ni as usize) < cols && (nj as usize) * cols + (ni as usize) < ts.len() {
+                        m += 1.0;
+                        g += if ts[nj as usize * cols + ni as usize] > 0.1 { 1.0 } else { 0.0 };
+                    }
+                }
+                g / m.max(1.0)
+            };
+            let clump = { let t = ((share - 0.25) / 0.35).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+            let dark = dark * clump;
+            if let Some(dbg) = mass_dbg.as_mut() {
+                dbg[c] = (s, mv, share);
+            }
+            let massed = p.nib_mass > 0.0 && s >= 0.0 && share >= 0.5 && mv < 0.6;
+            // NIB LUSH (see `MediumProfile::nib_lush`): every grass cell a candidate by its darkness, its strength
+            // floored at `0.7·key` times the smoothstep of `(0.65 − value)/0.3`
+            let s = if lush > 0.0 && s >= 0.0 {
+                let f = 0.7 * lush * { let t = ((0.65 - mv) / 0.3).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+                f + (1.0 - f) * s
+            } else {
+                s
+            };
+            *k += 1;
+            if !under && !massed && (s <= 0.0 || jitter(p.seed ^ 0x7F7_1, *k) + 0.5 >= key * s) {
+                continue;
+            }
+            // the lean: the grass's own direction there, held within half a radian of upright
+            let (dx, dy) = along(mx, my, cell / 3);
+            let (dx, dy) = if dy > 0.0 { (-dx, -dy) } else { (dx, dy) };
+            let tilt = dx.atan2(-dy).clamp(-0.5, 0.5);
+            let count = ((4.0 + 5.0 * (1.0 - mv)).round() as usize) * if under { 2 } else { 1 };
+            let scale = if under { 1.3 } else { 0.7 + 0.6 * s.max(0.0) };
+            let fans = 1 + (4.0 * p.nib_mass.clamp(0.0, 1.0) * dark).round() as usize;
+            for f in 0..fans {
+                let (bx, by) = if let (0, Some(r)) = (f, root) {
+                    r
+                } else if f == 0 {
+                    (mx as f32 + jitter(p.seed ^ 0x7F7_2, *k) * 0.6 * cf, y1 as f32 - 0.1 * cf)
+                } else {
+                    *k += 1;
+                    (x0 as f32 + (jitter(p.seed ^ 0x7F7_7, *k) + 0.5) * cf, y0 as f32 + (0.4 + 0.6 * (jitter(p.seed ^ 0x7F7_8, *k) + 0.5)) * cf)
+                };
+                for j in 0..count {
+                    if *placed >= p.budget {
+                        return;
+                    }
+                    *k += 1;
+                    let frac = if count > 1 { j as f32 / (count - 1) as f32 - 0.5 } else { 0.0 };
+                    let ang = tilt + frac * 1.3 + jitter(p.seed ^ 0x7F7_3, *k) * 0.3;
+                    let len = cf * (1.4 + 1.4 * (jitter(p.seed ^ 0x7F7_4, *k) + 0.5)) * scale * (1.0 - 0.35 * frac.abs() * 2.0);
+                    let (ux, uy) = (ang.sin(), -ang.cos());
+                    // bent outward, a little either way; each blade's root a little along the clump's foot
+                    let bow = (frac * 0.25 + jitter(p.seed ^ 0x7F7_5, *k) * 0.12) * len;
+                    let rx = bx + jitter(p.seed ^ 0x7F7_6, *k) * 0.4 * cf;
+                    let path = vec![[rx, by], [rx + ux * len * 0.5 - uy * bow, by + uy * len * 0.5 + ux * bow], [rx + ux * len, by + uy * len]];
+                    let mut load = vec![0f32; n];
+                    load[ink] = p.charge * 2.0;
+                    let st = Stroke { path, width0: mid_w, width1: fine_w.min(mid_w), load, pressure: 1.0, wetness: 0.3 };
+                    st.rasterize(canvas, &brush);
+                    *placed += 1;
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+                }
+            }
+        }
+        if let (Some(dbg), Some(dir)) = (&mass_dbg, std::env::var_os("PLAKAT_PAINT_MASKS")) {
+            let rows = ts.len() / cols;
+            let img = image::RgbImage::from_fn(cols as u32, rows as u32, |x, y| {
+                let (s, mv, sh) = dbg[y as usize * cols + x as usize];
+                image::Rgb([(s.clamp(0.0, 1.0) * 255.0) as u8, ((1.0 - mv).clamp(0.0, 1.0) * 255.0) as u8, (sh.clamp(0.0, 1.0) * 255.0) as u8])
+            });
+            let _ = img.save(std::path::Path::new(&dir).join("tuft_field.png"));
+        }
+    }
+    // NIB EYES (see `MediumProfile::nib_eyes`): the picture's contours inside the eyes and the nose, each chain a pure
+    // black polyline at the finest pen's width.
+    if let Some(fm) = p.nib_feature_mask.as_deref().filter(|m| p.nib_eyes > 0.0 && m.len() == wu * hu) {
+        let edge = crate::paint::ink::edge_map(&value, wu, hu, p.nib_eyes.clamp(0.0, 1.0));
+        let inside: Vec<bool> = edge.iter().zip(fm).map(|(e, m)| *e && *m > 0.5).collect();
+        let chains = crate::paint::ink::trace_chains(&inside, wu, hu, (long / 400.0).max(3.0) as usize);
+        let fine_w = (long / 1800.0).max(1.0);
+        for c in &chains {
+            if *placed >= p.budget {
+                return;
+            }
+            // every other point, so the polyline is not a staircase of pixels
+            let path: Vec<[f32; 2]> = c.iter().step_by(2).copied().chain(c.last().copied()).collect();
+            if path.len() < 2 {
+                continue;
+            }
+            let mut load = vec![0f32; n];
+            load[ink] = p.charge * 2.0;
+            let s = Stroke { path, width0: fine_w, width1: fine_w, load, pressure: 1.0, wetness: 0.3 };
+            s.rasterize(canvas, &brush);
+            *placed += 1;
+            *k += 1;
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+        }
+        // The dark of the eye and the nose filled with close diagonal lines of the finest pen (two and a half widths
+        // apart), the catchlight and the nose's light left to the paper.
+        let gap = (2.5 * fine_w).max(2.0);
+        let lines = ((wu + hu) as f32 / gap) as usize;
+        for j in 0..lines {
+            let c = j as f32 * gap; // x + y = c
+            let mut run: Vec<[f32; 2]> = Vec::new();
+            let x_lo = (c - (hu - 1) as f32).max(0.0) as usize;
+            let x_hi = (c.min((wu - 1) as f32)) as usize;
+            for x in x_lo..=x_hi.max(x_lo) {
+                let y = (c - x as f32).round() as i64;
+                let ok = y >= 0 && (y as usize) < hu && {
+                    let i = y as usize * wu + x;
+                    fm[i] > 0.5 && value[i] < 0.3
+                };
+                if ok {
+                    run.push([x as f32, y as f32]);
+                }
+                if (!ok || x == x_hi) && run.len() >= 2 {
+                    if *placed >= p.budget {
+                        return;
+                    }
+                    let path = vec![run[0], *run.last().unwrap()];
+                    let mut load = vec![0f32; n];
+                    load[ink] = p.charge * 2.0;
+                    let s = Stroke { path, width0: fine_w, width1: fine_w, load, pressure: 1.0, wetness: 0.3 };
+                    s.rasterize(canvas, &brush);
+                    *placed += 1;
+                    *k += 1;
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+                }
+                if !ok {
+                    run.clear();
+                }
+            }
+        }
+    }
+}
+
 fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, attn: Option<&[f32]>, placed: &mut usize, k: &mut u64) {
     let (w, h) = (input.width(), input.height());
     let (wu, hu) = (w as usize, h as usize);
@@ -6073,6 +7558,9 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
     let long = w.max(h) as f32;
     let value = box_blur(&crate::paint::ink::value_map(input), w, h, 1);
     let edge = crate::paint::ink::edge_map(&value, wu, hu, strength);
+    let fig: Option<Vec<bool>> = if p.nib > 0.0 && p.nib_figure > 0.0 { nib_figure_mask(p, w, h) } else { None };
+    // NIB CLOSE (see `MediumProfile::nib_close`): where the bone lines were laid, to find the outline's gaps after.
+    let mut drawn: Option<Vec<bool>> = (fig.is_some() && p.nib_close > 0.0).then(|| vec![false; wu * hu]);
     let min_len = (long / 150.0).max(6.0) as usize;
     let mut chains = crate::paint::ink::trace_chains(&edge, wu, hu, min_len);
     chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
@@ -6104,6 +7592,11 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
     brush.streak = 0.15;
     brush.round = 0.9;
     brush.bristles = 5;
+    // NIB (see `MediumProfile::nib`): a steel point's line — even across, a flat section to a hard edge.
+    if p.nib > 0.0 {
+        brush.streak *= 1.0 - p.nib.clamp(0.0, 1.0);
+        brush.round = 0.9 - 0.75 * p.nib.clamp(0.0, 1.0);
+    }
     let cap = ((*placed) as f32 + (p.budget - *placed) as f32 * (0.10 + 0.25 * strength)).min(p.budget as f32) as usize;
     let at = |q: [f32; 2]| -> usize { (q[1].max(0.0) as usize).min(hu - 1) * wu + (q[0].max(0.0) as usize).min(wu - 1) };
     for c in &chains {
@@ -6256,10 +7749,34 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         let width = base * (0.5 + d) * (1.0 - 0.3 * sj) * (1.0 + 1.5 * wt);
         let mut load = vec![0f32; n];
         load[ink] = p.charge * (0.35 + 0.65 * d) * (1.0 - 0.3 * sj) * (1.0 + wt);
+        // NIB (see `MediumProfile::nib`): ink is never grey — the line laid at the ink's full black, at the finest
+        // pen's width (a 1800th of the long side under `nibs`) pressed by the weight.
+        let width = if p.nib > 0.0 && p.nibs >= 1.0 { width + ((w.max(h) as f32 / 1800.0) * (1.0 + 1.5 * wt) - width) * p.nib.clamp(0.0, 1.0) } else { width };
+        // NIB FIGURE (see `MediumProfile::nib_figure`): on the figure the line bold.
+        let width = match &fig {
+            Some(fm) if { let q = cc[cc.len() / 2]; fm[(q[1].round().clamp(0.0, (hu - 1) as f32) as usize) * wu + q[0].round().clamp(0.0, (wu - 1) as f32) as usize] } => width * (1.0 + 1.5 * p.nib_figure.clamp(0.0, 1.0)),
+            _ => width,
+        };
+        if p.nib > 0.0 {
+            load[ink] += (p.charge * 2.0 - load[ink]).max(0.0) * p.nib.clamp(0.0, 1.0);
+        }
         let w1 = if e <= 0.0 { width * 0.45 } else if tome1 { width * (0.45 + 0.55 * e) } else { width * 0.45 * (1.0 - 0.8 * e) };
-        let s = Stroke { path, width0: width, width1: w1.max(if e > 0.0 { 0.5 } else { 0.8 }), load, pressure: 1.0, wetness: bone_wet };
+        // (Under the NIB the lift-off no thinner than a pixel: a sub-pixel tail was a grey hair.)
+        let w1 = w1.max(if e > 0.0 { 0.5 } else { 0.8 });
+        let w1 = if p.nib > 0.0 { w1 + (w1.max(1.0) - w1) * p.nib.clamp(0.0, 1.0) } else { w1 };
+        let s = Stroke { path, width0: width, width1: w1, load, pressure: 1.0, wetness: bone_wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
+        if let Some(dm) = drawn.as_mut() {
+            for q in cc {
+                let (x, y) = (q[0].round() as i64, q[1].round() as i64);
+                for yy in (y - 3).max(0)..=(y + 3).min(hu as i64 - 1) {
+                    for xx in (x - 3).max(0)..=(x + 3).min(wu as i64 - 1) {
+                        dm[yy as usize * wu + xx as usize] = true;
+                    }
+                }
+            }
+        }
         score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
         // THE TOME's press: the brush halted on the end, the ink spreading and pooling — a short round mark
         // along the line's last direction, wider, darker and wetter by the key.
@@ -6279,6 +7796,54 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
             ts.rasterize(canvas, &tb);
             *placed += 1;
             score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "bone".into(), spline: ts.path, w0: ts.width0, w1: ts.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), ts.load[ink])], wet: ts.wetness, press: ts.pressure, streak: tb.streak, round: tb.round, pickup: Some(0.0), bristles: Some(tb.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+        }
+    }
+    // NIB CLOSE (see `MediumProfile::nib_close`): along the figure's boundary, a stretch no bone line covers, shorter
+    // than `key`·a 40th of the sheet and between two covered stretches, closed with a thin black line.
+    if let (Some(fm), Some(dm)) = (&fig, &drawn) {
+        let bound: Vec<bool> = (0..wu * hu)
+            .map(|i| {
+                let (x, y) = (i % wu, i / wu);
+                fm[i] && x > 0 && y > 0 && x + 1 < wu && y + 1 < hu && (!fm[i - 1] || !fm[i + 1] || !fm[i - wu] || !fm[i + wu])
+            })
+            .collect();
+        let chains = crate::paint::ink::trace_chains(&bound, wu, hu, 8);
+        let gap = p.nib_close.clamp(0.0, 1.0) * long / 40.0;
+        let fine_w = (long / 1800.0).max(1.0);
+        for c in &chains {
+            let cov: Vec<bool> = c.iter().map(|q| dm[at(*q)]).collect();
+            let mut j = 0;
+            while j < c.len() {
+                if cov[j] {
+                    j += 1;
+                    continue;
+                }
+                let j0 = j;
+                while j < c.len() && !cov[j] {
+                    j += 1;
+                }
+                // a gap between two drawn stretches, short enough to be a break in one line
+                if j0 == 0 || j >= c.len() || (j - j0) as f32 > gap {
+                    continue;
+                }
+                if *placed >= p.budget {
+                    return;
+                }
+                let mut path: Vec<[f32; 2]> = c[j0 - 1..=j].iter().step_by(2).copied().collect();
+                if path.last() != Some(&c[j]) {
+                    path.push(c[j]);
+                }
+                if path.len() < 2 {
+                    continue;
+                }
+                *k += 1;
+                let mut load = vec![0f32; n];
+                load[ink] = p.charge * 2.0;
+                let s = Stroke { path, width0: fine_w, width1: fine_w, load, pressure: 1.0, wetness: 0.3 };
+                s.rasterize(canvas, &brush);
+                *placed += 1;
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
+            }
         }
     }
 }

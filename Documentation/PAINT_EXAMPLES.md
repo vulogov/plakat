@@ -90,10 +90,41 @@ plakat paint from photo.png --medium gouache --plan gouache.hjson -o out-gouache
 plakat paint from photo.png --medium ink-wash --palette sumi \
     --bleed 0.7 -o out-inkwash.png
 
-# ── PEN & INK (line-and-wash) ────────────────────────────────────────────────
-# Crisp line + hatching; the contour pass draws the strongest edges. Palette: sumi.
-plakat paint from photo.png --medium pen-ink --palette sumi \
-    --contour 0.6 -o out-penink.png
+# ── PEN & INK ────────────────────────────────────────────────────────────────
+# Steel nibs of several widths and a black ink (7.12.0), drawn line by line along the form: every line full
+# black, the tone by how many lines a place takes; the pens in layers, broad in the near deep shadows, fine on
+# the far ground, the lights left to the paper; a figure hatched along its form with its face to the paper and
+# its features drawn, outlined in one swelling line and set on the ground by a contact shadow; every person
+# found, a group's small faces with the finest pen; the far planes by depth; the grass CLIP finds in tufts
+# scattered in clumps, thick where it is dark; the specular highlights white. Every pen key is unset in the
+# profile — run it with the plan (the keys in PAINT_CONTROLS.md):
+#
+#   medium: pen-ink            palette: sumi              style: legible             new: true
+#   armature: 384              armature_face: 768         armature_body: 384         semantic: true
+#   sam: true                  families: true             commit_shadows: 0.0        shadow_floor: 0.16
+#   detail_len: 0.5            infill: 45                 min_brush: 1.5             dry: 1.0
+#   pickup: 0.0                bleed: 0.0                 wash_in: 0.0               wet_cap: 0.2
+#   scumble: 0.0               deplete: 0.0               granulate: 0.0             contour: 0.0
+#   small: 400                 small_min: 100             anchor: 0.15               trim: 0.5
+#   hatch: 1.0                 cross: 45                  span: 0.6                  edge: 0.6
+#   umbra: 1.0                 solid: 1.0                 loose: 0.1                 lost: 0.0
+#   paper: 1.0                 erase: 0.0                 touch: 0.0                 velvet: 0.08
+#   velvet_dark: 0.25          paper_top: 1.0             paper_knee: 0.5            bone: 1.0
+#   bone_coherence: 0.5        bone_ryaku: 0.3            bone_fade: 0.0             bone_wind: 0.5
+#   weight: 1.0                slant: 1.0                 clip: 0.6                  tiers: 0.8
+#   waver: 0.6                 ma: 0.3                    ma_focus: 0.4              ma_flow: 0.6
+#   nib: 1.0                   grade: 0.8                 nibs: 3                    nib_tone: 1.0
+#   nib_white: 0.2             nib_anchor: 1.0            nib_hint: 1.0              nib_face: 1.0
+#   nib_gap: 0.4               nib_relief: 0.6            nib_far: 0.5               nib_occlude: 1.0
+#   nib_eyes: 1.0              nib_fur: 0.6               nib_lift: 1.0              nib_contact: 1.0
+#   nib_figure: 1.0            nib_object: 1.0            nib_tuft: 1.0              nib_close: 1.0
+#   nib_mass: 1.0              nib_rim: 1.0               nib_pool: 1.0              nib_air: 1.0
+#   nib_people: 1.0            nib_value: 1.0             nib_fine_face: 1.0         nib_scatter: 0.5
+#   nib_falloff: 1.0           nib_depth: 0.6             nib_lush: 1.0              nib_glint: 1.0
+#   (nib_gap 0.4 — at 1.0 the contours were cartoon white outlines; nib_depth 0.6 — at 1.0 a sunlit far
+#   slope went to bare paper)
+#
+plakat paint from photo.png --medium pen-ink --plan pen-ink.hjson -o out-penink.png
 
 # ── PENCIL / GRAPHITE ────────────────────────────────────────────────────────
 # Soft graphite, hatched shading, paper-white highlights, granular tooth. No colour.

@@ -710,6 +710,172 @@ pub struct MediumProfile {
     /// ±0.35 and the width by ±0.2 of it (see `BrushConfig::waver`), so a long line in the half-tones goes
     /// lighter and darker along its run instead of lying as one ruled grey.
     pub waver: f32,
+    /// NIB (0..1, 0 = off): a steel nib and black ink — under `paper`, a mark is laid at the ink's full black
+    /// and full pressure (the residual's charge pulled to the fullest by the key) and the sheet it answers is read
+    /// over the mark's cell (a window of 1.2 radii), not at one pixel: the tone is how many black lines a cell
+    /// takes, not how grey each one is, and the hatching stops when the cell's mean reaches the value. And the
+    /// width held under the pass's nib (a 600th of the long side on the broadest pass, a third of it on the finest).
+    pub nib: f32,
+    /// NIBS (a count, 0 = off): pens of several sizes in layers — under `nib`, the ladder's passes drawn with
+    /// this many pens, the k-th taking the k-th share of it coarse to fine: the broadest pen (a 500th of the sheet's
+    /// long side) lays the masses' hatching first, the finest (an 1800th) the detail last, the ones between in a
+    /// geometric series of widths, each mark at its pen's width; the passes shared out evenly on the log of
+    /// their radius. 0 keeps `nib`'s smooth narrowing pass by pass.
+    pub nibs: f32,
+    /// NIB TONE (0..1, 0 = off): under `nibs`, each pen laid only where the tone is dark enough for its width — the
+    /// pen at place q of the set (0 the broadest, 1 the finest) needs a darkness over `key·(0.12 + 0.6·(1 − q))`,
+    /// the darkness read against the eye's attention (`ma`; `(1 − v)·(0.4 + 0.6·attention)`): the broad nib in the
+    /// near deep shadows, the fine one on the lights' edge and the far ground, the lights themselves blank.
+    pub nib_tone: f32,
+    /// NIB WHITE (0..1, 0 = off): under `nib`, a cell is never asked darker than this share of the paper's
+    /// light — the deepest shadow keeps the paper's flecks between its lines instead of closing to a flat black.
+    pub nib_white: f32,
+    /// NIB ANCHOR (0..1, 0 = off): under `nib`, the cast shadows that set things on the ground — after the hatching
+    /// and the bone, on a grid of a 150th of the sheet, where the picture is much darker than its surroundings (a
+    /// 90th of the sheet round it) or just under the subject's silhouette (a 120th of the sheet deep, fading down),
+    /// a cluster of `1 + 3·strength` short black strokes at the middle pen's width along the edge there, crossed;
+    /// so a figure and a stone sit on the slope instead of floating on the paper (stage `nib` in the score).
+    pub nib_anchor: f32,
+    /// NIB HINT (0..1, 0 = off): under `nib`, the shorthand in the lights — on a grid of a 60th of the sheet, a light
+    /// cell (value over 0.6) with a sharp contrast of its own (a grass blade, a pebble's rim) takes, by `key·contrast`,
+    /// one short dash (0.4–0.8 of the cell) at the finest pen's width along the edge at its sharpest point; a sunlit slope keeps its ground
+    /// without being hatched (stage `nib` in the score).
+    pub nib_hint: f32,
+    /// NIB FACE (0..1, 0 = off): under `nib_tone`, a face drawn with the finest pen alone (the key's share of the
+    /// broader pens' marks there dropped), its value lifted toward the paper by `0.4·key` and its paper floor raised
+    /// by `0.3·key` over `nib_white` — the cheek, the cheekbone and the nose left to the paper and a delicate line.
+    pub nib_face: f32,
+    /// NIB GAP (0..1, 0 = off): under `nib`, a band of white kept along the picture's long contours (the edge map's
+    /// chains longer than a 30th of the sheet, widened by `key` · a 400th of the sheet each side) — a mark cut where it
+    /// enters the band and not laid when it starts in it — so an umbrella, a sleeve and a body in one shadow are parted
+    /// by a sliver of paper; not on the hair/fur region (as `clip`), where every lock is a contour.
+    pub nib_gap: f32,
+    /// NIB RELIEF (0..1, 0 = off): under `nib`, a place lighter than its surroundings (its value against the mean
+    /// over a 100th of the sheet — the bulge of a sleeve, a fold's ridge) lifted toward the paper by `3·key` times its
+    /// excess, so the hatching thins on the form's highlights and a coat is modelled, not filled; not on the hair/fur
+    /// region, where every lock is lighter than its neighbour and the mass broke into white islands.
+    pub nib_relief: f32,
+    /// NIB FAR (0..1, 0 = off): under `nib_tone`, off the eye's attention (`ma`, under `0.6·key`) every pen is the
+    /// finest — the marks the broad passes lay there kept, drawn at the finest pen's width, gated by their own pen's tone — so
+    /// the sky's clouds, the far trees and the far slope are light broken lines, neither heavy nor bare.
+    pub nib_far: f32,
+    /// NIB OCCLUDE (0..1, 0 = off): under `nib_tone`, the broadest pen laid only in the cast shadows (where the
+    /// `nib_anchor` field is over `0.3·key`) — under the figure and the umbrella — the other darks left to the middle
+    /// pen, so the weight of the line sits where the forms meet the ground.
+    pub nib_occlude: f32,
+    /// NIB EYES (0..1, 0 = off): under `nib`, an animal's eyes — found in the picture by their catchlights (a light
+    /// point ringed by the dark, inside the hair/fur region; the detector does not name an animal's eye) — taken out of
+    /// the fur by the key's share, kept from the hatching, and drawn after the bone with the finest pen in pure black:
+    /// the picture's contours inside them (edge strength `key`) and their dark in close diagonals, the catchlight left
+    /// to the paper — so the look is not lost in the coat's dark markings.
+    pub nib_eyes: f32,
+    /// NIB FUR (0..1, 0 = off): under `nib`, on the hair/fur region the coat's half-tones lifted toward the paper by
+    /// `0.5·key` (the full share from a value of 0.35 up, none under 0.12 — the dark markings kept), a place lighter
+    /// than its surroundings at the body's scale (the value over a 60th of the sheet against the mean over a 15th — a
+    /// flank, a back in the light) lifted further by `3·key` times its excess, and the fur's paper floor raised by
+    /// `0.15·key`, so a coat thins smoothly on its bulges instead of filling to one black mass (`nib_relief`'s islands
+    /// at a lock's scale).
+    pub nib_fur: f32,
+    /// NIB LIFT (0..1, 0 = off): under `nib`, on a figure's subject (a face found) off the fur, the half-tones lifted toward the paper by
+    /// `0.8·key` (the full share from a value of 0.35 up, none under 0.12) — a figure's coat and face left to their
+    /// contours and the hatching kept to the deep shadows of the folds.
+    pub nib_lift: f32,
+    /// NIB CONTACT (0..1, 0 = off): under `nib_anchor` and `nib_occlude`, the cast shadow under the subject made a
+    /// contact patch — a band `key` · a 40th of the sheet deep below the silhouette (not a 120th), on a ground up to a
+    /// value of 0.8 — so a seated figure rests on the ground instead of hanging over it.
+    pub nib_contact: f32,
+    /// NIB FIGURE (0..1, 0 = off): under `nib`, a figure (the silhouette, when a face is found) drawn as a pen draws
+    /// a figure, not by the passes' marks along the flow (the key's share of them dropped there). Before the bone its
+    /// tone is laid in pen hatching read from the picture as given (the armature has no features): the figure's value
+    /// from its own 5th to 95th percentile (a coat that is a middle grey goes to the figure's dark), the face's from its
+    /// own 30th to 95th lifted toward the paper by `0.8·nib_face` (its lit side blank). In cells a 40th of the sheet
+    /// across (their edges wavering) the lines run along the form — the structure tensor's direction, the folds' way —
+    /// a 280th of the sheet apart: along it under 0.85, across it at 60° under 0.55, and closed to a solid black under
+    /// 0.25; every line broken at the picture's contours, so a fold's edge stays white, and cut into pen strokes at most
+    /// a 45th of the sheet long, each a little off its line and angle. The face's features — the profile, the brow, the
+    /// eye, the lips — drawn as the picture's contours on it; the figure's bone line made bold (`1 + 1.5·key` wide).
+    pub nib_figure: f32,
+    /// NIB OBJECT (0..1, 0 = off): under `nib_figure`, the rigid things the figure holds (an umbrella, a stick, a cane —
+    /// found by the detector, their extent by SAM from the box's centre) joined to the figure: off the passes' marks,
+    /// hatched with it, and their own contours (the picture's edges inside them) drawn as firm black lines
+    /// `1 + 1.5·key` times the hatching's width, so a closed umbrella's ribs and handle are drawn, not textured.
+    pub nib_object: f32,
+    /// NIB TUFT (0..1, 0 = off): under `nib`, the near grass drawn as tufts — only on the grass the detector found
+    /// (CLIP ViT-L over a grid of crops a fifth of the sheet across, a cell grass where the grass labels outweigh twenty kinds of ground, sky and wall by 0.6; none found, no tufts), read from the picture as given, off the
+    /// figure and the sky (a cell half over 0.85), on a grid of a 70th of the sheet, a cell whose texture is strong (from the frame's 60th to its 90th percentile) and stands upright (its
+    /// horizontal gradient 1.15 to 1.5 times its vertical), weighted by the eye's attention, takes by `key`·its strength
+    /// a fan of 4 to 9 blades (more in the dark) rooted along its foot, leaning with the grass, bent outward, at the
+    /// middle pen tapering to the finest, one and a half to three cells long by its strength; under the figure's
+    /// silhouette (the contact band) twice as many, longer, and always. The passes' marks starting in such a cell
+    /// dropped by `0.6·key`·its strength.
+    pub nib_tuft: f32,
+    /// NIB CLOSE (0..1, 0 = off): under `nib_figure`, the figure's outline kept whole — along the silhouette's
+    /// boundary, a stretch not within 3 px of a drawn bone line and shorter than `key`·a 40th of the sheet, between two
+    /// drawn stretches, laid as a thin black line (the finest pen, at least a pixel), so a shoulder or a back does not
+    /// fall apart into separate strokes.
+    pub nib_close: f32,
+    /// NIB MASS (0..1, 0 = off): under `nib_tuft`, the dark grass merged into one mass — a tuft's cell whose mean value is
+    /// under 0.6 takes `1 + round(4·key·dark)` fans (dark the smoothstep of `(0.6 − value)/0.25`, times the smoothstep
+    /// of the share of its eight neighbours that are tufts too, from 0.25 to 0.6 — a clump, not a lone tuft), each
+    /// rooted anywhere in the cell, so their blades cross and close into a solid dark; and a cell of a dark clump (under
+    /// 0.6, half its neighbours tufts) drawn whatever its own strength, so the clump is whole.
+    pub nib_mass: f32,
+    /// NIB RIM (0..1, 0 = off): under `nib_figure`, the figure's silhouette (and what it holds) outlined in one line of
+    /// changing weight that parts it from the ground — its boundary laid in pieces of a 60th of the sheet, each as wide
+    /// as the finest pen times `1 + 4·key·shade`, shade the darkness just inside it, so the line swells on the shadow
+    /// side and thins on the lit one.
+    pub nib_rim: f32,
+    /// NIB POOL (0..1, 0 = off): under `nib_figure`, the contact shadows closed to a solid black with the broad pen —
+    /// off the figure, within `key`·a 40th of the sheet under its silhouette (and under what it holds) — only under the
+    /// lowest quarter of each figure's height (each connected piece of the mask), where it meets the ground, not under an
+    /// arm or a hem in the air — where the square
+    /// root of the nearness times `0.5 + 0.5·`the smoothstep of `(0.75 − value)/0.35` passes 0.5, close lines of the
+    /// broadest pen (as far apart as they are wide) — the band deep where the ground is dark, half as deep where it is
+    /// light.
+    pub nib_pool: f32,
+    /// NIB AIR (0..1, 0 = off): under `nib_tone`, the far planes kept airy — where the eye's attention is under 0.5, the
+    /// passes' marks dropped by `0.7·key` times the smoothstep of `(0.5 − attention)/0.4`, so the far hills are a few
+    /// fine lines, not a hatched mass.
+    pub nib_air: f32,
+    /// NIB PEOPLE (0..1, 0 = off): under `nib_figure`, every person is the figure, not only the one whose face prompted
+    /// the silhouette — OWL-ViT's boxes for a person, each box's extent by SAM (clipped to the box), and every detected
+    /// face, joined to the figure, each face read against its own range; so a group is drawn whole, every face lit as
+    /// its own, and a figure seen from behind (no face) is drawn as one.
+    pub nib_people: f32,
+    /// NIB VALUE (0..1, 0 = off): under `nib_figure`, the figure's tone read against the whole picture as well as against
+    /// its own range — a value's rank (the share of the sheet darker than it) lifts the figure's stretched tone toward
+    /// itself by `key` times the smoothstep of `(rank − 0.35)/0.3`, so clothing that is light in its scene (a shirt in
+    /// a dark room, however grey in the photograph) keeps to one layer or paper, and only the scene's darks are stretched.
+    pub nib_value: f32,
+    /// NIB FINE FACE (0..1, 0 = off): under `nib_figure`, a small face (its patch under an eighth of the sheet across)
+    /// drawn with the finest pen — its hatching at the finest width and twice as close, laid only under thresholds lowered
+    /// by `0.04·key` (the skin left to the paper, its hair and deep shadow hatched), its features traced from the
+    /// picture's contours ranked among the small faces' own gradients (not the whole sheet's) and opened by half the
+    /// key, so a group's faces keep their eyes and noses on a soft photograph.
+    pub nib_fine_face: f32,
+    /// NIB SCATTER (0..1, 0 = off): under `nib_tuft`, the tufts rooted by Poisson-disk sampling instead of one per
+    /// cell — the spacing modulated by a smooth noise (clumps where it is high, clearings where it is under `0.3·key`),
+    /// so the grass grows in organic clusters, not on a grid.
+    pub nib_scatter: f32,
+    /// NIB FALLOFF (0..1, 0 = off): under `nib_pool`, the contact shadow fades — solid black only in the narrow band
+    /// where the figure meets the ground (a 600th of the sheet), beyond it broken into long dashes of the broad pen,
+    /// fewer with the distance (kept by `key·(1 − d)^1.5`), so the shadow dissolves into the ground.
+    pub nib_falloff: f32,
+    /// NIB DEPTH (0..1, 0 = off): under `nib_tone`, the eye's attention capped by the picture's depth (Depth-Anything:
+    /// near the smoothstep of `(z − 0.1)/0.4`, by the key's share) — the far hills and the horizon taken by `nib_far`
+    /// and `nib_air` to the finest pen and a few lines, so the planes part as on the near ground.
+    pub nib_depth: f32,
+    /// NIB LUSH (0..1, 0 = off): under `nib_tuft`, the grass the detector found grown thick — every grass cell a tuft's
+    /// candidate by its darkness whatever its texture (its strength floored at `0.7·key` times the smoothstep of
+    /// `(0.65 − value)/0.3`), the scattered roots closer (the Poisson
+    /// radius cut by `0.2·key` in the light grass to `0.4·key` in the dark), so a meadow reads as a dense mass of blades
+    /// and its shadowed clumps cross into one deep dark, not a few clumps.
+    pub nib_lush: f32,
+    /// NIB GLINT (0..1, 0 = off): the specular highlights kept to the paper — a small spot of the picture over
+    /// `1 − 0.08·key` and brighter than its surroundings by a tenth (no larger than a 30th of the sheet across: a sky or
+    /// a white wall is not a glint), opened by a 400th of the sheet; no mark of the passes, the figure's hatching or the
+    /// light's dashes crosses it (a mark cut where it enters), so the metal and the glass keep their shine.
+    pub nib_glint: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -845,6 +1011,37 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -973,6 +1170,37 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1101,6 +1329,37 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1270,6 +1529,37 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1407,6 +1697,37 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1539,6 +1860,37 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1667,6 +2019,37 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1798,15 +2181,49 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
+/// PEN AND INK (7.12.0): steel nibs of several sizes and a black ink on white paper — drawn as the pencil is,
+/// mark by mark along the form in passes coarse to fine (a broad nib for the masses' hatching, a fine one for the
+/// detail), not by the ruled hatching of a density medium; the ink does not rub or lift (no stump, no eraser).
 pub const PEN_INK: MediumProfile = MediumProfile {
     name: "pen-ink",
     value_direction: ValueDirection::LightToDark,
     opacity: Opacity::Transparent,
     white_source: WhiteSource::Surface,
     reversibility: Reversibility::None,
-    stage_budget: 1,
+    stage_budget: 4,
     pickup: 0.0,
     bleed: 0.0,
     body: 1.0,
@@ -1821,8 +2238,8 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     contour: 0.6,
     families: Families::Unified,
     subtractive: false,
-    mark_model: MarkModel::Density,
-    mark: MarkCharacter::BRUSH,
+    mark_model: MarkModel::Continuous,
+    mark: MarkCharacter { role: Some("pen"), stroke_len: 1.0, stroke_width: 0.4, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
     dries: 0.5,
     wash_in: 0.0,
@@ -1926,6 +2343,37 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -2057,6 +2505,37 @@ pub const DURER: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2191,6 +2670,37 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -2322,6 +2832,37 @@ pub const PENCIL: MediumProfile = MediumProfile {
     clip: 0.6, // the hatch stopped at the contours
     tiers: 0.7, // lights blank, half-tones single, shadows crossed
     waver: 0.5, // the pressure wavering along the line
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -2455,6 +2996,37 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -2583,6 +3155,37 @@ pub const PASTEL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2711,6 +3314,37 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2845,6 +3479,37 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
+    nib_face: 0.0,
+    nib_gap: 0.0,
+    nib_relief: 0.0,
+    nib_far: 0.0,
+    nib_occlude: 0.0,
+    nib_eyes: 0.0,
+    nib_fur: 0.0,
+    nib_lift: 0.0,
+    nib_contact: 0.0,
+    nib_figure: 0.0,
+    nib_object: 0.0,
+    nib_tuft: 0.0,
+    nib_close: 0.0,
+    nib_mass: 0.0,
+    nib_rim: 0.0,
+    nib_pool: 0.0,
+    nib_air: 0.0,
+    nib_people: 0.0,
+    nib_value: 0.0,
+    nib_fine_face: 0.0,
+    nib_scatter: 0.0,
+    nib_falloff: 0.0,
+    nib_depth: 0.0,
+    nib_lush: 0.0,
+    nib_glint: 0.0,
 };
 
 /// Every declared medium.

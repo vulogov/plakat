@@ -541,7 +541,7 @@ impl StrokeScore {
             }
             // SUMI-E's registers (see `painter::bone_pass`, `painter::sumi_ink`): the painter dries the sheet
             // before the bone and again before the ink, so a wet-media final bleed sees only those marks wet.
-            if (rec.stage == "bone" || rec.stage == "ink") && dried.as_deref() != Some(rec.stage.as_str()) {
+            if (rec.stage == "bone" || rec.stage == "ink" || rec.stage == "nib") && dried.as_deref() != Some(rec.stage.as_str()) {
                 canvas.dry(0.0);
                 dried = Some(rec.stage.clone());
             }
@@ -681,7 +681,7 @@ impl StrokeScore {
             }
             // SUMI-E's registers (see `painter::bone_pass`, `painter::sumi_ink`): the painter dries the sheet
             // before the bone and again before the ink, so a wet-media final bleed sees only those marks wet.
-            if (rec.stage == "bone" || rec.stage == "ink") && dried.as_deref() != Some(rec.stage.as_str()) {
+            if (rec.stage == "bone" || rec.stage == "ink" || rec.stage == "nib") && dried.as_deref() != Some(rec.stage.as_str()) {
                 canvas.dry(0.0);
                 dried = Some(rec.stage.clone());
             }
