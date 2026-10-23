@@ -674,6 +674,18 @@ pub struct PaintParams {
     pub nib_glint: f32,
     /// NIB WASH (0..1, 0 = off): ink and wash: the ladder laid as washes, then over them as the pens (see `MediumProfile::nib_wash`).
     pub nib_wash: f32,
+    /// NIB WASH DARK (0..1, 0 = off): the pens' hatching held to the darks, the half-tones left to the washes (see `MediumProfile::nib_wash_dark`).
+    pub nib_wash_dark: f32,
+    /// NIB WASH DETAIL (0..1, 0 = off): the finest pen drawing the picture's own detail over the washes (see `MediumProfile::nib_wash_detail`).
+    pub nib_wash_detail: f32,
+    /// NIB WASH LINE (0..1, 0 = off): the bone line traced from the picture itself, its detail kept (see `MediumProfile::nib_wash_line`).
+    pub nib_wash_line: f32,
+    /// NIB WASH SWELL (0..1, 0 = off): the line's width swelling with the strength of its edge (see `MediumProfile::nib_wash_swell`).
+    pub nib_wash_swell: f32,
+    /// NIB WASH AIR (0..1, 0 = off): the far planes left to soft, light washes, the line fading into the distance (see `MediumProfile::nib_wash_air`).
+    pub nib_wash_air: f32,
+    /// NIB WASH SOFT (0..1, 0 = off): the washes from the picture's low band, the high band left to the pens (see `MediumProfile::nib_wash_soft`).
+    pub nib_wash_soft: f32,
     /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
     /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
     pub sumi_dark: f32,
@@ -688,7 +700,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -3420,6 +3432,28 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let g = (p.nib_gap.clamp(0.0, 1.0) * w.max(h) as f32 / 400.0).round().max(1.0) as i32;
         box_blur(&m, w, h, g).iter().map(|x| *x > 1e-6).collect()
     });
+    // NIB WASH DETAIL (see `MediumProfile::nib_wash_detail`): where the picture has a structure of its own — the step
+    // of value across four pixels, from the picture itself (under --new `input` is the smoothed armature), on a LINE:
+    // the gradients round it agreeing on a direction (the structure tensor's coherence over a 7-pixel window past
+    // 0.6), so a gravel, a heap of rubble, a meadow — texture, the high band of a busy picture — stays the wash's.
+    let wash_detail: Option<Vec<bool>> = (nib_wash_n > 0 && p.nib_wash_dark > 0.0 && p.nib_wash_detail > 0.0 && w >= 8 && h >= 8).then(|| {
+        let (wu, hu) = (w as usize, h as usize);
+        let v = box_blur(&crate::paint::ink::value_map(original), w, h, 1);
+        let thr = 0.1 * (1.0 - 0.6 * p.nib_wash_detail.clamp(0.0, 1.0));
+        let (gx, gy) = sobel(&v, w, h);
+        let jxx = box_blur(&gx.iter().map(|g| g * g).collect::<Vec<f32>>(), w, h, 3);
+        let jyy = box_blur(&gy.iter().map(|g| g * g).collect::<Vec<f32>>(), w, h, 3);
+        let jxy = box_blur(&gx.iter().zip(gy.iter()).map(|(a, b)| a * b).collect::<Vec<f32>>(), w, h, 3);
+        (0..wu * hu)
+            .map(|i| {
+                let (x, y) = (i % wu, i / wu);
+                let (x0, x1, y0, y1) = (x.saturating_sub(2), (x + 2).min(wu - 1), y.saturating_sub(2), (y + 2).min(hu - 1));
+                let tr = jxx[i] + jyy[i];
+                let coh = if tr <= 1e-9 { 0.0 } else { ((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]) / (tr * tr) };
+                coh > 0.6 && (v[y * wu + x1] - v[y * wu + x0]).abs().max((v[y1 * wu + x] - v[y0 * wu + x]).abs()) > thr
+            })
+            .collect()
+    });
     for (layer_all, pass) in passes.iter().enumerate() {
         // NIB WASH: the washes' register with its own keys, the pens' with theirs; `layer` counts within the register,
         // so the pens' passes run as pen-ink's own.
@@ -3431,6 +3465,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             _ => p,
         };
         let (nib_band, nib_feat, nib_glint, nib_fig, nib_tufts) = if wash_reg { (None, None, None, None, None) } else { (nib_band.as_ref(), nib_feat.as_ref(), nib_glint.as_ref(), nib_fig.as_ref(), nib_tufts.as_ref()) };
+        // (The pens' clip too: a wash is not stopped at every contour of the picture — cut there it was a heap of dabs.)
+        let clip_edge = if wash_reg { None } else { clip_edge.as_ref() };
         let radius = pass.radius.max(p.min_brush);
         let pass_t0 = std::time::Instant::now();
         // TRIM (see `MediumProfile::trim`): the ground's marks keep CLEAR of the faces — the face grown by this
@@ -3525,9 +3561,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
             }
         };
+        // NIB WASH SOFT (see `MediumProfile::nib_wash_soft`): a wash paints from the picture's low band.
+        let reference = if wash_reg && p.nib_wash_soft > 0.0 { imageops::blur(&reference, (p.nib_wash_soft.clamp(0.0, 1.0) * w.max(h) as f32 / 150.0).max(0.6)) } else { reference };
         if let Some(dir) = std::env::var_os("PLAKAT_PAINT_REFERENCE_DUMP") {
             // Diagnostic: the reference this pass paints from.
-            let _ = reference.save(std::path::Path::new(&dir).join(format!("ref_{layer:02}.png")));
+            let _ = reference.save(std::path::Path::new(&dir).join(format!("ref_{layer_all:02}.png")));
         }
         // ECONOMY OF STRUCTURE (the wash recipe): off the subject a fine brush restates only where the picture
         // HAS something at that brush's scale — an edge, a texture (the local value range of the pass's own
@@ -4231,11 +4269,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // far ground and the sky are the fine pen's (soft over ±0.05 by a hash, as `tiers`).
                 let at_i = iy as usize * w as usize + ix as usize;
                 let mut nib_far_fine = false;
+                let mut pen_q = 0.0f32;
                 if p.nib > 0.0 && p.nibs >= 2.0 && p.nib_tone > 0.0 && !glazing && !cresting {
                     let n = p.nibs.round().max(2.0);
                     let (rc, rf) = (passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius), passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius));
                     let dl = if rc > rf + 1e-6 { ((rc / radius.max(1e-3)).ln() / (rc / rf).ln()).clamp(0.0, 1.0) } else { 0.0 };
                     let q = (dl * n).floor().min(n - 1.0) / (n - 1.0);
+                    pen_q = q;
                     let v = color::linear_luma(color::srgb_to_linear(target)).max(0.0).powf(1.0 / 2.2);
                     let attn = ma_field.as_ref().and_then(|m| m.get(at_i)).copied().unwrap_or(1.0).clamp(0.0, 1.0);
                     // NIB DEPTH (see `MediumProfile::nib_depth`): the attention capped by how near the picture is there.
@@ -4390,9 +4430,28 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     let tl = if p.nib > 0.0 && p.nib_face > 0.0 && on_face { tl + (charcoal_paper_l - tl).max(0.0) * 0.4 * p.nib_face.clamp(0.0, 1.0) } else { tl };
                     // NIB WASH: a wash asked only the key's share of the way from the paper to the tone — the pens draw the rest.
                     let tl = if wash_reg { tl + (charcoal_paper_l - tl).max(0.0) * (1.0 - p.nib_wash.clamp(0.0, 1.0)) } else { tl };
+                    // NIB WASH DETAIL: the wash stops short of the picture's own structure — its tone there left to the pen.
+                    let on_detail = wash_detail.as_ref().is_some_and(|m| m[at_i]);
+                    let tl = if wash_reg && on_detail { tl + (charcoal_paper_l - tl).max(0.0) * 0.5 * p.nib_wash_detail.clamp(0.0, 1.0) } else { tl };
+                    // NIB WASH AIR (see `MediumProfile::nib_wash_air`): toward the far planes the wash lightened.
+                    let tl = match p.nib_depth_map.as_deref().filter(|_| wash_reg && p.nib_wash_air > 0.0).and_then(|m| m.get(at_i)) {
+                        Some(&z) => {
+                            let u = ((z - 0.1) / 0.4).clamp(0.0, 1.0);
+                            tl + (charcoal_paper_l - tl).max(0.0) * 0.5 * p.nib_wash_air.clamp(0.0, 1.0) * (1.0 - u * u * (3.0 - 2.0 * u))
+                        }
+                        None => tl,
+                    };
+                    // NIB WASH DARK: the pens hatch only the darks, the half-tones left to the washes (the threshold on the
+                    // eye's scale: the luma here is linear).
+                    // NIB WASH DETAIL: the finer pens kept where the picture has a structure of its own.
+                    let detail_here = pen_q > 0.49 && on_detail;
+                    if nib_wash_n > 0 && !wash_reg && p.nib_wash_dark > 0.0 && !detail_here && tl > charcoal_paper_l * (1.0 - 0.8 * p.nib_wash_dark.clamp(0.0, 1.0)).powf(2.2) {
+                        return None;
+                    }
                     let white = p.nib_white.clamp(0.0, 1.0) + if p.nib_face > 0.0 && on_face { 0.3 * p.nib_face.clamp(0.0, 1.0) } else { 0.0 } + if p.nib_fur > 0.0 && hair_here { 0.15 * p.nib_fur.clamp(0.0, 1.0) } else { 0.0 };
                     let tl = if p.nib > 0.0 && white > 0.0 { tl.max(charcoal_paper_l * white) } else { tl };
-                    if under > tl * (1.0 + PAPER_TOL) {
+                    // (NIB WASH DETAIL: the detail is a line, drawn over a wash that already carries its tone.)
+                    if under > tl * (1.0 + PAPER_TOL) || (detail_here && nib_wash_n > 0 && !wash_reg) {
                         paper_need = Some((tl / under).clamp(0.03, 0.99).powf(1.0 / PAPER_OVERLAP));
                         // NIB: the ink laid black — the residual's charge pulled to the fullest by the key, the
                         // tone left to how many lines the cell takes.
@@ -5441,7 +5500,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // THE BONE (see `MediumProfile::bone`): the structure's contours as calligraphic brush lines, over the washes.
     if p.bone > 0.0 && placed < p.budget {
         canvas.dry(0.0);
-        bone_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), ma_field.as_deref(), &mut placed, &mut k);
+        // NIB WASH LINE (see `MediumProfile::nib_wash_line`): the line from the picture, not the smoothed armature.
+        let bone_src = if nib_wash_n > 0 && p.nib_wash_line > 0.0 && original.dimensions() == input.dimensions() { original } else { input };
+        bone_pass(&mut canvas, &mut score, bone_src, p, protect_all.as_deref(), ma_field.as_deref(), &mut placed, &mut k);
     }
     // NIB POOL and NIB RIM (see `MediumProfile::nib_pool`, `nib_rim`): the contact shadows and the figure's outline.
     // (the replay dries once when the stage turns to `nib`, so the accents after it go on without a second drying)
@@ -7656,9 +7717,12 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         }
         // The darker side of the edge along the chain, the eye's attention on it, and how much of it is the subject.
         let (mut dark, mut a_sum, mut s_sum, mut c_sum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut g_sum, mut z_sum) = (0.0f32, 0.0f32);
         for q in c {
             let i = at(*q);
             let g = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt().max(1e-6);
+            g_sum += g;
+            z_sum += p.nib_depth_map.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(1.0);
             let (ux, uy) = (gx[i] / g * 1.5, gy[i] / g * 1.5);
             let (v1, v2) = (value[at([q[0] + ux, q[1] + uy])], value[at([q[0] - ux, q[1] - uy])]);
             dark += 1.0 - v1.min(v2);
@@ -7697,6 +7761,17 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         } else {
             0.0
         };
+        // NIB WASH AIR (see `MediumProfile::nib_wash_air`): the chain's nearness by the depth map — past a tenth of the
+        // depth no line, thinner toward it.
+        let near = if p.nib_wash > 0.0 && p.nib_wash_air > 0.0 && p.nib_depth_map.is_some() {
+            let u = ((z_sum / c.len() as f32 - 0.1) / 0.4).clamp(0.0, 1.0);
+            1.0 - p.nib_wash_air.clamp(0.0, 1.0) * (1.0 - u * u * (3.0 - 2.0 * u))
+        } else {
+            1.0
+        };
+        if near < 0.05 {
+            continue;
+        }
         // BONE FADE (see `MediumProfile::bone_fade`): where the eye does not go, no line and no dot.
         if p.bone_fade > 0.0 && attn.is_some() && a < p.bone_fade.clamp(0.0, 1.0) * 0.5 {
             continue;
@@ -7797,6 +7872,15 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         // NIB (see `MediumProfile::nib`): ink is never grey — the line laid at the ink's full black, at the finest
         // pen's width (a 1800th of the long side under `nibs`) pressed by the weight.
         let width = if p.nib > 0.0 && p.nibs >= 1.0 { width + ((w.max(h) as f32 / 1800.0) * (1.0 + 1.5 * wt) - width) * p.nib.clamp(0.0, 1.0) } else { width };
+        // NIB WASH SWELL (see `MediumProfile::nib_wash_swell`): the width by the edge's strength, toward a 400th of the
+        // sheet on a hard step; thinned toward the far planes (`nib_wash_air`).
+        let width = if p.nib > 0.0 && p.nib_wash > 0.0 && p.nib_wash_swell > 0.0 {
+            let gm = g_sum / c.len() as f32;
+            width + ((w.max(h) as f32 / 400.0) - width).max(0.0) * p.nib_wash_swell.clamp(0.0, 1.0) * (1.0 - (-3.0 * gm).exp())
+        } else {
+            width
+        };
+        let width = if near < 1.0 { (width * (0.4 + 0.6 * near)).max(1.0) } else { width };
         // NIB FIGURE (see `MediumProfile::nib_figure`): on the figure the line bold.
         let width = match &fig {
             Some(fm) if { let q = cc[cc.len() / 2]; fm[(q[1].round().clamp(0.0, (hu - 1) as f32) as usize) * wu + q[0].round().clamp(0.0, (wu - 1) as f32) as usize] } => width * (1.0 + 1.5 * p.nib_figure.clamp(0.0, 1.0)),
