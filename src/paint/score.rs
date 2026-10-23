@@ -620,7 +620,7 @@ impl StrokeScore {
     fn cross_passes(&self, canvas: &mut Canvas, from: usize, to: usize, n: usize) {
         for idx in from..to.min(n) {
             if self.header.bleed > 0.0 {
-                canvas.bleed_with(self.header.bleed * crate::paint::painter::pass_bleed_taper(idx, n), self.header.diffuse);
+                canvas.bleed_with(self.header.bleed * crate::paint::painter::stage_bleed_taper(self.header.stages.as_deref(), idx, n), self.header.diffuse);
             }
             if let Some((s, r, m, g, e)) = self.header.flow {
                 if let Some(t) = crate::paint::painter::flow_taper(idx, n) {
