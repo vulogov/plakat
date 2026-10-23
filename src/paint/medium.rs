@@ -912,6 +912,15 @@ pub struct MediumProfile {
     /// tonal pools; the high band (the edges, the texture) left to the pens and the line, so a heap of rubble is a
     /// wash under a few lines, not a mottle of small washes.
     pub nib_wash_soft: f32,
+    /// NIB WASH GAMMA (0..1, 0 = off; with `nib_wash`): the wash's density raised before the bleed spreads it — a wash
+    /// asked `paper·(l/paper)^γ`, `γ = 1 + 0.5·key`: the half-tones and the darks deepened, the paper and the black
+    /// kept, so the ink the bleed and the feathering carry over a wider area does not leave the sheet paler than
+    /// the picture.
+    pub nib_wash_gamma: f32,
+    /// NIB WASH FLAT (0..1, 0 = off; with `nib_wash_dark`): the pens' hatching in the darks only where the dark has an
+    /// edge or a texture of its own — the picture's gradient over a 9-pixel window above its own median (the key's
+    /// share of it): a flat dark, a monolithic rock face or a deep shadow, is the wash's solid pool, not a hatch.
+    pub nib_wash_flat: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -1085,6 +1094,8 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -1251,6 +1262,8 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1417,6 +1430,8 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1624,6 +1639,8 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1799,6 +1816,8 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1969,6 +1988,8 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -2135,6 +2156,8 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -2304,6 +2327,8 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// PEN AND INK (7.12.0): steel nibs of several sizes and a black ink on white paper — drawn as the pencil is,
@@ -2473,6 +2498,8 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -2642,6 +2669,8 @@ pub const DURER: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2814,6 +2843,8 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -2983,6 +3014,8 @@ pub const PENCIL: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -3154,6 +3187,8 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -3320,6 +3355,8 @@ pub const PASTEL: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -3486,6 +3523,8 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -3658,6 +3697,8 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     nib_wash_swell: 0.0,
     nib_wash_air: 0.0,
     nib_wash_soft: 0.0,
+    nib_wash_gamma: 0.0,
+    nib_wash_flat: 0.0,
 };
 
 /// Every declared medium.

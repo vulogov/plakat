@@ -1876,6 +1876,8 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.nib_wash_swell = plan.medium.nib_wash_swell;
     params.nib_wash_air = plan.medium.nib_wash_air;
     params.nib_wash_soft = plan.medium.nib_wash_soft;
+    params.nib_wash_gamma = plan.medium.nib_wash_gamma;
+    params.nib_wash_flat = plan.medium.nib_wash_flat;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2747,6 +2749,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.nib_wash_swell = m.nib_wash_swell;
         params.nib_wash_air = m.nib_wash_air;
         params.nib_wash_soft = m.nib_wash_soft;
+        params.nib_wash_gamma = m.nib_wash_gamma;
+        params.nib_wash_flat = m.nib_wash_flat;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2896,6 +2900,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.nib_wash_swell { params.nib_wash_swell = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_air { params.nib_wash_air = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_soft { params.nib_wash_soft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_gamma { params.nib_wash_gamma = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_flat { params.nib_wash_flat = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
