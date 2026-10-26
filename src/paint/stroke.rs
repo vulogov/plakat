@@ -107,6 +107,9 @@ pub struct BrushConfig {
     /// KASURE (0..1, 0 = off): the flying white — the lanes dropping out along the mark by a slow hash of
     /// their own, by up to this share at its end. In the header.
     pub kasure: f32,
+    /// KATSU (0..1, 0 = off): the dry brush by the paper's grain, its threshold rising with the mark's speed
+    /// (see `MediumProfile::katsu`). In the header.
+    pub katsu: f32,
     /// NIJIMI (0..1, 0 = off): the ink feathering into the paper — the reach widened, the halo caught by the
     /// paper's fibres. In the header.
     pub nijimi: f32,
@@ -149,7 +152,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -250,6 +253,21 @@ impl Stroke {
     /// travelled — the colour at the start where the mark begins, the colour at the end where it lifts, the
     /// pickup and depletion riding on top as ever. `None` is `rasterize` to the bit.
     pub fn rasterize_ramp(&self, canvas: &mut Canvas, brush: &BrushConfig, load_end: Option<&[f32]>) {
+        self.rasterize_inner(canvas, brush, load_end, None)
+    }
+
+    /// NIB WASH AGENT (see `MediumProfile::nib_wash_agent`): `rasterize_ramp` with the mark LOOKING AT THE SHEET —
+    /// `profile` the picture's target luma (linear) at each point of `path`, and at every pixel a hair gives its
+    /// ink by the residual between the sheet there and the target, `(C − T)/C · (1 + 4·k)`, nothing where the
+    /// sheet has reached it.
+    pub fn rasterize_agent(&self, canvas: &mut Canvas, brush: &BrushConfig, load_end: Option<&[f32]>, profile: &[f32], k: f32) {
+        if profile.is_empty() {
+            return self.rasterize_inner(canvas, brush, load_end, None);
+        }
+        self.rasterize_inner(canvas, brush, load_end, Some((profile, 1.0 + 4.0 * k.clamp(0.0, 1.0))))
+    }
+
+    fn rasterize_inner(&self, canvas: &mut Canvas, brush: &BrushConfig, load_end: Option<&[f32]>, agent: Option<(&[f32], f32)>) {
         let pts = densify(&self.path);
         if pts.is_empty() || self.load.is_empty() {
             return;
@@ -406,6 +424,8 @@ impl Stroke {
             }
             let (perpx, perpy) = (-dy, dx);
             let t = if pts.len() > 1 { i as f32 / (pts.len() - 1) as f32 } else { 0.0 };
+            // NIB WASH AGENT: the target under this point of the mark, by its share of the path.
+            let agent_t: Option<(f32, f32)> = agent.map(|(pf, k)| (pf[((t * (pf.len() - 1) as f32).round() as usize).min(pf.len() - 1)], k));
             // THE COMMA (see `BrushConfig::comma`): the pressure along the mark, swelling the width and the
             // deposit where the hand presses and lifting them toward the ends.
             let press = if brush.comma > 0.0 && !brush.flat_ends {
@@ -529,6 +549,8 @@ impl Stroke {
                     }
                     None => edge,
                 };
+                // KATSU (see `BrushConfig::katsu`): the brush's speed at this point of the mark.
+                let katsu_t = if brush.katsu > 0.0 { brush.katsu.clamp(0.0, 1.0) * t.powf(1.5) } else { 0.0 };
                 // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
                 // own slow hash falls under the dryness at this point of the mark.
                 let edge = if brush.kasure > 0.0 {
@@ -609,7 +631,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau, wv_press);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
                 }
             }
         }
@@ -698,7 +720,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, agent_t: Option<(f32, f32)>) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
@@ -719,12 +741,23 @@ impl Stroke {
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
         let mut df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        // NIB WASH AGENT (see `Stroke::rasterize_agent`): the hair gives its ink by the residual between the sheet
+        // under it, as it is now, and the target — nothing where the sheet has reached it.
+        if let Some((tg, k)) = agent_t {
+            let c = crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(canvas.color_at(px, py)));
+            let f = ((c - tg) / c.max(1e-3) * k).clamp(0.0, 1.0);
+            if f <= 1e-4 {
+                return;
+            }
+            df *= f;
+        }
         // The dry brush: a mark laid below 0.6 wet no longer floods the hollows; the drier it is, the higher
         // the fibre it must find to leave paint. The paper's relief is the same deterministic grain the
         // granulation settles into, so the skips and the mottle share one tooth. Read from the mark's OWN
         // wetness, not the bristle's running one: that decays along every stroke, and read there the tail of
         // every long wash went dry and the whole sheet stippled and darkened.
-        if brush.skip > 0.0 {
+        // KATSU (see `BrushConfig::katsu`): the threshold raised by the mark's speed, whatever its water.
+        if brush.skip > 0.0 || katsu_t > 0.0 {
             // ...and on a mark laid DRY, a bristle whose charge has run out — the dry tail of a depleting
             // mark — reaches only the raised fibres, so the tail breaks on the tooth instead of thinning
             // evenly. A wet mark is never broken, charge or no charge: water floods the hollows. (Full from
@@ -732,8 +765,8 @@ impl Stroke {
             let base = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
             let spent = 1.0 - (Self::load_norm(load) / Self::load_norm(&self.load).max(1e-6)).clamp(0.0, 1.0);
             let dryness = base.max(spent * spent * (base * 4.0).min(1.0));
-            if dryness > 0.0 {
-                let thr = brush.skip.clamp(0.0, 1.0) * dryness * 0.9;
+            let thr = (brush.skip.clamp(0.0, 1.0) * dryness * 0.9).max(katsu_t * 0.9);
+            if thr > 0.0 {
                 let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
                 let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
                 df *= t * t * (3.0 - 2.0 * t);
@@ -888,6 +921,31 @@ mod tests {
         s.rasterize_ramp(&mut none, &BrushConfig::default(), None);
         assert_eq!(plain.to_image().into_raw(), none.to_image().into_raw(), "no end charge: the plain rasterize to the bit");
         assert_ne!(plain.to_image().into_raw(), ramped.to_image().into_raw());
+    }
+
+    #[test]
+    fn an_agent_mark_gives_its_ink_by_the_residual_and_none_where_the_sheet_has_the_tone() {
+        // A mark across a white sheet with a profile: the target 0.3 over its first half, the paper's 1.0 over
+        // the second. Ink lands on the first half only; a second pass over it adds less than the first did.
+        let pal = crate::paint::palette::SUMI;
+        let ink = crate::paint::canvas::darkest_pigment(&pal);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[ink] = 3.0;
+        let brush = BrushConfig::default();
+        let st = Stroke { path: vec![[4.0, 10.0], [36.0, 10.0]], width0: 6.0, width1: 6.0, load, pressure: 1.0, wetness: 0.5 };
+        let prof = vec![0.3f32, 1.0];
+        let mut c = Canvas::white(40, 20, pal, 0.85);
+        let luma = |c: &Canvas, x: u32, y: u32| crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(c.color_at(x, y)));
+        // (the white sheet's own luma is a little under 1: the paper, not a lamp)
+        let blank = luma(&c, 32, 10);
+        st.rasterize_agent(&mut c, &brush, None, &prof, 1.0);
+        let first = luma(&c, 10, 10);
+        assert!(first < blank - 0.05, "ink laid where the target is dark ({first:.3} on {blank:.3})");
+        assert!((luma(&c, 32, 10) - blank).abs() < 1e-6, "none where the sheet already has the target's tone ({:.3} vs {blank:.3})", luma(&c, 32, 10));
+        st.rasterize_agent(&mut c, &brush, None, &prof, 1.0);
+        let second = luma(&c, 10, 10);
+        assert!(first - second < 0.5 * (1.0 - first), "the second mark adds less than the first ({first:.3} → {second:.3})");
+        assert!(second >= 0.3 - 0.05, "and the sheet does not run past the target ({second:.3})");
     }
 
     #[test]

@@ -1813,6 +1813,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.brush.tsuke = plan.medium.tsuke;
     params.ma = plan.medium.ma;
     params.brush.kasure = plan.medium.kasure;
+    params.brush.katsu = plan.medium.katsu;
     params.brush.nijimi = plan.medium.nijimi;
     params.brush.turn = plan.medium.turn;
     params.yohaku = plan.medium.yohaku;
@@ -1891,6 +1892,18 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.nib_wash_edge = plan.medium.nib_wash_edge;
     params.nib_wash_depth = plan.medium.nib_wash_depth;
     params.nib_wash_scale = plan.medium.nib_wash_scale;
+    params.nib_wash_levels = plan.medium.nib_wash_levels;
+    params.nib_wash_faces = plan.medium.nib_wash_faces;
+    params.nib_wash_rag = plan.medium.nib_wash_rag;
+    params.nib_wash_mask = plan.medium.nib_wash_mask;
+    params.nib_wash_half = plan.medium.nib_wash_half;
+    params.nib_wash_grain = plan.medium.nib_wash_grain;
+    params.nib_wash_grade = plan.medium.nib_wash_grade;
+    params.nib_wash_profile = plan.medium.nib_wash_profile;
+    params.nib_wash_streak = plan.medium.nib_wash_streak;
+    params.nib_wash_sweep = plan.medium.nib_wash_sweep;
+    params.nib_wash_water = plan.medium.nib_wash_water;
+    params.nib_wash_agent = plan.medium.nib_wash_agent;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2699,6 +2712,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.brush.tsuke = m.tsuke;
         params.ma = m.ma;
         params.brush.kasure = m.kasure;
+        params.brush.katsu = m.katsu;
         params.brush.nijimi = m.nijimi;
         params.brush.turn = m.turn;
         params.yohaku = m.yohaku;
@@ -2777,6 +2791,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.nib_wash_edge = m.nib_wash_edge;
         params.nib_wash_depth = m.nib_wash_depth;
         params.nib_wash_scale = m.nib_wash_scale;
+        params.nib_wash_levels = m.nib_wash_levels;
+        params.nib_wash_faces = m.nib_wash_faces;
+        params.nib_wash_rag = m.nib_wash_rag;
+        params.nib_wash_mask = m.nib_wash_mask;
+        params.nib_wash_half = m.nib_wash_half;
+        params.nib_wash_grain = m.nib_wash_grain;
+        params.nib_wash_grade = m.nib_wash_grade;
+        params.nib_wash_profile = m.nib_wash_profile;
+        params.nib_wash_streak = m.nib_wash_streak;
+        params.nib_wash_sweep = m.nib_wash_sweep;
+        params.nib_wash_water = m.nib_wash_water;
+        params.nib_wash_agent = m.nib_wash_agent;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2863,6 +2889,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.tsuke { params.brush.tsuke = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.ma { params.ma = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.kasure { params.brush.kasure = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.katsu { params.brush.katsu = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nijimi { params.brush.nijimi = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.turn { params.brush.turn = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.yohaku { params.yohaku = v.clamp(0.0, 1.0); }
@@ -2941,6 +2968,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.nib_wash_edge { params.nib_wash_edge = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_depth { params.nib_wash_depth = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_scale { params.nib_wash_scale = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_levels { params.nib_wash_levels = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_faces { params.nib_wash_faces = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_rag { params.nib_wash_rag = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_mask { params.nib_wash_mask = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_half { params.nib_wash_half = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_grain { params.nib_wash_grain = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_grade { params.nib_wash_grade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_profile { params.nib_wash_profile = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_streak { params.nib_wash_streak = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_sweep { params.nib_wash_sweep = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_water { params.nib_wash_water = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_agent { params.nib_wash_agent = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }

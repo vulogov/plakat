@@ -85,6 +85,8 @@ pub struct Canvas {
     /// ground seen through it — `ground × Π R_i^(density_i)` (Beer–Lambert) — so a dark is the SAME hue at a
     /// higher density, a tint keeps its hue, and two glazes multiply. Off: the covering film-build model.
     transmittance: bool,
+    /// NIB WASH WATER (see `seep`): the pigment snapshot kept at every `mark_film`, so the pass's own ink can seep.
+    seep: bool,
     /// `ln R_i` per pigment (linear reflectance), filled when `transmittance` is on.
     ln_r: Vec<[f32; 3]>,
     /// A CLIP: while set, strokes lay paint only where it is true (a wash brush working INSIDE a shape —
@@ -140,7 +142,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -244,6 +246,12 @@ impl Canvas {
             return amount;
         }
         delta.iter().take(self.n).zip(&self.hide_c).map(|(d, h)| d.max(0.0) * h).sum()
+    }
+
+    /// NIB WASH WATER: keep the pigment snapshot at every `mark_film`, for `seep`.
+    pub fn with_seep(mut self, on: bool) -> Self {
+        self.seep = on;
+        self
     }
 
     pub fn with_transmittance(mut self, on: bool) -> Self {
@@ -415,8 +423,66 @@ impl Canvas {
     /// Remember the film as it is now (see `BrushConfig::film_cap`): the start of a wash pass.
     pub fn mark_film(&mut self) {
         self.film_mark = self.film.clone();
-        if self.transmittance {
+        if self.transmittance || self.seep {
             self.conc_mark = self.conc.clone();
+        }
+    }
+
+    /// NIB WASH WATER (see `MediumProfile::nib_wash_water`): the pass's own ink SEEPS through the water — the
+    /// pigment laid since `mark_film` (and only it: what was there before stays where it was) diffuses over the
+    /// wet cells, each step a cell taking its 3×3 mean by its wetness, `24·water` steps; dry cells take none,
+    /// and give their nothing (a wash's edge thins into the water as it spreads). Deterministic; a no-op
+    /// without the snapshot (`with_seep`).
+    pub fn seep(&mut self, water: f32) {
+        let wtr = water.clamp(0.0, 1.0);
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        if wtr <= 0.0 || self.conc_mark.len() != px * n || w < 3 || h < 3 {
+            return;
+        }
+        let mut fresh: Vec<f32> = (0..px * n).map(|i| (self.conc[i] - self.conc_mark[i]).max(0.0)).collect();
+        let mut ffilm: Vec<f32> = (0..px).map(|p| (self.film[p] - self.film_mark.get(p).copied().unwrap_or(0.0)).max(0.0)).collect();
+        if !ffilm.iter().any(|&f| f > 1e-6) {
+            return;
+        }
+        let wet: Vec<f32> = self.wetness.iter().map(|v| v.clamp(0.0, 1.0)).collect();
+        let iters = (24.0 * wtr).round().max(1.0) as usize;
+        let mut cs = vec![0f32; n];
+        for _ in 0..iters {
+            let src = fresh.clone();
+            let srcf = ffilm.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let p = y * w + x;
+                    let a = wet[p];
+                    if a <= 1e-4 {
+                        continue;
+                    }
+                    let mut fs = 0.0f32;
+                    cs.iter_mut().for_each(|c| *c = 0.0);
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                            let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                            let q = ny * w + nx;
+                            fs += srcf[q];
+                            for c in 0..n {
+                                cs[c] += src[q * n + c];
+                            }
+                        }
+                    }
+                    ffilm[p] = ffilm[p] * (1.0 - a) + fs / 9.0 * a;
+                    for c in 0..n {
+                        fresh[p * n + c] = fresh[p * n + c] * (1.0 - a) + cs[c] / 9.0 * a;
+                    }
+                }
+            }
+        }
+        for i in 0..px * n {
+            self.conc[i] = self.conc_mark[i] + fresh[i];
+        }
+        for p in 0..px {
+            self.film[p] = self.film_mark.get(p).copied().unwrap_or(0.0) + ffilm[p];
         }
     }
 
@@ -1822,6 +1888,32 @@ pub fn coolest_pigment(palette: &Palette) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ink_seeps_only_through_the_water_and_only_the_fresh_ink() {
+        // A 24×24 sheet: the pen's dot laid dry before the mark; then a wet ink square (6..12) and a ring of
+        // clear water round it (3..15); the seep carries the square's ink into the water, not past it, and
+        // the dot stays where the pen put it.
+        let pal = crate::paint::palette::SUMI;
+        let mut c = Canvas::white(24, 24, pal, 0.85).with_seep(true);
+        let ink = darkest_pigment(&pal);
+        let mut dot = vec![0f32; pal.pigments.len()];
+        dot[ink] = 4.0;
+        c.deposit(1, 1, &dot, 0.0);
+        let dot_before = c.conc[c.idx(1, 1) + ink];
+        c.mark_film();
+        let sq = |a: f32, b: f32| vec![[a, a], [b, a], [b, b], [a, b]];
+        let clear = vec![0f32; pal.pigments.len()];
+        c.fill_rings(&sq(3.0, 15.0), &clear, 0.9, 1.0);
+        c.fill_rings(&sq(6.0, 12.0), &dot, 0.9, 1.0);
+        let at = |c: &Canvas, x: u32, y: u32| c.conc[c.idx(x, y) + ink];
+        assert!(at(&c, 4, 9) < 1e-6, "the water carries no ink before the seep");
+        c.seep(1.0);
+        assert!(at(&c, 4, 9) > 1e-3, "the ink seeped into the water beside the square ({:.4})", at(&c, 4, 9));
+        assert!(at(&c, 1, 9) < 1e-6, "and not onto the dry paper past it ({:.4})", at(&c, 1, 9));
+        assert!((at(&c, 1, 1) - dot_before).abs() < 1e-6, "the pen's dot stays ({:.4} vs {:.4})", at(&c, 1, 1), dot_before);
+        assert!(at(&c, 9, 9) > at(&c, 4, 9), "the square keeps more than its halo");
+    }
 
     #[test]
     fn with_the_hiding_on_a_lake_laid_thick_lets_the_ground_through_and_a_cadmium_does_not() {

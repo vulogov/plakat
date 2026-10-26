@@ -562,6 +562,15 @@ pub struct MediumProfile {
     /// dropping out one by one by a slow hash of their own (by up to this share at the mark's end, rising with
     /// the square root of its cube), so the white of the paper streaks along the stroke's direction. In the header.
     pub kasure: f32,
+    /// KATSU (0..1, 0 = off): 渇筆, the DRY BRUSH BY THE PAPER'S GRAIN AND THE MARK'S SPEED — along every mark
+    /// the paint's threshold on the paper's relief rises with the brush's speed (its position along the mark,
+    /// as `kasure` reads it: the three-halves power), to the key at the mark's end, whatever the mark's water,
+    /// so a mark starts full and ends laying ink on the standing fibres alone — the bristles' tracks the
+    /// paper's own, not a lane's hash (`kasure`) nor a contour's tear (`nib_wash_rag`). `skip` is the same gate
+    /// read from the mark's dryness. On a pen's line it shows nothing (a hair's width has no grain to read);
+    /// its place is the broad swept wash (`nib_wash_sweep`), whose marks it also lays drier (wetness
+    /// `0.8 − 0.5·key`) with uneven hairs (streak `0.6·key`). In the header.
+    pub katsu: f32,
     /// NIJIMI (0..1, 0 = off): the ink bleeding into an absorbent sheet — the mark's reach widened by up to
     /// `0.8·nijimi` (more for a wetter mark), the halo beyond its body falling off and caught by the paper's
     /// fibres (the relief standing above a threshold that rises outward), a soft feathered edge; and the water
@@ -986,8 +995,10 @@ pub struct MediumProfile {
     /// to this many bands: the lightest the paper itself (no wash there), each other its band's lighter edge
     /// (four: the paper, and washes at three quarters, a half and a quarter of the value). The planes are laid as
     /// WASHES — area fills, not strokes: one per plane from the lightest to the darkest, each covering every
-    /// plane as dark as itself (the washes stack, as three washes of one ink do), its charge found on scrap
-    /// paper so the stack reads the plane's tone; a plane's mask opened by a pixel or two and its specks dropped
+    /// plane as dark as itself (the washes stack, as three washes of one ink do), the INK ALONE (the palette's
+    /// darkest pigment) thinned, its charge found on scrap paper so the stack reads the plane's tone (a grey's
+    /// mixture carried white — a fog over the drawing, and at a light enough grey white alone, laid as a slab
+    /// lighter than the paper); a plane's mask opened by a pixel or two and its specks dropped
     /// (a plane is a mass), its edge feathered a 500th of the sheet. The register's stroke passes then lay
     /// nothing (the dry brush's pass excepted, `nib_wash_dry`). A wash reading the smoothed picture with a
     /// soft brush tracked its every gradient — a smear of tone with no edge anywhere (the quantised reference
@@ -1015,6 +1026,117 @@ pub struct MediumProfile {
     /// where they are, under the pens' line), the planes between by a geometric ladder; a darker plane kept
     /// within the lighter (the washes stack). Off, every plane from the one 256th.
     pub nib_wash_scale: f32,
+    /// NIB WASH LEVELS (0..1, 0 = off; with `nib_wash_planes`): the planes' THRESHOLDS BY THE PICTURE — moved from
+    /// the even steps of the value (a quarter, a half, three quarters) toward the picture's own quantiles (the
+    /// values that cut its smoothed, air-lifted histogram into equal shares), by the key. A station's cliffs
+    /// lay within one step and came out one grey plane; cut at the picture's quantiles, the planes divide
+    /// what the picture has most of. Each plane's tone moves from its band's lighter edge toward the band's
+    /// mean value by the key — a plane cut at a quantile is a quarter of the sheet, and the stack reads the
+    /// picture's mass only at the mean (at the lighter edges a grassy hillside came out a fifth too light).
+    pub nib_wash_levels: f32,
+    /// NIB WASH FACES (0..1, 0 = off; with `nib_wash_planes` and the face mask): the FACES THE PEN'S — a face's
+    /// value lifted toward the paper by a quarter of the key before the quantising, so it falls into a lighter
+    /// plane than the figure's dark mass and the fill does not bury the drawing; and the pens' hatching on a
+    /// face freed of the dark gate (`nib_wash_dark`) by the key, so the pen models the face as pen-ink does —
+    /// the eyes, the profile, the folds — before any wash is laid.
+    pub nib_wash_faces: f32,
+    /// NIB WASH RAG (0..1, 0 = off; with `nib_wash_planes`): a plane's CONTOUR TORN — its rings resampled a base
+    /// feather (a 500th of the sheet) apart and every point moved along the boundary's normal by a noise along
+    /// the ring (nodes two feathers apart, interpolated), up to one and a half feathers times the key times the
+    /// plane's darkness on the eye's scale (the dark plane's edge torn most, the lightest's a quarter as much):
+    /// a dry brush's ragged edge, where the cut mass was a blot with an optical blur round it. The bloom
+    /// (`nib_wash_edge`) rises from the torn edge. (Bristle tracks — streaks out along the normal, their reach
+    /// cut by a noise — were a comb of rays round every light hole, at any period.) In the rings as recorded,
+    /// so the replay lays the same.
+    pub nib_wash_rag: f32,
+    /// NIB WASH MASK (0..1, 0 = off; with `nib_wash_planes`): the PEN KEPT OUT OF THE DARKEST PLANE — a pen's
+    /// value lifted toward the paper by the key times the square of how deep the point lies in the darkest
+    /// plane (1 through its band, falling across the band above it; the planes' thresholds as the washes cut
+    /// them), so past the dark gate (`nib_wash_dark`) no pen lands there and the mass is the wash's blot alone:
+    /// with the washes the ink alone (transparent), the hatching under the darkest plane showed through it —
+    /// a fox's body a black hatched slab, a cliff's crack a net. The lines (`nib_wash_detail`) and the faces
+    /// (`nib_wash_faces`) are not masked.
+    pub nib_wash_mask: f32,
+    /// NIB WASH HALF (0..1, 0 = off; with `nib_wash_dark`): the HALF-TONES' PEN — the dark gate opened for the
+    /// finest pen alone, on the passes laid along the form (not the crossing ones), on the near planes (the depth
+    /// map's near half), where the picture has a texture (`nib_wash_flat`'s gate): from the gate's edge up by
+    /// three quarters of the key of the way to the paper on the eye's scale (0.52 to 0.88 at `nib_wash_dark`
+    /// 0.6 and key 1), the pen asked only a half of the key's share of the residual there, the rest the wash's.
+    /// A single open hatch of the fine pen in the half-tones — a meadow, a gravel, a roof's tiles — where the
+    /// gate had left nothing but the planes' five flat tones.
+    pub nib_wash_half: f32,
+    /// NIB WASH GRAIN (0..1, 0 = off; with `nib_wash_planes`, three planes or more): the SMALL DARKS KEPT —
+    /// the picture's two darkest bands at the darkest plane's smoothing, their pieces over a `(1 + 15·key)`th
+    /// of the plane's least area (a 4000th of the sheet; 65 pixels at key 1), added to every plane's mask past
+    /// its opening and kept past its least area (so the stack carries them to the plane's full tone), their
+    /// edge the base feather with no bloom (bloomed, a speck was a soft black blot): a stone,
+    /// a window, a trunk, a stack of rubble — the darks under a 32-pixel mass the opening and the least area
+    /// swept away. The light specks stay swept: a plane is a mass, and a dark speck is the drawing's.
+    pub nib_wash_grain: f32,
+    /// NIB WASH GRADE (0..1, 0 = off; with `nib_wash_planes`): a TONE WITHIN EACH PLANE — over a plane's own
+    /// band (not the darker planes' it covers), two sub-steps: the band's darker two thirds filled again and
+    /// its darkest third over that, each a third of the key's share of the step to the plane below darker
+    /// (opened a pixel, its pieces over a quarter of the least area, the edge the base feather, no tearing):
+    /// three tones to a plane, fifteen to five planes — the modelling inside a plane that five flat tones had
+    /// none of: a cliff's strata, a heap of rubble's shadow side. On a SWEPT plane with the agent
+    /// (`nib_wash_sweep`, `nib_wash_agent`) the key is instead the mark's TARGET — between the plane's flat tone
+    /// (0) and the picture's own value at the darkest plane's smoothing (1): at 1 the sheet was the picture
+    /// through frosted glass, at 0 a flat mass laid by the brush; a half keeps a plane's body with the
+    /// picture's modelling inside it.
+    pub nib_wash_grade: f32,
+    /// NIB WASH PROFILE (0..1, 0 = off; with `nib_figure` and `nib_fine_face`): EVERY FACE DRAWN AS A SMALL ONE —
+    /// whatever its size, the figure's hatching on it at the finest width and twice as close, its layers' thresholds
+    /// lowered by `nib_fine_face`, its features traced among the faces' own gradients with the hair and the
+    /// beard flattened out of the field (their edges took the face's whole budget of gradients, and a soft eye
+    /// never ranked); the hatching's two layers dropped on a face, the wash modelling it and the pen keeping
+    /// only the solid dark (the eye's socket, the nostril, the mouth's shadow) and the features — a face in a
+    /// few lines, as the ink painters drew it; and on a face the ladder's dark gate opened (`nib_wash_faces`)
+    /// for the finest pen alone. The coarse cross-hatch on a face at the figure's width (a 900th of the sheet,
+    /// lines a 280th apart, three directions) read as scars; one way along the form, as a wire mesh.
+    pub nib_wash_profile: f32,
+    /// NIB WASH STREAK (0..1, 0 = off; with `nib_wash_rag`): the TEAR ALONG THE BRUSH'S SWEEP — the noise along a
+    /// plane's contour advances slower where the contour runs with the sweep (the horizontal, as `hake`), by
+    /// `1 + 6·key·|cos θ|`, so its fibres stretch into long tears there and stay a short comb where the contour
+    /// crosses the sweep; and the noise sharpened toward its extremes by `1 + 2·key`, so a tear is a tooth, not
+    /// a ripple. A dry brush's edge is drawn out along its travel; an isotropic tear was a jelly's rim.
+    pub nib_wash_streak: f32,
+    /// NIB WASH SWEEP (0..1, 0 = off; with `nib_wash_planes`): a plane laid as WIDE WET STROKES, not a fill — the
+    /// plane's mask is only where the brush goes. Streamlines of the picture's flow (the structure tensor of the
+    /// plane's smoothed image, along the isophotes; the horizontal where the picture has no direction, as `hake`)
+    /// are traced from a grid of seeds a 0.6 width apart inside the mask eroded by a third of the width, up to an
+    /// eighth of the sheet each way, and laid as flooded marks (wetness 0.9: the hairs evened by the water, the
+    /// ends faded, the halo `nijimi`'s) a 96th of the sheet wide on the lightest plane and half that on the
+    /// darkest; the ink along a mark FOLLOWS THE PICTURE under it — the mark cut into pieces two widths long,
+    /// each ramped from the tone at its start to the tone at its end, the plane's tone raised to a power from
+    /// a half at the band's light edge to one and a half at its dark edge, and each mark asked the overlap's
+    /// root of it (the marks stack by five thirds). The overlaps accumulate, so the plane carries a gradient and
+    /// a brush's grain where the fill carried one flat tone with a terrace at its edge; the wet edge, the tear
+    /// and the sub-steps (`nib_wash_edge`, `nib_wash_rag`, `nib_wash_grade`) do not apply to a swept plane.
+    /// Recorded as marks with a ramp (`mix2`), replayed to the bit. ALONE NOT A WASH: in pieces two widths long
+    /// the marks were a chain of beads (the flood fades every mark's ends); whole, along the isophotes, they
+    /// were black worms winding over the form, the mass gone to black (the overlaps past the root's count)
+    /// and the picture's structure lost. With `nib_wash_agent` the mark gives its ink by the sheet under it
+    /// and the overlaps stop darkening: the plane is then a wash — a graded mass with the brush's grain, no
+    /// terrace at its edge, the tone held.
+    pub nib_wash_sweep: f32,
+    /// NIB WASH WATER (0..1, 0 = off; with `nib_wash_planes`): a LAYER OF WATER the ink seeps through — before a
+    /// plane is laid the sheet is wetted (a fill of clear water, no ink) over the plane's mask grown by the key
+    /// times a 64th of the sheet (a swept plane's by the key times the mark's width); and at the end of the planes' pass the ink that pass laid (and only it: the
+    /// drawing under the washes stays where the pen put it) SEEPS — a cellular diffusion over the wet cells by
+    /// their wetness, `24·key` steps — so a dark plane's ink runs out into the wet light one beside it in a
+    /// soft halo (nijimi) that no softening of a polygon's edge gives; dry paper takes none. In the header
+    /// (`water`), the replay seeps the same. The halo a fill's wet edge (`nib_wash_edge`) imitated with a
+    /// dilation is here the water's own.
+    pub nib_wash_water: f32,
+    /// NIB WASH AGENT (0..1, 0 = off; with `nib_wash_sweep`): the MARK LOOKS AT THE SHEET UNDER IT — a swept
+    /// plane's mark carries a profile of the picture's value along its path (the smoothed, lifted value the
+    /// planes are cut from, in the score as `prof`), and at every pixel a hair gives its ink by the residual
+    /// between the sheet there, as it is at that moment, and the target: `(C − T)/C · (1 + 4·key)`, nothing
+    /// where the sheet has reached the target. Overlaps and seams stop darkening — the mark's charge is the
+    /// plane's tone, and what has that tone under it takes no more — and the tone within a plane follows the
+    /// picture point by point where the ramp (`mix2`) gave one line start to end. In the header (`agent`);
+    /// the replay reads the same profile against the same sheet.
+    pub nib_wash_agent: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -1125,6 +1247,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -1203,6 +1326,18 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -1306,6 +1441,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -1384,6 +1520,18 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1487,6 +1635,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -1565,6 +1714,18 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1709,6 +1870,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -1787,6 +1949,18 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1899,6 +2073,7 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -1977,6 +2152,18 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -2084,6 +2271,7 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -2162,6 +2350,18 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -2265,6 +2465,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -2343,6 +2544,18 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -2449,6 +2662,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     tsuke: 0.6,  // the brush in two tones: a dark edge, a pale one
     ma: 0.5,     // the empty space where the eye does not go
     kasure: 0.5, // the flying white along a running brush
+    katsu: 0.0,
     nijimi: 0.4, // the ink feathering into the paper
     turn: 0.5,   // the brush lifted on a turn
     yohaku: 0.6, // the flat passages left blank
@@ -2527,6 +2741,18 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// PEN AND INK (7.12.0): steel nibs of several sizes and a black ink on white paper — drawn as the pencil is,
@@ -2633,6 +2859,7 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -2711,6 +2938,18 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -2817,6 +3056,7 @@ pub const DURER: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -2895,6 +3135,18 @@ pub const DURER: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -3004,6 +3256,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -3082,6 +3335,18 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -3188,6 +3453,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -3266,6 +3532,18 @@ pub const PENCIL: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -3374,6 +3652,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -3452,6 +3731,18 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -3555,6 +3846,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -3633,6 +3925,18 @@ pub const PASTEL: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -3736,6 +4040,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -3814,6 +4119,18 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -3923,6 +4240,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     tsuke: 0.0,
     ma: 0.0,
     kasure: 0.0,
+    katsu: 0.0,
     nijimi: 0.0,
     turn: 0.0,
     yohaku: 0.0,
@@ -4001,6 +4319,18 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     nib_wash_edge: 0.0,
     nib_wash_depth: 0.0,
     nib_wash_scale: 0.0,
+    nib_wash_levels: 0.0,
+    nib_wash_faces: 0.0,
+    nib_wash_rag: 0.0,
+    nib_wash_mask: 0.0,
+    nib_wash_half: 0.0,
+    nib_wash_grain: 0.0,
+    nib_wash_grade: 0.0,
+    nib_wash_profile: 0.0,
+    nib_wash_streak: 0.0,
+    nib_wash_sweep: 0.0,
+    nib_wash_water: 0.0,
+    nib_wash_agent: 0.0,
 };
 
 /// Every declared medium.
