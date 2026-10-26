@@ -522,6 +522,32 @@ pub struct PaintPlan {
     pub nib_wash_gamma: Option<f32>,
     /// NIB WASH FLAT (0..1): a flat dark left to the wash's pool, the pen only where the dark has an edge or a texture (`MediumProfile::nib_wash_flat`).
     pub nib_wash_flat: Option<f32>,
+    /// NIB WASH SCURVE (0..1): the washes' density by a contrast S-curve, the light half kept (`MediumProfile::nib_wash_scurve`).
+    pub nib_wash_scurve: Option<f32>,
+    /// NIB WASH VARY (0..1): the washes' deepening held back where the picture is busy (by its local variance) (`MediumProfile::nib_wash_vary`).
+    pub nib_wash_vary: Option<f32>,
+    /// NIB WASH MASS (0..1): the ink's mass kept across the bleed, the washes deepened by a gamma of the measured loss (`MediumProfile::nib_wash_mass`).
+    pub nib_wash_mass: Option<f32>,
+    /// NIB WASH HOLD (0..1): a wash held at the picture's hard edges toward a light, by the ink's conductance (`MediumProfile::nib_wash_hold`).
+    pub nib_wash_hold: Option<f32>,
+    /// NIB WASH DEBT (0..1): the ink's loss measured only where the sheet is still lighter than the picture (`MediumProfile::nib_wash_debt`).
+    pub nib_wash_debt: Option<f32>,
+    /// NIB WASH DRY (0..1): the dark register laid by a dry brush on the washes' fine passes (`MediumProfile::nib_wash_dry`).
+    pub nib_wash_dry: Option<f32>,
+    /// NIB WASH CAP (0..1): the sheet's capacity: a wash no darker than the picture's own value (`MediumProfile::nib_wash_cap`).
+    pub nib_wash_cap: Option<f32>,
+    /// NIB WASH TONE (0..1): the sheet's mid-tones pulled to the picture's mean at output (`MediumProfile::nib_wash_tone`).
+    pub nib_wash_tone: Option<f32>,
+    /// NIB WASH DRAW: the pens' passes first, on the bare sheet; the washes over the drawing (`MediumProfile::nib_wash_draw`).
+    pub nib_wash_draw: Option<f32>,
+    /// NIB WASH PLANES: the washes as flat planes: the reference quantised to this many bands (`MediumProfile::nib_wash_planes`).
+    pub nib_wash_planes: Option<f32>,
+    /// NIB WASH EDGE: a plane's wet edge wide where the picture's gradient is gentle (`MediumProfile::nib_wash_edge`).
+    pub nib_wash_edge: Option<f32>,
+    /// NIB WASH DEPTH: air on the planes — the far lifted into lighter bands by the depth map (`MediumProfile::nib_wash_depth`).
+    pub nib_wash_depth: Option<f32>,
+    /// NIB WASH SCALE: the lightest plane from the coarsest smoothing, the darkest from the finest (`MediumProfile::nib_wash_scale`).
+    pub nib_wash_scale: Option<f32>,
     /// SUMI DARK (0..1): the share of the darkest values the sumi-e's black register lays as dry-brush black
     /// shapes (the darkest eighth when unset) (`PaintParams::sumi_dark`).
     pub sumi_dark: Option<f32>,
@@ -755,6 +781,19 @@ impl Default for PaintPlan {
             nib_wash_soft: None,
             nib_wash_gamma: None,
             nib_wash_flat: None,
+            nib_wash_scurve: None,
+            nib_wash_vary: None,
+            nib_wash_mass: None,
+            nib_wash_hold: None,
+            nib_wash_debt: None,
+            nib_wash_dry: None,
+            nib_wash_cap: None,
+            nib_wash_tone: None,
+            nib_wash_draw: None,
+            nib_wash_planes: None,
+            nib_wash_edge: None,
+            nib_wash_depth: None,
+            nib_wash_scale: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,
@@ -846,7 +885,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("nib_wash_scurve", self.nib_wash_scurve), ("nib_wash_vary", self.nib_wash_vary), ("nib_wash_mass", self.nib_wash_mass), ("nib_wash_hold", self.nib_wash_hold), ("nib_wash_debt", self.nib_wash_debt), ("nib_wash_dry", self.nib_wash_dry), ("nib_wash_cap", self.nib_wash_cap), ("nib_wash_tone", self.nib_wash_tone), ("nib_wash_draw", self.nib_wash_draw), ("nib_wash_planes", self.nib_wash_planes), ("nib_wash_edge", self.nib_wash_edge), ("nib_wash_depth", self.nib_wash_depth), ("nib_wash_scale", self.nib_wash_scale), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -1302,6 +1341,19 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             nib_wash_soft: None,
             nib_wash_gamma: None,
             nib_wash_flat: None,
+            nib_wash_scurve: None,
+            nib_wash_vary: None,
+            nib_wash_mass: None,
+            nib_wash_hold: None,
+            nib_wash_debt: None,
+            nib_wash_dry: None,
+            nib_wash_cap: None,
+            nib_wash_tone: None,
+            nib_wash_draw: None,
+            nib_wash_planes: None,
+            nib_wash_edge: None,
+            nib_wash_depth: None,
+            nib_wash_scale: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,

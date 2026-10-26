@@ -1024,29 +1024,42 @@ impl Canvas {
     /// Pixel centres are tested (x + 0.5, y + 0.5); the deposit is the same covering law a stroke uses, at
     /// zero height (a wash stands off nothing).
     pub fn fill_rings(&mut self, rings: &[[f32; 2]], load: &[f32], wet: f32, feather: f32) {
+        self.fill_rings_edge(rings, load, wet, feather, None)
+    }
+
+    /// `fill_rings` with the WET EDGE PER RING POINT: `edge` (one feather per point of `rings`, a separator's
+    /// ignored) is the bloom's reach at that point, the reach between two points running from the one's to
+    /// the other's; `feather` is then the reach nowhere — the bloom at a pixel outside the mass goes as far as
+    /// the edge it blooms from allows, falling over that reach. `None` = `feather` all round (`fill_rings`).
+    pub fn fill_rings_edge(&mut self, rings: &[[f32; 2]], load: &[f32], wet: f32, feather: f32, edge: Option<&[f32]>) {
         let (w, h) = (self.w as i64, self.h as i64);
         let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
+        let mut reach: Vec<(f32, f32)> = Vec::new();
         let mut ring: Vec<[f32; 2]> = Vec::new();
-        let flush = |ring: &mut Vec<[f32; 2]>, edges: &mut Vec<([f32; 2], [f32; 2])>| {
+        let mut ring_e: Vec<f32> = Vec::new();
+        let flush = |ring: &mut Vec<[f32; 2]>, ring_e: &mut Vec<f32>, edges: &mut Vec<([f32; 2], [f32; 2])>, reach: &mut Vec<(f32, f32)>| {
             if ring.len() >= 3 {
                 for i in 0..ring.len() {
                     edges.push((ring[i], ring[(i + 1) % ring.len()]));
+                    reach.push((ring_e[i], ring_e[(i + 1) % ring.len()]));
                 }
             }
             ring.clear();
+            ring_e.clear();
         };
-        for pt in rings {
+        for (i, pt) in rings.iter().enumerate() {
             if pt[0].is_nan() || pt[1].is_nan() {
-                flush(&mut ring, &mut edges);
+                flush(&mut ring, &mut ring_e, &mut edges, &mut reach);
             } else {
                 ring.push(*pt);
+                ring_e.push(edge.and_then(|e| e.get(i)).copied().unwrap_or(feather).max(0.0).round().min(250.0));
             }
         }
-        flush(&mut ring, &mut edges);
+        flush(&mut ring, &mut ring_e, &mut edges, &mut reach);
         if edges.is_empty() {
             return;
         }
-        let f = feather.max(0.0).round().min(250.0) as usize;
+        let f = if edge.is_some() { reach.iter().map(|r| r.0.max(r.1)).fold(0.0, f32::max) as usize } else { feather.max(0.0).round().min(250.0) as usize };
         let fi = f as i64;
         let x0 = (edges.iter().map(|e| e.0[0].min(e.1[0])).fold(f32::INFINITY, f32::min).floor() as i64 - fi).max(0);
         let x1 = (edges.iter().map(|e| e.0[0].max(e.1[0])).fold(f32::NEG_INFINITY, f32::max).ceil() as i64 + fi).min(w);
@@ -1056,6 +1069,27 @@ impl Canvas {
             return;
         }
         let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        // The reach per pixel, when the edge varies: stamped along every edge onto the pixels either side of it
+        // (the rings run along pixel borders), carried outward by the dilation from the pixel it blooms from.
+        let mut lim: Option<Vec<u8>> = edge.map(|_| vec![0u8; bw * bh]);
+        if let Some(lim) = lim.as_mut() {
+            for ((a, b), (ra, rb)) in edges.iter().zip(&reach) {
+                let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+                let steps = (len * 2.0).ceil().max(1.0) as usize;
+                for s in 0..=steps {
+                    let t = s as f32 / steps as f32;
+                    let (px, py) = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]));
+                    let r = (ra + t * (rb - ra)).round().clamp(0.0, 250.0) as u8;
+                    let (cx, cy) = ((px - 0.5).floor() as i64, (py - 0.5).floor() as i64);
+                    for (qx, qy) in [(cx, cy), (cx + 1, cy), (cx, cy + 1), (cx + 1, cy + 1)] {
+                        if qx >= x0 && qx < x1 && qy >= y0 && qy < y1 {
+                            let i = (qy - y0) as usize * bw + (qx - x0) as usize;
+                            lim[i] = lim[i].max(r);
+                        }
+                    }
+                }
+            }
+        }
         // 1. The inside mask over the bounding box (scanline, even-odd, pixel centres).
         let mut mask = vec![false; bw * bh];
         let mut xs: Vec<f32> = Vec::new();
@@ -1084,7 +1118,8 @@ impl Canvas {
                 }
             }
         }
-        // 2. The wet edge: distance OUTSIDE the boundary by successive dilation, up to `feather` px.
+        // 2. The wet edge: distance OUTSIDE the boundary by successive dilation, up to `feather` px — or, the edge
+        //    varying, up to the reach carried from the boundary pixel the bloom came from.
         let mut dist = vec![0u8; bw * bh];
         if f > 0 {
             let mut cur = mask.clone();
@@ -1096,10 +1131,27 @@ impl Canvas {
                         if cur[i] {
                             continue;
                         }
-                        let touch = (x > 0 && cur[i - 1]) || (x + 1 < bw && cur[i + 1]) || (y > 0 && cur[i - bw]) || (y + 1 < bh && cur[i + bw]);
-                        if touch {
-                            next[i] = true;
-                            dist[i] = d as u8;
+                        match lim.as_mut() {
+                            None => {
+                                let touch = (x > 0 && cur[i - 1]) || (x + 1 < bw && cur[i + 1]) || (y > 0 && cur[i - bw]) || (y + 1 < bh && cur[i + bw]);
+                                if touch {
+                                    next[i] = true;
+                                    dist[i] = d as u8;
+                                }
+                            }
+                            Some(lim) => {
+                                let mut r = 0u8;
+                                for j in [if x > 0 { Some(i - 1) } else { None }, if x + 1 < bw { Some(i + 1) } else { None }, if y > 0 { Some(i - bw) } else { None }, if y + 1 < bh { Some(i + bw) } else { None }].into_iter().flatten() {
+                                    if cur[j] && lim[j] as usize >= d {
+                                        r = r.max(lim[j]);
+                                    }
+                                }
+                                if r > 0 {
+                                    next[i] = true;
+                                    dist[i] = d as u8;
+                                    lim[i] = r;
+                                }
+                            }
                         }
                     }
                 }
@@ -1114,7 +1166,8 @@ impl Canvas {
                 let k = if mask[i] {
                     1.0
                 } else if dist[i] > 0 {
-                    let t = 1.0 - dist[i] as f32 / (f as f32 + 1.0);
+                    let reach = match &lim { Some(l) => l[i] as f32, None => f as f32 };
+                    let t = 1.0 - dist[i] as f32 / (reach + 1.0);
                     0.6 * t * t
                 } else {
                     continue;
@@ -1481,17 +1534,23 @@ impl Canvas {
         // around mid-grey), WARMTH (white balance), and CLARITY (gentle LOCAL contrast — a large-radius unsharp,
         // midtone punch, NOT edge sharpening that would re-introduce photographic detail). Whole-image, recorded
         // in the score so replay reproduces it.
-        let grade = (f.contrast - 1.0).abs() > 1e-3 || f.warmth.abs() > 1e-3 || f.clarity > 1e-3;
+        let grade = (f.contrast - 1.0).abs() > 1e-3 || f.warmth.abs() > 1e-3 || f.clarity > 1e-3 || f.tone > 1e-3;
         if grade {
             let contrast = f.contrast.clamp(0.3, 3.0);
             let warmth = f.warmth.clamp(-1.0, 1.0);
             let clarity = f.clarity.clamp(0.0, 1.0);
+            let tone = f.tone.clamp(0.0, 1.0);
             let blurred: Option<RgbImage> = (clarity > 1e-3).then(|| image::imageops::blur(&img, (w.min(h) as f32 * 0.02).clamp(2.0, 20.0)));
             for y in 0..h {
                 for x in 0..w {
                     let bp = blurred.as_ref().map(|b| b.get_pixel(x as u32, y as u32).0);
                     let p = img.get_pixel_mut(x as u32, y as u32);
                     let mut c = [p.0[0] as f32 / 255.0, p.0[1] as f32 / 255.0, p.0[2] as f32 / 255.0];
+                    if tone > 1e-3 {
+                        for v in c.iter_mut() {
+                            *v = (*v * (1.0 - 2.0 * tone * *v * (1.0 - *v))).clamp(0.0, 1.0);
+                        }
+                    }
                     if (contrast - 1.0).abs() > 1e-3 {
                         for v in c.iter_mut() {
                             *v = (0.5 + (*v - 0.5) * contrast).clamp(0.0, 1.0);
@@ -1590,13 +1649,17 @@ pub struct Finish {
     pub warmth: f32,
     /// CLARITY (0..1, 0 = off): gentle LOCAL contrast (large-radius unsharp) — midtone punch, NOT edge sharpening.
     pub clarity: f32,
+    /// WASH TONE (0..1, 0 = off): the sheet's mid-tones pulled down by `c·(1 − 2t·c(1−c))` per channel — the paper
+    /// and the blacks kept, the half-tones deepened (see `MediumProfile::nib_wash_tone`; the pull is solved by the
+    /// painter against the picture's mean and recorded in the score's header). Before the contrast.
+    pub tone: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, seed: 0 }
     }
 }
 

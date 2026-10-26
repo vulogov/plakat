@@ -1878,6 +1878,19 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.nib_wash_soft = plan.medium.nib_wash_soft;
     params.nib_wash_gamma = plan.medium.nib_wash_gamma;
     params.nib_wash_flat = plan.medium.nib_wash_flat;
+    params.nib_wash_scurve = plan.medium.nib_wash_scurve;
+    params.nib_wash_vary = plan.medium.nib_wash_vary;
+    params.nib_wash_mass = plan.medium.nib_wash_mass;
+    params.nib_wash_hold = plan.medium.nib_wash_hold;
+    params.nib_wash_debt = plan.medium.nib_wash_debt;
+    params.nib_wash_dry = plan.medium.nib_wash_dry;
+    params.nib_wash_cap = plan.medium.nib_wash_cap;
+    params.nib_wash_tone = plan.medium.nib_wash_tone;
+    params.nib_wash_draw = plan.medium.nib_wash_draw;
+    params.nib_wash_planes = plan.medium.nib_wash_planes;
+    params.nib_wash_edge = plan.medium.nib_wash_edge;
+    params.nib_wash_depth = plan.medium.nib_wash_depth;
+    params.nib_wash_scale = plan.medium.nib_wash_scale;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2751,6 +2764,19 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.nib_wash_soft = m.nib_wash_soft;
         params.nib_wash_gamma = m.nib_wash_gamma;
         params.nib_wash_flat = m.nib_wash_flat;
+        params.nib_wash_scurve = m.nib_wash_scurve;
+        params.nib_wash_vary = m.nib_wash_vary;
+        params.nib_wash_mass = m.nib_wash_mass;
+        params.nib_wash_hold = m.nib_wash_hold;
+        params.nib_wash_debt = m.nib_wash_debt;
+        params.nib_wash_dry = m.nib_wash_dry;
+        params.nib_wash_cap = m.nib_wash_cap;
+        params.nib_wash_tone = m.nib_wash_tone;
+        params.nib_wash_draw = m.nib_wash_draw;
+        params.nib_wash_planes = m.nib_wash_planes;
+        params.nib_wash_edge = m.nib_wash_edge;
+        params.nib_wash_depth = m.nib_wash_depth;
+        params.nib_wash_scale = m.nib_wash_scale;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2902,6 +2928,19 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.nib_wash_soft { params.nib_wash_soft = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_gamma { params.nib_wash_gamma = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_wash_flat { params.nib_wash_flat = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_scurve { params.nib_wash_scurve = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_vary { params.nib_wash_vary = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_mass { params.nib_wash_mass = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_hold { params.nib_wash_hold = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_debt { params.nib_wash_debt = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_dry { params.nib_wash_dry = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_cap { params.nib_wash_cap = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_tone { params.nib_wash_tone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_draw { params.nib_wash_draw = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_planes { params.nib_wash_planes = if v >= 2.0 { v.min(8.0).round() } else { 0.0 }; }
+        if let Some(v) = pl.nib_wash_edge { params.nib_wash_edge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_depth { params.nib_wash_depth = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_wash_scale { params.nib_wash_scale = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }

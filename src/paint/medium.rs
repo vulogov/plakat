@@ -921,6 +921,100 @@ pub struct MediumProfile {
     /// edge or a texture of its own — the picture's gradient over a 9-pixel window above its own median (the key's
     /// share of it): a flat dark, a monolithic rock face or a deep shadow, is the wash's solid pool, not a hatch.
     pub nib_wash_flat: f32,
+    /// NIB WASH SCURVE (0..1, 0 = off; with `nib_wash`): the wash's density by a contrast S-curve instead of a power —
+    /// on the eye's scale `x = (l/paper)^(1/2.2)` taken to `x^a / (x^a + (1−x)^a)`, `a = 1 + key`: the half-tones
+    /// below the middle deepened and the light ones kept light, the bleed's pale haloes made up without a power's
+    /// pull of every dark toward one black. Applied after `nib_wash_gamma`.
+    pub nib_wash_scurve: f32,
+    /// NIB WASH VARY (0..1, 0 = off; with `nib_wash_gamma` or `nib_wash_scurve`): the washes' deepening held back where
+    /// the picture is busy — scaled by `1 − key·(1 − e^{−σ²/σ²_med})`, `σ²` the picture's local variance of value over a
+    /// 9-pixel window and `σ²_med` its median: a sky or a rock face takes the full density, a face or a fold of cloth
+    /// keeps a transparent wash the pen then draws over.
+    pub nib_wash_vary: f32,
+    /// NIB WASH MASS (0..1, 0 = off; with `nib_wash`): the ink's mass kept across the bleed — before each wash after the
+    /// block-in the sheet's darkness on the eye's scale, `Σ(1−l^(1/2.2))`, is measured against the picture's, and the
+    /// wash's tone deepened by a gamma `paper·(l/paper)^r`, `r` the key's share of the loss (the ratio, held to 1..2):
+    /// a tone mapping, not a scaling of the depth (scaled and clamped to black, every lit face in a crowd went to one
+    /// black). `nib_wash_vary` holds the deepening back where the picture is busy.
+    pub nib_wash_mass: f32,
+    /// NIB WASH HOLD (0..1, 0 = off; with `nib_wash`): a wash held at the picture's hard edges toward a light — no hard
+    /// clip at every contour (that was a heap of dabs), but a soft one by the ink's conductance `c = e^{−|∇I|/K}` (`K`
+    /// four times the picture's median gradient): a wash mark is cut where its footprint (its middle and both sides,
+    /// 0.8 of its half-width off) meets a pixel of `c < 0.5` lighter than the mark's own value by more than
+    /// `0.35 − 0.2·key`. The ink runs through a dark coat but stops at a white collar or the profile of a face.
+    /// On the figures only (the people's mask, the faces): on a landscape every blade and stone is such an edge.
+    pub nib_wash_hold: f32,
+    /// NIB WASH DEBT (0..1, 0 = off; with `nib_wash_mass`): the ink's loss measured only where the sheet is still lighter
+    /// than the picture — a passage the bleed has already over-darkened can give no ink back, and counted in the
+    /// sheet's darkness it hid the debt of the half-tones beside it.
+    pub nib_wash_debt: f32,
+    /// NIB WASH DRY (0..1, 0 = off; with `nib_wash`): the dark register laid by a DRY BRUSH over the washes — in
+    /// sumi-e the dark accents go over the dried washes with less water, and they hardly spread. The washes' fine
+    /// passes (the brush within 2.5 of the smallest but not the smallest itself, the last of the bleed's taper)
+    /// read the picture itself blurred by their radius — not the smoothed armature or its low band — and lay
+    /// only where its value is under 0.45 on the eye's scale; their ink is the picture's own value past the
+    /// washes' curves (the S-curve, the mass, the air), the key the share of the way from the paper to it. Not
+    /// detail passes: neither the focus nor the coherence gates them, and their mark is a DRAG along the mass's
+    /// form (the flow smoothed over three radii, the length three times the profile's), not the detail's short
+    /// touch — read sharp and short, the register was a heap of curls over every bush; and off the subject the
+    /// drag is the flat brush's level sweep (`hake`), as the washes' — along the texture's own flow it was a rope
+    /// winding round every bush. Toward the far planes (`nib_wash_air`) the dry brush lays less: its ink lightened
+    /// by 0.35 (the washes' by 0.5, so the drag still shows over its wash), its register narrowed to the darker
+    /// (0.34 at the farthest) — as dense at the horizon as at the feet, the drags were one flat wall.
+    pub nib_wash_dry: f32,
+    /// NIB WASH CAP (0..1, 0 = off; with `nib_wash`): the sheet's CAPACITY — a wash asks no tone darker than the
+    /// key's share of the picture's own value at its point (in linear light), and where the sheet has reached it
+    /// no mark is laid: the pool a contrast curve, a mass gamma or the low band's blur had pushed past the picture
+    /// (the dark hair's ink over a lit face, a coat gone to one black) is ink the paper will not take.
+    pub nib_wash_cap: f32,
+    /// NIB WASH TONE (0..1, 0 = off; with `nib_wash`): the sheet corrected at OUTPUT, not in the washes — a wash
+    /// may stay light as it is laid; at the end the sheet's mean value is set against the picture's and its
+    /// mid-tones pulled down by `c·(1 − 2t·c(1−c))` (the paper and the blacks kept, the pull `t` solved by
+    /// bisection so the two means meet), the key the share of that pull. Recorded in the score's header (`tone=`),
+    /// so the replay prints the same sheet.
+    pub nib_wash_tone: f32,
+    /// NIB WASH DRAW (0..1, 0 = off; with `nib_wash`): the DRAWING FIRST — the pens' passes laid on the bare sheet,
+    /// as pen-ink lays them, and the washes after, over the dried drawing. Laid after the washes (the key off), a
+    /// pen's mark passed the sheet's gate only where the wash had stopped short of the tone — the pens drew the
+    /// remainder, a line at the edges and nothing of the form (a station's pens laid a ninth of their strokes; the
+    /// faces, the folds, the books of the pen-ink drawing were gone under the wash). Drawn first, the hatching
+    /// carries its tone and the wash, reading the sheet over its mark's cell as a pen does, lays only what the
+    /// hatching left. The washes' bleed tapers over the washes alone, wherever they stand in the schedule.
+    pub nib_wash_draw: f32,
+    /// NIB WASH PLANES (0 = off, else the count, 2..8; with `nib_wash`): the washes laid as FLAT PLANES — the
+    /// picture (smoothed over a 256th of the sheet) quantised, on the eye's scale between the paper and black,
+    /// to this many bands: the lightest the paper itself (no wash there), each other its band's lighter edge
+    /// (four: the paper, and washes at three quarters, a half and a quarter of the value). The planes are laid as
+    /// WASHES — area fills, not strokes: one per plane from the lightest to the darkest, each covering every
+    /// plane as dark as itself (the washes stack, as three washes of one ink do), its charge found on scrap
+    /// paper so the stack reads the plane's tone; a plane's mask opened by a pixel or two and its specks dropped
+    /// (a plane is a mass), its edge feathered a 500th of the sheet. The register's stroke passes then lay
+    /// nothing (the dry brush's pass excepted, `nib_wash_dry`). A wash reading the smoothed picture with a
+    /// soft brush tracked its every gradient — a smear of tone with no edge anywhere (the quantised reference
+    /// alone did not help: the flooded sweeps and the bleed lost the edge again); a pool has sides, and the
+    /// modelling within it is the pens'.
+    pub nib_wash_planes: f32,
+    /// NIB WASH EDGE (0..1, 0 = off; with `nib_wash_planes`): a plane's WET EDGE by the picture — the fill's bloom
+    /// wide where the picture's gradient is gentle under the plane's boundary (the boundary there is the
+    /// quantiser's, not the picture's: a sky's gradation cut into bands, each a hard-edged blot — the camouflage
+    /// of set 10), and the base 500th of the sheet where the picture has an edge (a roof against the sky: the
+    /// wash stops there as the painter's does). The edge's width varies along the boundary, ring point by ring
+    /// point: the base times 1 + 12·key·(1 − g)², g the picture's gradient over the plane's smoothing radius
+    /// against a step of a half of the value — a 13th of a 100th of the sheet at the key where the picture is
+    /// flat. Recorded per point, replayed to the bit.
+    pub nib_wash_edge: f32,
+    /// NIB WASH DEPTH (0..1, 0 = off; with `nib_wash_planes`, and the depth map of `nib_depth`): AIR on the planes —
+    /// before the quantising, the picture's value lifted toward the paper by a half of the key where the depth
+    /// map is far (as `nib_wash_air` reads it: 1 at the farthest plane, 0 from a half of the depth in), so a far
+    /// hill falls into a lighter band than a near one of the same value, and the farthest into the paper. The
+    /// set-10 planes were quantised by one scale everywhere, the far hills as dark as the near.
+    pub nib_wash_depth: f32,
+    /// NIB WASH SCALE (0..1, 0 = off; with `nib_wash_planes`): the planes at DIFFERENT SMOOTHINGS — the lightest
+    /// plane from the picture smoothed coarsest (a 256th of the sheet times 1 + 3·key: the large masses of light
+    /// and shade, not a scatter of blots), the darkest from the finest (a 256th over 1 + 3·key: the deep shadows
+    /// where they are, under the pens' line), the planes between by a geometric ladder; a darker plane kept
+    /// within the lighter (the washes stack). Off, every plane from the one 256th.
+    pub nib_wash_scale: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -1096,6 +1190,19 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -1264,6 +1371,19 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1432,6 +1552,19 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1641,6 +1774,19 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1818,6 +1964,19 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1990,6 +2149,19 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -2158,6 +2330,19 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -2329,6 +2514,19 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// PEN AND INK (7.12.0): steel nibs of several sizes and a black ink on white paper — drawn as the pencil is,
@@ -2500,6 +2698,19 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -2671,6 +2882,19 @@ pub const DURER: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2845,6 +3069,19 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -3016,6 +3253,19 @@ pub const PENCIL: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -3189,6 +3439,19 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -3357,6 +3620,19 @@ pub const PASTEL: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -3525,6 +3801,19 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -3699,6 +3988,19 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     nib_wash_soft: 0.0,
     nib_wash_gamma: 0.0,
     nib_wash_flat: 0.0,
+    nib_wash_scurve: 0.0,
+    nib_wash_vary: 0.0,
+    nib_wash_mass: 0.0,
+    nib_wash_hold: 0.0,
+    nib_wash_debt: 0.0,
+    nib_wash_dry: 0.0,
+    nib_wash_cap: 0.0,
+    nib_wash_tone: 0.0,
+    nib_wash_draw: 0.0,
+    nib_wash_planes: 0.0,
+    nib_wash_edge: 0.0,
+    nib_wash_depth: 0.0,
+    nib_wash_scale: 0.0,
 };
 
 /// Every declared medium.
