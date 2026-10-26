@@ -86,9 +86,48 @@ plakat paint from photo.png --medium gouache --palette image \
 plakat paint from photo.png --medium gouache --plan gouache.hjson -o out-gouache.png
 
 # ── INK WASH (sumi-e) ────────────────────────────────────────────────────────
-# Graded monochrome washes, very fluid bleed. Default palette: sumi (black+white).
-plakat paint from photo.png --medium ink-wash --palette sumi \
-    --bleed 0.7 -o out-inkwash.png
+# Graded monochrome washes, very fluid bleed. Default palette: sumi (black+white). From 7.13.0, under the
+# plan, INK AND WASH: the pens of pen-ink draw first on the bare sheet, then the washes go over the dried
+# drawing as planes of the ink alone — the picture cut at its own quantiles into a stack of transparent
+# washes, lifted with the depth and on the faces, the pen kept out of the darkest plane, a layer of water
+# the ink seeps through, and the planes as wide marks that give their ink by the residual against the sheet
+# under them (the mark-agent); the dry brush by the paper's grain (katsu); the faces in a few lines. Every
+# ink-wash key is unset in the profile — run it with the plan (the keys in PAINT_CONTROLS.md); the cycle is
+# paused at this plan, its washes still softer than a brush:
+#
+#   medium: ink-wash           palette: sumi              style: legible             new: true
+#   armature: 384              armature_face: 768         armature_body: 384         semantic: true
+#   sam: true                  families: true             commit_shadows: 0.0        shadow_floor: 0.16
+#   detail_len: 0.5            infill: follow             min_brush: 3.0             rigger: 0.0
+#   liner: 0.5                 focus_detail: 0.3          hotspot: 0.0               dry: 1.0
+#   pickup: 0.0                bleed: 0.5                 wash_in: 0.3               wet_cap: 0.6
+#   contour: 0.0               paper: 1.0                 touch: 0.6                 velvet: 0.05
+#   paper_top: 1.0             paper_knee: 0.5            deplete: 0.5               skip: 0.0
+#   comma: 0.5                 turbulence: 0              loose: 0.0                 vary: 0.4
+#   granulate: 0.05            dishes: 4                  dither: 0.0                tsuke: 0.6
+#   ma: 0.0                    kasure: 0.3                nijimi: 0.7                turn: 0.6
+#   yohaku: 0.0                sumi_dark: 0.03            bone: 1.0                  boneless: 3
+#   hake: 1.0                  join: 1.0                  bone_wind: 0.3             bone_dot: 0.0
+#   bone_scatter: 0.0          bone_coherence: 0.3        bone_end: 0.0              sumi_focus: 0.5
+#   ma_focus: 0.0              ma_flow: 0.6               bone_ryaku: 0.0            bone_fade: 0.0
+#   bokashi: 0.2               nib: 1.0                   nib_wash: 1.0              nibs: 3
+#   nib_tone: 1.0              nib_white: 0.2             hatch: 1.0                 cross: 45
+#   span: 0.6                  edge: 0.6                  solid: 1.0                 tiers: 0.8
+#   slant: 1.0                 clip: 0.6                  weight: 1.0                waver: 0.6
+#   grade: 0.8                 nib_anchor: 1.0            nib_hint: 1.0              nib_face: 1.0
+#   nib_eyes: 1.0              nib_glint: 1.0             nib_wash_dark: 0.6         nib_people: 1.0
+#   nib_figure: 1.0            nib_value: 1.0             nib_fine_face: 1.0         nib_close: 1.0
+#   nib_rim: 1.0               nib_wash_detail: 0.0       nib_wash_line: 1.0         nib_wash_soft: 1.0
+#   nib_wash_swell: 1.0        nib_wash_air: 1.0          nib_depth: 0.6             nib_air: 1.0
+#   nib_wash_gamma: 0          nib_wash_scurve: 0         nib_wash_vary: 0           nib_wash_mass: 0
+#   nib_wash_hold: 1.0         nib_wash_debt: 0           nib_wash_flat: 1.0         nib_wash_dry: 0
+#   nib_wash_cap: 1.0          nib_wash_tone: 1.0         nib_wash_draw: 1.0         nib_wash_planes: 5
+#   nib_wash_edge: 0           nib_wash_depth: 0.5        nib_wash_scale: 0.5        nib_wash_levels: 0.5
+#   nib_wash_faces: 1.0        nib_wash_rag: 0            nib_wash_mask: 1.0         nib_wash_half: 1.0
+#   nib_wash_grain: 1.0        nib_wash_grade: 0.5        nib_wash_profile: 1.0      nib_wash_streak: 0
+#   nib_wash_sweep: 1.0        katsu: 0.5                 nib_wash_water: 0.5        nib_wash_agent: 1.0
+#
+plakat paint from photo.png --medium ink-wash --plan ink-wash.hjson -o out-inkwash.png
 
 # ── PEN & INK ────────────────────────────────────────────────────────────────
 # Steel nibs of several widths and a black ink (7.12.0), drawn line by line along the form: every line full

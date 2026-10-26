@@ -242,8 +242,18 @@ rewet: 0.3
 liner: 0.5
 ```
 
-### Ink wash — `medium: ink-wash`  🎯 *graded monochrome washes (sumi-e)*
-Flowing transparent washes; strong bleed; whites reserved; graded from light to dark.
+### Ink wash — `medium: ink-wash`  🎯 *ink AND wash: the pens first, the washes as planes of the ink over the drawing (7.13.0)*
+Flowing transparent washes; strong bleed; whites reserved; graded from light to dark. From 7.13.0, under the
+plan, the ladder is laid twice (`nib_wash`): the pens of `pen-ink` draw first on the bare sheet
+(`nib_wash_draw`, the pen keys of 7.12.0), and the washes go over the dried drawing as **planes of the ink
+alone** (`nib_wash_planes`, `nib_wash_levels`, `nib_wash_scale`, `nib_wash_depth`, `nib_wash_faces`,
+`nib_wash_grain`, `nib_wash_grade`, `nib_wash_edge`, `nib_wash_rag`, `nib_wash_streak`), the pen held to the
+darks and the lines (`nib_wash_dark`, `nib_wash_flat`, `nib_wash_half`, `nib_wash_mask`, `nib_wash_detail`),
+a layer of water the planes' ink seeps through (`nib_wash_water`), and the planes as wide marks that give
+their ink by the residual against the sheet under them (`nib_wash_sweep`, `nib_wash_agent`); the dry brush by
+the paper's grain and the mark's speed (`katsu`); the faces in a few lines (`nib_wash_profile`); the sheet's
+tone corrected at output (`nib_wash_tone`). Each a plan key, 0 in every other medium. The cycle is paused:
+the recommended plan (`PAINT_EXAMPLES.md`) is the last set's, and the washes still read softer than a brush.
 - Defaults: `opacity 0.40` · `bleed 0.70` (very fluid) · `pickup 0.90` · `impasto 0`.
 - Tune: `bleed`/`pickup` are the character — lower for tighter washes. `palette: sumi`, `style: legible`.
 
