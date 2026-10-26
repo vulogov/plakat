@@ -8,7 +8,50 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.13.0 — in development
+## What's new in 7.13.0 — Ink and wash: the pens and the washes — the planes of the ink, the water, and the mark that looks at the sheet
+
+### `plakat paint`
+
+- **`--medium ink-wash` is ink AND wash.** The ladder is laid twice (`nib_wash`): the pens of `pen-ink`
+  draw the picture first on the bare sheet (`nib_wash_draw`) — the line traced from the picture itself
+  (`nib_wash_line`), swelling with its edge (`nib_wash_swell`), the pens' hatching held to the darks and to
+  where a dark has an edge or a texture (`nib_wash_dark`, `nib_wash_flat`), the half-tones' finest pen along
+  the form (`nib_wash_half`), the pen kept out of the darkest plane (`nib_wash_mask`) — and the washes go
+  over the dried drawing. **The washes are planes of the ink alone** (`nib_wash_planes`): the picture,
+  smoothed over a 256th of the sheet (the lightest plane coarser, the darkest finer — `nib_wash_scale`), cut
+  into a stack of transparent washes laid light to dark, each the palette's darkest pigment thinned on scrap
+  paper to read its tone over the plane above (a grey's mixture had carried titanium white — a fog over the
+  pens — and a light grey's resolved to white alone, a slab lighter than the paper); the thresholds moved
+  toward the picture's own quantiles (`nib_wash_levels`), the far planes and the faces lifted toward the
+  paper before the quantising (`nib_wash_depth`, `nib_wash_faces`, by the depth map and the face mask), the
+  small darks kept past the opening (`nib_wash_grain`), two sub-steps of tone within a plane
+  (`nib_wash_grade`), the wet edge by the picture's gradient (`nib_wash_edge`), the contour torn and the
+  tear drawn out along the sweep (`nib_wash_rag`, `nib_wash_streak`). **A layer of water** (`nib_wash_water`):
+  the sheet wetted round each plane (an ink-less wash in the score) and the pass's own ink — only it; the
+  drawing stays where the pen put it — seeping over the wet cells at the end of the planes' pass
+  (`Canvas::seep`), the halo the water's own. **The mark that looks at the sheet** (`nib_wash_sweep`,
+  `nib_wash_agent`): a plane laid as wide wet marks along the flow instead of a fill, each carrying the
+  picture's value along its path in the score (`prof=`), every hair giving its ink by the residual against
+  the sheet under it as it goes — so the overlaps stop darkening and the planes become graded washes with
+  the brush's grain and no terrace, the tone held; the mark's target between the plane's flat tone and the
+  picture (`nib_wash_grade` on a swept plane). **The dry brush by the paper's grain and the mark's speed**
+  (`katsu`, in the header): the paint's threshold on the relief rising to the mark's end, the swept marks
+  drier with uneven hairs. **The faces** (`nib_wash_profile`): every face drawn as a small one — no hatching
+  on it, the wash modelling it, the pen keeping the solid dark and the features traced with the hair and
+  the beard flattened out of the field. **The sheet's tone** corrected at output (`nib_wash_tone`, in the
+  header), the sheet's capacity the picture's own value (`nib_wash_cap`), air on the far planes
+  (`nib_wash_air`), the washes held at the hard edges on the figures (`nib_wash_hold`), the dry brush's dark
+  register (`nib_wash_dry`); the density curves of the earlier sets kept as keys (`nib_wash_gamma`,
+  `nib_wash_scurve`, `nib_wash_vary`, `nib_wash_mass`, `nib_wash_debt`, `nib_wash_soft`, `nib_wash_detail`).
+  Every mechanism a plan key, 0 in every profile; the recommended plan in `PAINT_EXAMPLES.md`; every other
+  medium byte-identical to 7.12.0; deterministic, replayed byte-exact from its score.
+- **Where the cycle pauses.** Fifteen sets against a reviewer's eye. The fills gave a posterised sheet; the
+  water softened its edges without changing their nature; the mark-agent removed the terraces and held the
+  tone, but a brush that reads the sheet under it lays a smudge over the picture, not a wash. The next step
+  is written up and left for a later cycle: blind, ballistic marks — few, wide, fading along their length;
+  the dry brush by the ink's depletion on a relief stretched along the mark; the background washes flowing
+  round the light forms, a beard or a profile cut by its dark ground.
+
 
 ## What's new in 7.12.0 — Pen and ink: steel nibs — the tone by the number of lines, the figure drawn, the planes by depth
 
