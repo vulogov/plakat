@@ -1782,6 +1782,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.blade_rest = plan.medium.blade_rest;
     params.blade_relief = plan.medium.blade_relief;
     params.brush.mix = plan.medium.blade_mix;
+    params.blade_along = plan.medium.blade_along;
+    params.blade_inertia = plan.medium.blade_inertia;
+    params.blade_facet = plan.medium.blade_facet;
+    params.brush.fade = plan.medium.blade_fade;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
     params.dishes = plan.medium.dishes;
@@ -2692,6 +2696,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.blade_rest = m.blade_rest;
         params.blade_relief = m.blade_relief;
         params.brush.mix = m.blade_mix;
+        params.blade_along = m.blade_along;
+        params.blade_inertia = m.blade_inertia;
+        params.blade_facet = m.blade_facet;
+        params.brush.fade = m.blade_fade;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
         params.dishes = m.dishes;
@@ -2879,6 +2887,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.blade_rest { params.blade_rest = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_relief { params.blade_relief = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_mix { params.brush.mix = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_along { params.blade_along = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_inertia { params.blade_inertia = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_facet { params.blade_facet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_fade { params.brush.fade = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.hatch { params.hatch = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.verdaccio { params.verdaccio = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dishes { params.dishes = if v >= 2.0 { v.min(32.0).round() } else { 0.0 }; }

@@ -94,6 +94,10 @@ pub struct BrushConfig {
     /// mark's own hash), each band one colour or the other by the key's share, hard-edged, the length of the
     /// slice: the paint not fully blended on the knife, dragged as streaks. The ramp along the mark is off for it.
     pub mix: f32,
+    /// FADE (0..1, 0 = off; a knife mark only): the paint on the blade RUNS OUT along the slice — the height it
+    /// leaves fades toward the tail by the key (×(1 − key·t)), its deposit by half as much, the ground's texture
+    /// showing through the tail of the mark. (Against the bevel's ridge at the lift-off: the two compose.)
+    pub fade: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -163,7 +167,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -594,6 +598,9 @@ impl Stroke {
                 } else {
                     1.0
                 };
+                // FADE (see `BrushConfig::fade`): the paint runs out along the slice — the height toward the tail
+                // by the key, the deposit by half as much.
+                let fade_t = if brush.knife > 0.0 && brush.fade > 0.0 { 1.0 - brush.fade.clamp(0.0, 1.0) * t } else { 1.0 };
                 // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
                 // own slow hash falls under the dryness at this point of the mark.
                 let edge = if brush.kasure > 0.0 {
@@ -674,7 +681,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { bevel_h } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
                 }
             }
         }
@@ -1186,6 +1193,22 @@ mod tests {
         assert!(edge > mid * 1.3, "the paint squeezed out to the blade's edges ({edge} vs {mid} down the middle)");
         let (start0, end0, _, _) = lay(0.0);
         assert!((end0 - start0).abs() < 0.15 * start0.max(end0), "flat without the bevel ({start0} vs {end0})");
+    }
+
+    #[test]
+    fn a_fading_knife_slice_stands_lower_at_its_tail() {
+        // The same knife slice with and without the fade: near the tail the faded one stands well under the
+        // other; near the start they are alike.
+        let height = |fade: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [72.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let at = |x: usize| (17..23).map(|y| c.height[y * 80 + x]).sum::<f32>() / 6.0;
+            (at(14), at(62))
+        };
+        let ((s0, e0), (s1, e1)) = (height(0.0), height(1.0));
+        assert!(e1 < e0 * 0.5, "the faded slice's tail stands under half the plain one's ({e1} vs {e0})");
+        assert!(s1 > s0 * 0.8, "and its start is nearly as high ({s1} vs {s0})");
     }
 
     #[test]
