@@ -508,6 +508,16 @@ pub struct PaintParams {
     pub blade_inertia: f32,
     /// BLADE FACET (0..1, 0 = off): the face cut into its own planes (see `MediumProfile::blade_facet`).
     pub blade_facet: f32,
+    /// BLADE VISC (0..1, 0 = off): the colour stop rising along the flow (see `MediumProfile::blade_visc`).
+    pub blade_visc: f32,
+    /// BLADE SOFT (0..1, 0 = off): the face's terraces softened on the smooth skin (see `MediumProfile::blade_soft`).
+    pub blade_soft: f32,
+    /// BLADE DETAIL (0..1, 0 = off): the narrow knives keep the detail (see `MediumProfile::blade_detail`).
+    pub blade_detail: f32,
+    /// BLADE LAYERS (0..1, 0 = off): the knives thin with the ladder and shear less (see `MediumProfile::blade_layers`).
+    pub blade_layers: f32,
+    /// BLADE EDGE (0..1, 0 = off): the knife's edge draws the busy passages (see `MediumProfile::blade_edge`).
+    pub blade_edge: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay straight hatch lines of one width (see `MediumProfile::hatch`).
     pub hatch: f32,
     /// VERDACCIO (0..1, 0 = off): the flesh underpainted in a greenish grey (see `MediumProfile::verdaccio`).
@@ -778,7 +788,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -3755,11 +3765,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let reference = if wash_reg && !dry_pass && p.nib_wash_planes >= 2.0 { wash_planes(&reference, p.nib_wash_planes.round() as usize, canvas.ground_linear()) } else { reference };
         // BLADE PLANES (see `MediumProfile::blade_planes`): every pass's reference cut into flat planes of value.
         // BLADE FLOW / BLADE MIX: the picture before the planes — the flow's form and the slices' second colours.
-        let blade_raw: Option<RgbImage> = ((p.blade_flow > 0.0 || p.brush.mix > 0.0 || p.blade_facet > 0.0) && p.blade_planes >= 2.0 && !dry_pass).then(|| reference.clone());
+        let blade_raw: Option<RgbImage> = ((p.blade_flow > 0.0 || p.brush.mix > 0.0 || p.blade_facet > 0.0 || p.blade_detail > 0.0) && p.blade_planes >= 2.0 && !dry_pass).then(|| reference.clone());
         let reference = if p.blade_planes >= 2.0 && !dry_pass { blade_planes_ref(&reference, p.blade_planes.round() as usize, p.blade_levels) } else { reference };
         // BLADE FACET (see `MediumProfile::blade_facet`): the face cut into its own planes, from the picture before the planes.
         let reference = match (blade_raw.as_ref(), p.face_mask.as_deref()) {
-            (Some(raw), Some(fm)) if p.blade_facet > 0.0 && fm.len() == (w * h) as usize => blade_facet_ref(&reference, raw, p.blade_planes.round() as usize, p.blade_levels, fm, p.blade_facet),
+            (Some(raw), Some(fm)) if p.blade_facet > 0.0 && fm.len() == (w * h) as usize => blade_facet_ref(&reference, raw, p.blade_planes.round() as usize, p.blade_levels, fm, p.blade_facet, p.blade_soft),
+            _ => reference,
+        };
+        // BLADE DETAIL (see `MediumProfile::blade_detail`): on the finer half of the ladder the planes over the local range.
+        let reference = match blade_raw.as_ref() {
+            Some(raw) if p.blade_detail > 0.0 => {
+                let (rc, rf) = (passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius), passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius));
+                let depth = if rc > rf + 1e-6 { ((rc - radius) / (rc - rf)).clamp(0.0, 1.0) } else { 0.0 };
+                if depth > 0.5 { blade_local_ref(&reference, raw, p.blade_planes.round() as usize, (radius * 8.0).round().max(4.0) as usize, p.blade_detail) } else { reference }
+            }
             _ => reference,
         };
         // NIB WASH PLANES: the planes laid as washes on the register's first pass (its stroke passes lay nothing — the
@@ -4969,6 +4988,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         return None;
                     }
                 }
+                // BLADE EDGE (see `MediumProfile::blade_edge`): on the finer passes the busy passage is drawn with
+                // the blade's edge — the slice narrowed and lengthened by the key × the busyness × the depth.
+                let (lvar, rw) = if p.blade_edge > 0.0 && !block_in {
+                    let e = p.blade_edge.clamp(0.0, 1.0) * (range_here / 0.3).clamp(0.0, 1.0) * depth_t;
+                    (lvar * (1.0 + 0.8 * e), rw * (1.0 - 0.6 * e))
+                } else {
+                    (lvar, rw)
+                };
                 // HATCH (see `MediumProfile::hatch`): every restating mark a hatch line — narrowed toward a line
                 // (`1 − 0.45·hatch` of the width, the lights narrower still), longer for it, straight (below),
                 // of one width end to end, dry, no pickup, `1 − 0.3·hatch` of the charge. Not the block-in,
@@ -5089,7 +5116,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                                 let e = rgb_dist(reference.get_pixel(x as u32, y as u32).0, target);
                                 if inert > 0.0 {
                                     err += (e - err) * smooth_a;
-                                    if d > 2.0 && (err > hard || e > 2.0 * hard) {
+                                    // BLADE VISC (see `MediumProfile::blade_visc`): the stop rises along the flow.
+                                    let hard_here = if p.blade_visc > 0.0 {
+                                        let (fx, fy) = (gx.get(i).copied().unwrap_or(0.0), gy.get(i).copied().unwrap_or(0.0));
+                                        let fm = (fx * fx + fy * fy).sqrt();
+                                        if fm > 1e-6 {
+                                            let align = ((-fy * ux + fx * uy) / fm).abs();
+                                            hard * (1.0 + 2.0 * p.blade_visc.clamp(0.0, 1.0) * align * align)
+                                        } else {
+                                            hard
+                                        }
+                                    } else {
+                                        hard
+                                    };
+                                    if d > 2.0 && (err > hard_here || e > 2.0 * hard_here) {
                                         break;
                                     }
                                 } else if d > 2.0 && e > STOP_TOL {
@@ -5331,6 +5371,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.streak = stroke_brush.streak.min(0.1);
                     stroke_brush.k_pickup = 0.0;
                     stroke_brush.viscosity = p.brush.viscosity * 1.6;
+                    // BLADE LAYERS (see `MediumProfile::blade_layers`): the narrow knife a thin film that shears
+                    // less of the paint beneath — both in the record (the stroke's knife share, its viscosity).
+                    if p.blade_layers > 0.0 && !block_in {
+                        let k = p.blade_layers.clamp(0.0, 1.0) * depth_t;
+                        stroke_brush.knife = (stroke_brush.knife * (1.0 - k)).max(0.15);
+                        stroke_brush.viscosity *= 1.0 - 0.8 * k;
+                    }
                     if skimmed {
                         stroke_brush.crest = p.skim;
                     }
@@ -6265,7 +6312,9 @@ fn wash_planes(reference: &RgbImage, n: usize, paper: color::LinRgb) -> RgbImage
 /// BLADE FACET (see `MediumProfile::blade_facet`): the pixels under the mask (≥ 0.5) of `planes` rewritten as
 /// `n` planes of value cut over THOSE pixels' own range and quantiles (`levels` as `blade_planes_ref`), from `raw`
 /// smoothed by `k` (a 200th of the short side) — the face's gradients gathered into terraces of its own.
-fn blade_facet_ref(planes: &RgbImage, raw: &RgbImage, n: usize, levels: f32, mask: &[f32], k: f32) -> RgbImage {
+/// BLADE SOFT (`soften`): each faceted pixel taken back toward the smoothed picture's own colour by
+/// `soft × (1 − |∇value|/0.01)` — the terrace a slope on the smooth skin, hewn at a true edge.
+fn blade_facet_ref(planes: &RgbImage, raw: &RgbImage, n: usize, levels: f32, mask: &[f32], k: f32, soften: f32) -> RgbImage {
     let (w, h) = raw.dimensions();
     let n = n.max(2);
     let sigma = (k.clamp(0.0, 1.0) * w.min(h) as f32 / 200.0).max(0.6);
@@ -6306,15 +6355,88 @@ fn blade_facet_ref(planes: &RgbImage, raw: &RgbImage, n: usize, levels: f32, mas
         let (x, y) = (i as u32 % w, i as u32 / w);
         let (l, c) = (luma[i], lin[i]);
         let m = mean[plane_of(l)];
-        let px = if l > 1e-5 {
+        let facet = if l > 1e-5 {
             let s = m / l;
-            image::Rgb(color::linear_to_srgb([(c[0] * s).clamp(0.0, 1.0), (c[1] * s).clamp(0.0, 1.0), (c[2] * s).clamp(0.0, 1.0)]))
+            [(c[0] * s).clamp(0.0, 1.0), (c[1] * s).clamp(0.0, 1.0), (c[2] * s).clamp(0.0, 1.0)]
         } else {
-            image::Rgb(color::linear_to_srgb([m, m, m]))
+            [m, m, m]
         };
-        out.put_pixel(x, y, px);
+        let facet = if soften > 0.0 {
+            let at = |xx: u32, yy: u32| eye(luma[(yy * w + xx) as usize]);
+            let (gx, gy) = ((at((x + 1).min(w - 1), y) - at(x.saturating_sub(1), y)) / 2.0, (at(x, (y + 1).min(h - 1)) - at(x, y.saturating_sub(1))) / 2.0);
+            let s = soften.clamp(0.0, 1.0) * (1.0 - ((gx * gx + gy * gy).sqrt() / 0.01).min(1.0));
+            [facet[0] + (c[0] - facet[0]) * s, facet[1] + (c[1] - facet[1]) * s, facet[2] + (c[2] - facet[2]) * s]
+        } else {
+            facet
+        };
+        out.put_pixel(x, y, image::Rgb(color::linear_to_srgb(facet)));
     }
     out
+}
+
+/// BLADE DETAIL (see `MediumProfile::blade_detail`): `planes` (the global planes) with every pixel whose LOCAL
+/// range of value (the min and max over a window of radius `r`, on the eye's scale, from `raw`) is at least 0.08
+/// rewritten as one of `n` even planes over that local range — the detail's own planes — by the key's share `k`
+/// against the global plane. A flat passage (a narrow local range) keeps the global plane.
+fn blade_local_ref(planes: &RgbImage, raw: &RgbImage, n: usize, r: usize, k: f32) -> RgbImage {
+    let (w, h) = raw.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    let n = n.max(2);
+    let k = k.clamp(0.0, 1.0);
+    let eye = |l: f32| l.max(0.0).powf(1.0 / 2.2);
+    let lin: Vec<color::LinRgb> = raw.pixels().map(|p| color::srgb_to_linear(p.0)).collect();
+    let luma: Vec<f32> = lin.iter().map(|c| color::linear_luma(*c)).collect();
+    let e: Vec<f32> = luma.iter().map(|l| eye(*l)).collect();
+    // Separable min / max over the window: along x, then along y.
+    let pass = |src: &[f32], f: fn(f32, f32) -> f32, init: f32| -> Vec<f32> {
+        let mut t = vec![init; wu * hu];
+        for y in 0..hu {
+            for x in 0..wu {
+                let mut m = init;
+                for d in x.saturating_sub(r)..=(x + r).min(wu - 1) {
+                    m = f(m, src[y * wu + d]);
+                }
+                t[y * wu + x] = m;
+            }
+        }
+        let mut o = vec![init; wu * hu];
+        for y in 0..hu {
+            for x in 0..wu {
+                let mut m = init;
+                for d in y.saturating_sub(r)..=(y + r).min(hu - 1) {
+                    m = f(m, t[d * wu + x]);
+                }
+                o[y * wu + x] = m;
+            }
+        }
+        o
+    };
+    let lo = pass(&e, f32::min, f32::MAX);
+    let hi = pass(&e, f32::max, f32::MIN);
+    let mut out = planes.clone();
+    for (i, px) in out.pixels_mut().enumerate() {
+        let range = hi[i] - lo[i];
+        if range < 0.08 {
+            continue;
+        }
+        let plane = (((e[i] - lo[i]) / range * n as f32).floor() as usize).min(n - 1);
+        let m = eye_inv(lo[i] + (plane as f32 + 0.5) / n as f32 * range);
+        let (l, c) = (luma[i], lin[i]);
+        let local = if l > 1e-5 {
+            let s = m / l;
+            [(c[0] * s).clamp(0.0, 1.0), (c[1] * s).clamp(0.0, 1.0), (c[2] * s).clamp(0.0, 1.0)]
+        } else {
+            [m, m, m]
+        };
+        let g = color::srgb_to_linear(px.0);
+        *px = image::Rgb(color::linear_to_srgb([g[0] + (local[0] - g[0]) * k, g[1] + (local[1] - g[1]) * k, g[2] + (local[2] - g[2]) * k]));
+    }
+    out
+}
+
+/// The eye's scale back to linear light (the inverse of the planes' `eye`).
+fn eye_inv(e: f32) -> f32 {
+    e.max(0.0).powf(2.2)
 }
 
 fn blade_planes_ref(reference: &RgbImage, n: usize, levels: f32) -> RgbImage {
@@ -13821,11 +13943,28 @@ mod blade_tests {
         let img = RgbImage::from_fn(w, h, |x, _| if x < 32 { image::Rgb([20, 20, 20]) } else { let v = 100 + (x - 32) * 40 / 31; image::Rgb([v as u8, v as u8, v as u8]) });
         let mask: Vec<f32> = (0..w * h).map(|i| if i % w >= 32 { 1.0 } else { 0.0 }).collect();
         let planes = blade_planes_ref(&img, 4, 0.0);
-        let out = blade_facet_ref(&planes, &img, 4, 0.0, &mask, 1.0);
+        let out = blade_facet_ref(&planes, &img, 4, 0.0, &mask, 1.0, 0.0);
         let distinct = |im: &RgbImage| { let mut v: Vec<u8> = (34..62).map(|x| im.get_pixel(x, 8).0[0]).collect(); v.sort_unstable(); v.dedup_by(|a, b| a.abs_diff(*b) <= 1); v.len() };
         assert!(distinct(&planes) <= 2, "the global planes leave the ramp in one or two ({})", distinct(&planes));
         assert!(distinct(&out) >= 3, "the facet cuts it into terraces ({})", distinct(&out));
         assert_eq!(out.get_pixel(10, 8), planes.get_pixel(10, 8), "the unmasked half is untouched");
+        // BLADE SOFT: on the smooth ramp the terraces give way toward the picture's own slope — more tones.
+        let softened = blade_facet_ref(&planes, &img, 4, 0.0, &mask, 1.0, 1.0);
+        assert!(distinct(&softened) > distinct(&out) + 2, "the soft facet is a slope on the smooth ramp ({} vs {})", distinct(&softened), distinct(&out));
+    }
+
+    #[test]
+    fn the_local_planes_keep_a_small_feature_the_global_planes_swallow() {
+        // Two flat halves (20 and 200) and a small lighter spot (170) in the right half: four global planes put
+        // the spot in the 200s' plane; the local planes give it a plane of its own; the flat right side keeps
+        // the global plane.
+        let (w, h) = (64u32, 16u32);
+        let img = RgbImage::from_fn(w, h, |x, _| if x < 32 { image::Rgb([20, 20, 20]) } else if (44..48).contains(&x) { image::Rgb([170, 170, 170]) } else { image::Rgb([200, 200, 200]) });
+        let planes = blade_planes_ref(&img, 4, 0.0);
+        assert!(planes.get_pixel(46, 8).0[0].abs_diff(planes.get_pixel(56, 8).0[0]) <= 1, "the global planes swallow the spot");
+        let out = blade_local_ref(&planes, &img, 4, 6, 1.0);
+        assert!(out.get_pixel(46, 8).0[0] + 8 < out.get_pixel(56, 8).0[0], "the local planes keep it ({} vs {})", out.get_pixel(46, 8).0[0], out.get_pixel(56, 8).0[0]);
+        assert_eq!(out.get_pixel(60, 8), planes.get_pixel(60, 8), "the flat passage keeps the global plane");
     }
 
     #[test]

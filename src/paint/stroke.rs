@@ -98,6 +98,16 @@ pub struct BrushConfig {
     /// leaves fades toward the tail by the key (×(1 − key·t)), its deposit by half as much, the ground's texture
     /// showing through the tail of the mark. (Against the bevel's ridge at the lift-off: the two compose.)
     pub fade: f32,
+    /// PILE (0..1, 0 = off; a knife mark only): the relief ACCUMULATES — the blade's shear of the standing paint
+    /// is taken back by the key (at 1 nothing is sheared), and the height a slice adds saturates against what
+    /// stands there (÷ (1 + key·h/2)): crossing slices pile into peaks and clots where the marks crowd, the
+    /// paint never growing without bound.
+    pub pile: f32,
+    /// SKID (0..1, 0 = off; a knife mark only, with `fade`): the blade at LOW PRESSURE rides the standing relief
+    /// — as the fade takes the pressure off toward the tail, the paint is laid only where the pixel stands above
+    /// the mean of its 5×5 surround (by `skid × fade·t`), the hollows left alone: the skidding knife, the dry
+    /// brush over the ridges.
+    pub skid: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -167,7 +177,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -681,7 +691,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, agent_t);
                 }
             }
         }
@@ -770,18 +780,21 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, agent_t: Option<(f32, f32)>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, agent_t: Option<(f32, f32)>) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
         }
         if brush.knife > 0.0 && plateau >= 0.0 {
             // The blade shears the standing paint down toward the plateau before laying its own.
+            // (PILE: the shear taken back by the key — the relief kept to pile on.)
             let h = canvas.height[p];
             if h > plateau {
-                canvas.height[p] = plateau + (h - plateau) * (1.0 - brush.knife.clamp(0.0, 1.0));
+                canvas.height[p] = plateau + (h - plateau) * (1.0 - brush.knife.clamp(0.0, 1.0) * (1.0 - brush.pile.clamp(0.0, 1.0)));
             }
         }
+        // PILE (see `BrushConfig::pile`): the height a slice adds saturates against what stands there.
+        let ridge = if brush.knife > 0.0 && brush.pile > 0.0 { ridge / (1.0 + brush.pile.clamp(0.0, 1.0) * canvas.height[p].max(0.0) / 2.0) } else { ridge };
         let tooth = canvas.tooth[p];
         // (`press_k`: the WAVER's pressure at this point, 1 without it.)
         let pressure = if press_k != 1.0 { (self.pressure * press_k).clamp(0.0, 1.0) } else { self.pressure };
@@ -864,6 +877,24 @@ impl Stroke {
             let t = ((if brush.crest > 0.0 { above } else { -above }) / (0.35 * mean + 1e-4)).clamp(0.0, 1.0);
             let catch = t * t * (3.0 - 2.0 * t);
             df *= 1.0 - brush.crest.abs().clamp(0.0, 1.0) * (1.0 - catch);
+        }
+        if skid_t > 0.0 {
+            // SKID (see `BrushConfig::skid`): the blade at low pressure rides the standing relief — the paint
+            // laid only where this pixel stands above the mean of its 5×5 surround, the hollows left alone.
+            let (w, h) = (canvas.w as i64, canvas.h as i64);
+            let (cx, cy) = (px as i64, py as i64);
+            let mut sum = 0.0f32;
+            let mut cnt = 0.0f32;
+            for yy in (cy - 2).max(0)..=(cy + 2).min(h - 1) {
+                for xx in (cx - 2).max(0)..=(cx + 2).min(w - 1) {
+                    sum += canvas.height[(yy * w + xx) as usize];
+                    cnt += 1.0;
+                }
+            }
+            let mean = sum / cnt.max(1.0);
+            let t = ((canvas.height[p] - mean) / (0.35 * mean + 1e-4)).clamp(0.0, 1.0);
+            let catch = t * t * (3.0 - 2.0 * t);
+            df *= 1.0 - skid_t.clamp(0.0, 1.0) * (1.0 - catch);
         }
         if brush.film_cap > 0.0 {
             let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
@@ -1193,6 +1224,36 @@ mod tests {
         assert!(edge > mid * 1.3, "the paint squeezed out to the blade's edges ({edge} vs {mid} down the middle)");
         let (start0, end0, _, _) = lay(0.0);
         assert!((end0 - start0).abs() < 0.15 * start0.max(end0), "flat without the bevel ({start0} vs {end0})");
+    }
+
+    #[test]
+    fn piled_knife_slices_stand_higher_where_they_cross_and_the_skidding_tail_rides_the_peaks() {
+        // Two knife slices crossing: without the pile the second shears the first to its plateau and the
+        // crossing stands no higher than one slice; with it the crossing piles up. Then a tail at low pressure
+        // (fade) over a standing ridge: with the skid it lays its paint on the ridge and not beside it.
+        let knife = |pile: f32, fade: f32, skid: f32| BrushConfig { knife: 1.0, pile, fade, skid, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() };
+        let cross = |pile: f32| {
+            let mut c = Canvas::white(80, 80, palette::ZORN, 0.9);
+            Stroke { path: vec![[8.0, 40.0], [72.0, 40.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(pile, 0.0, 0.0));
+            c.dry(0.0);
+            Stroke { path: vec![[40.0, 8.0], [40.0, 72.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(pile, 0.0, 0.0));
+            (c.height[40 * 80 + 40], c.height[40 * 80 + 20])
+        };
+        let ((x0, s0), (x1, s1)) = (cross(0.0), cross(1.0));
+        assert!(x0 < s0 * 1.2, "unpiled, the crossing stands no higher than a single slice ({x0} vs {s0})");
+        assert!(x1 > s1 * 1.4, "piled, the crossing stands higher ({x1} vs {s1})");
+        let tail = |skid: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            Stroke { path: vec![[58.0, 5.0], [58.0, 35.0]], width0: 6.0, width1: 6.0, load: vec![0.0, 0.0, 0.0, 4.0], pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &BrushConfig { viscosity: 3.0, k_pickup: 0.0, streak: 0.0, round: 0.0, deplete: 0.0, ..BrushConfig::default() });
+            c.dry(0.0);
+            Stroke { path: vec![[8.0, 20.0], [72.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(1.0, 1.0, skid));
+            let img = c.to_image();
+            let red = |x: u32| { let p = img.get_pixel(x, 20).0; p[0] as f32 - p[2] as f32 };
+            (red(58), red(66))
+        };
+        let ((on0, off0), (on1, off1)) = (tail(0.0), tail(1.0));
+        assert!(off1 < off0 * 0.7, "the skidding tail leaves the hollow beside the ridge alone ({off1} vs {off0})");
+        assert!(on1 > off1 * 1.5 && on1 > on0 * 0.6, "and lays its paint on the ridge ({on1} vs {on0}, beside {off1})");
     }
 
     #[test]

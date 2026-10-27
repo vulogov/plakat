@@ -1786,6 +1786,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.blade_inertia = plan.medium.blade_inertia;
     params.blade_facet = plan.medium.blade_facet;
     params.brush.fade = plan.medium.blade_fade;
+    params.blade_visc = plan.medium.blade_visc;
+    params.brush.pile = plan.medium.blade_pile;
+    params.blade_soft = plan.medium.blade_soft;
+    params.brush.skid = plan.medium.blade_skid;
+    params.blade_detail = plan.medium.blade_detail;
+    params.blade_layers = plan.medium.blade_layers;
+    params.blade_edge = plan.medium.blade_edge;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
     params.dishes = plan.medium.dishes;
@@ -2597,7 +2604,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
 
     // Brush sizes: derived from the image if not given — a coarse block-in down to a FINE restatement (the
     // finest reaches near `min_brush`, so faces and detail resolve, not just masses).
-    let brush_sizes = a.brush.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+    let mut brush_sizes = a.brush.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| {
         // A painter COVERS with a wide brush and long strokes, then resolves features with thin, short ones. So the
         // ladder keeps a WIDE coarse brush (~1/18 of the long side, 57 px at 1024²) for a hole-free block-in and
         // halves all the way down to the finest (2 px) for detail; the DETAIL tier alone gets short marks (the
@@ -2700,6 +2707,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.blade_inertia = m.blade_inertia;
         params.blade_facet = m.blade_facet;
         params.brush.fade = m.blade_fade;
+        params.blade_visc = m.blade_visc;
+        params.brush.pile = m.blade_pile;
+        params.blade_soft = m.blade_soft;
+        params.brush.skid = m.blade_skid;
+        params.blade_detail = m.blade_detail;
+        params.blade_layers = m.blade_layers;
+        params.blade_edge = m.blade_edge;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
         params.dishes = m.dishes;
@@ -2891,6 +2905,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.blade_inertia { params.blade_inertia = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_facet { params.blade_facet = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_fade { params.brush.fade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_visc { params.blade_visc = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_pile { params.brush.pile = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_soft { params.blade_soft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_skid { params.brush.skid = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_detail { params.blade_detail = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_layers { params.blade_layers = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_edge { params.blade_edge = v.clamp(0.0, 1.0); }
+        // BLADE KNIVES (see `PlanMedium::blade_knives`): the plan's own ladder of knife widths.
+        if let Some(k) = pl.blade_knives.as_ref().filter(|v| !v.is_empty()) { brush_sizes = k.iter().map(|v| v.max(1.0)).collect(); }
         if let Some(v) = pl.hatch { params.hatch = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.verdaccio { params.verdaccio = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dishes { params.dishes = if v >= 2.0 { v.min(32.0).round() } else { 0.0 }; }
