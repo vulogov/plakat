@@ -83,6 +83,12 @@ pub struct BrushConfig {
     /// 30th percentile of the height along its path) by this share before laying its own paint flat, so a
     /// knife mark is a smooth plane with sharp edges cut into the relief. Per stroke, in the record.
     pub knife: f32,
+    /// BEVEL (0..1, 0 = off; with `knife`): the THICKNESS PROFILE of a knife slice — the blade pressed down at
+    /// the start lays the paint thin, and the paint it pushes ahead builds toward the lift-off into a sharp ridge
+    /// (the height along the mark `0.5 + 0.8·t`, and a step of 1.2 over the last fifth); across the blade the paint
+    /// squeezes out to its two edges (the outer lanes 1.8× the middle). Each a multiplier on the laid height, blended
+    /// from flat by the key; the slice's colour is not touched. In the header.
+    pub bevel: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -152,7 +158,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -551,6 +557,18 @@ impl Stroke {
                 };
                 // KATSU (see `BrushConfig::katsu`): the brush's speed at this point of the mark.
                 let katsu_t = if brush.katsu > 0.0 { brush.katsu.clamp(0.0, 1.0) * t.powf(1.5) } else { 0.0 };
+                // BEVEL (see `BrushConfig::bevel`): a knife slice's height thin at the start, a ridge at the
+                // lift-off, the paint squeezed out to the blade's two edges.
+                let bevel_h = if brush.knife > 0.0 && brush.bevel > 0.0 {
+                    let k = brush.bevel.clamp(0.0, 1.0);
+                    let s = ((t - 0.8) / 0.2).clamp(0.0, 1.0);
+                    let along = 0.5 + 0.8 * t + 1.2 * s * s * (3.0 - 2.0 * s);
+                    let u = if nb > 1 { (2.0 * b as f32 / (nb - 1) as f32 - 1.0).abs() } else { 0.0 };
+                    let across = 1.0 + 0.8 * ((u - 0.6) / 0.4).clamp(0.0, 1.0);
+                    (1.0 - k) + k * along * across
+                } else {
+                    1.0
+                };
                 // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
                 // own slow hash falls under the dryness at this point of the mark.
                 let edge = if brush.kasure > 0.0 {
@@ -631,7 +649,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { bevel_h } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, agent_t);
                 }
             }
         }
@@ -1124,6 +1142,50 @@ mod tests {
         assert!(brushed > ridge_h, "a brush rides over the ridge and adds to it ({brushed} vs {ridge_h})");
         assert!(knifed < ridge_h * 0.6, "the knife shears the ridge down ({knifed} vs {ridge_h})");
         assert!(knifed <= knife_flat + ridge_h * 0.3, "to no higher than its own paint beside it ({knifed} vs {knife_flat})");
+    }
+
+    #[test]
+    fn a_bevelled_knife_slice_is_thin_at_the_start_and_a_ridge_at_the_lift_off() {
+        // One knife mark left to right on a white sheet: with the bevel the paint stands higher at the lift-off
+        // than at the start and higher along the blade's edges than down its middle; without it the slice is flat.
+        let lay = |bevel: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            let mark = Stroke { path: vec![[10.0, 20.0], [70.0, 20.0]], width0: 10.0, width1: 10.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            // (No depletion: the paint a knife pushes ahead does not run out along the slice as a brush's does.)
+            mark.rasterize(&mut c, &BrushConfig { knife: 1.0, bevel, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |x: usize, y: usize| c.height[y * 80 + x];
+            (h(16, 20), h(62, 20), h(40, 20), h(40, 16).max(h(40, 24)))
+        };
+        let (start, end, mid, edge) = lay(1.0);
+        assert!(end > start * 2.0, "the ridge at the lift-off ({end} vs {start} at the start)");
+        assert!(edge > mid * 1.3, "the paint squeezed out to the blade's edges ({edge} vs {mid} down the middle)");
+        let (start0, end0, _, _) = lay(0.0);
+        assert!((end0 - start0).abs() < 0.15 * start0.max(end0), "flat without the bevel ({start0} vs {end0})");
+    }
+
+    #[test]
+    fn the_lamps_azimuth_turns_the_lit_flank_of_a_ridge_and_the_phong_adds_a_highlight() {
+        // A thick vertical ridge; relit with the lamp from the right and from the left its two flanks swap
+        // light and shadow; with the phong the lit flank is brighter still.
+        let mut c = Canvas::white(60, 40, palette::ZORN, 0.9);
+        let ridge = Stroke { path: vec![[30.0, 5.0], [30.0, 35.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+        ridge.rasterize(&mut c, &BrushConfig { viscosity: 3.0, k_pickup: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+        c.dry(0.0);
+        let luma = |img: &image::RgbImage, x: u32| -> f32 {
+            (15..25).map(|y| { let p = img.get_pixel(x, y).0; crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(p)) }).sum::<f32>() / 10.0
+        };
+        // (A modest impasto: at 1.0 the diffuse shading alone saturates the relight's clamp on a steep flank.)
+        let relit = |light: f32, phong: f32| c.to_image_finished(&crate::paint::canvas::Finish { impasto: 0.3, light, phong, ..Default::default() });
+        let (r, l) = (relit(0.0 + 360.0, 0.0), relit(180.0, 0.0));
+        let dr = luma(&r, 27) - luma(&r, 33);
+        let dl = luma(&l, 27) - luma(&l, 33);
+        assert!(dr * dl < 0.0 && dr.abs() > 0.005, "the lamp from the right and from the left light opposite flanks ({dr} vs {dl})");
+        // The phong: a narrow highlight where a facet meets the half-vector — somewhere on the lit flank the
+        // sheet is brighter with it than without.
+        let ph = relit(360.0, 0.5);
+        let xs: Vec<u32> = if dr > 0.0 { (20..30).collect() } else { (31..41).collect() };
+        let best = xs.iter().map(|&x| luma(&ph, x) - luma(&r, x)).fold(f32::MIN, f32::max);
+        assert!(best > 0.01, "the phong brightens a facet of the lit flank (best gain {best})");
     }
 
     #[test]

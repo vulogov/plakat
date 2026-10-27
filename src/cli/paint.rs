@@ -553,7 +553,7 @@ pub struct FromArgs {
     pub palette: String,
     /// MEDIUM to repaint the image in (oil-direct / oil-indirect / acrylic / gouache / tempera / pastel /
     /// watercolour / line-and-wash / early-book-illustration / ink-wash / japanese-ink / pen-ink / durer / pencil /
-    /// black-pencil / charcoal). Applies the
+    /// black-pencil / charcoal / palette-knife). Applies the
     /// full technique behaviour — physics, finish and the medium's own MARK; the flags below override it.
     #[arg(long)]
     pub medium: Option<String>,
@@ -981,7 +981,8 @@ const SCAFFOLD: &str = r#"{
     steps: 40
 
     // MEDIUM: oil-direct | oil-indirect | acrylic | gouache | tempera | pastel | watercolour | line-and-wash |
-    //         early-book-illustration | ink-wash | japanese-ink | pen-ink | durer | pencil | black-pencil | charcoal
+    //         early-book-illustration | ink-wash | japanese-ink | pen-ink | durer | pencil | black-pencil | charcoal |
+    //         palette-knife
     medium: watercolour
     // PALETTE: zorn | split-primary | verdaccio | earth | limited-landscape | sumi
     palette: limited-landscape
@@ -1770,6 +1771,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.hiding = plan.medium.hiding;
     params.twist = plan.medium.twist;
     params.skim = plan.medium.skim;
+    params.blade = plan.medium.blade;
+    params.blade_planes = plan.medium.blade_planes;
+    params.blade_levels = plan.medium.blade_levels;
+    params.blade_size = plan.medium.blade_size;
+    params.brush.bevel = plan.medium.blade_bevel;
+    params.blade_light = plan.medium.blade_light;
+    params.blade_phong = plan.medium.blade_phong;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
     params.dishes = plan.medium.dishes;
@@ -2669,6 +2677,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.hiding = m.hiding;
         params.twist = m.twist;
         params.skim = m.skim;
+        params.blade = m.blade;
+        params.blade_planes = m.blade_planes;
+        params.blade_levels = m.blade_levels;
+        params.blade_size = m.blade_size;
+        params.brush.bevel = m.blade_bevel;
+        params.blade_light = m.blade_light;
+        params.blade_phong = m.blade_phong;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
         params.dishes = m.dishes;
@@ -2845,6 +2860,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.hiding { params.hiding = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.twist { params.twist = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.skim { params.skim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade { params.blade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_planes { params.blade_planes = if v >= 2.0 { v.min(32.0).round() } else { 0.0 }; }
+        if let Some(v) = pl.blade_levels { params.blade_levels = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_size { params.blade_size = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_bevel { params.brush.bevel = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_light { params.blade_light = v.rem_euclid(360.0); }
+        if let Some(v) = pl.blade_phong { params.blade_phong = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.hatch { params.hatch = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.verdaccio { params.verdaccio = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dishes { params.dishes = if v >= 2.0 { v.min(32.0).round() } else { 0.0 }; }

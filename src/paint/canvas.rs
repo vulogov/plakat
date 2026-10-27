@@ -1441,7 +1441,9 @@ impl Canvas {
             } else {
                 self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4)
             };
-            let (lx, ly) = (0.55_f32, 0.83_f32);
+            // LIGHT (see `Finish::light`): the lamp's azimuth, or the old fixed lamp.
+            let (lx, ly) = if f.light > 0.0 { let a = f.light.to_radians(); (a.cos(), a.sin()) } else { (0.55_f32, 0.83_f32) };
+            let phong = f.phong.clamp(0.0, 1.0);
             let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
             let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
             // The weave: a plain LINEN, not a grid — the warp and weft domain-warped by a slow noise (the
@@ -1523,6 +1525,19 @@ impl Canvas {
                     let mut shade = gain * facing * amt;
                     if spec > 0.0 && facing > 0.0 {
                         shade += spec * facing * facing * amt;
+                    }
+                    if phong > 0.0 {
+                        // PHONG (see `Finish::phong`): a specular lobe on the FACETS that face the lamp — the
+                        // cosine between the slope's azimuth and the lamp's to the power `8 + 24·key` (the lobe),
+                        // gated by the slope's steepness (full from 0.08 of the peak per two pixels: a slice's
+                        // fascia, not the gentle swell of its plane). (A true Blinn–Phong on the normal needed the
+                        // facet to meet the half-vector's elevation exactly — on a painted relief none did.)
+                        let g = (hx * hx + hy * hy).sqrt();
+                        if g > 1e-6 {
+                            let lobe = ((hx * lx + hy * ly) / g).max(0.0).powf(8.0 + 24.0 * phong);
+                            let steep = (g / 0.08).clamp(0.0, 1.0);
+                            shade += 0.8 * phong * lobe * steep * amt;
+                        }
                     }
                     // CAST SHADOW (with the striated relief, `ridges`): a thick stroke beside thin paint is
                     // a step, and the raking light throws the step's shadow onto the thin side — the
@@ -1719,13 +1734,23 @@ pub struct Finish {
     /// and the blacks kept, the half-tones deepened (see `MediumProfile::nib_wash_tone`; the pull is solved by the
     /// painter against the picture's mean and recorded in the score's header). Before the contrast.
     pub tone: f32,
+    /// LIGHT (degrees, 0 = off): the AZIMUTH of the raking lamp the relief is relit under — the direction on the
+    /// sheet the light comes from, 0 from the right, 90 from below, 180 from the left, 270 from above (the old
+    /// fixed lamp, off, lies at about 56°). The same lamp lights the diffuse shading, the sheen, the cast shadow
+    /// and the gloss.
+    pub light: f32,
+    /// PHONG (0..1, 0 = off): a specular LOBE on the relief's facets that FACE THE LAMP — the cosine between a
+    /// slope's azimuth and the lamp's to a power rising with the key (8 → 32), gated by the slope's steepness — a
+    /// narrow highlight on every fascia turned to the lamp, the thick paint's slabs catching the light on their
+    /// edges and the gentle swell of a plane left alone.
+    pub phong: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, seed: 0 }
     }
 }
 
