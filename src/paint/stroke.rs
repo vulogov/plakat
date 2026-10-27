@@ -89,6 +89,11 @@ pub struct BrushConfig {
     /// squeezes out to its two edges (the outer lanes 1.8× the middle). Each a multiplier on the laid height, blended
     /// from flat by the key; the slice's colour is not touched. In the header.
     pub bevel: f32,
+    /// MIX (0..1, 0 = off; a knife mark only): the blade carries TWO colours — the mark's charge and its second
+    /// (`load_end`, the ramp's slot) laid in alternating BANDS of lanes across the width (two to five, by the
+    /// mark's own hash), each band one colour or the other by the key's share, hard-edged, the length of the
+    /// slice: the paint not fully blended on the knife, dragged as streaks. The ramp along the mark is off for it.
+    pub mix: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -158,7 +163,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -321,6 +326,26 @@ impl Stroke {
                 }
             }
         }
+        // MIX (see `BrushConfig::mix`): a knife slice's lanes in alternating bands of its two colours — each lane
+        // keeps its own streak (its charge's scale against the mark's) and takes the band's colour.
+        let mixed = brush.mix > 0.0 && brush.knife > 0.0 && load_end.is_some() && nb > 1;
+        if let (true, Some(le)) = (mixed, load_end) {
+            let k = brush.mix.clamp(0.0, 1.0);
+            let bands = 2 + (lane_hash(seed ^ 0x3B1E, 7) * 4.0).min(3.0) as usize; // 2..5
+            let parity = (lane_hash(seed ^ 0x3B1F, 11) < 0.5) as usize;
+            let base = Self::load_norm(&self.load).max(1e-6);
+            for (b, lane) in bload.iter_mut().enumerate() {
+                let band = b * bands / nb;
+                if band % 2 != parity {
+                    continue;
+                }
+                let r = Self::load_norm(lane) / base;
+                for c in 0..lane.len().min(le.len()).min(self.load.len()) {
+                    lane[c] = (self.load[c] + (le[c] - self.load[c]) * k) * r;
+                }
+            }
+        }
+        let load_end = if mixed { None } else { load_end };
         let mut bwet: Vec<f32> = vec![self.wetness; nb];
         let n = canvas.n_pigments();
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
@@ -1161,6 +1186,45 @@ mod tests {
         assert!(edge > mid * 1.3, "the paint squeezed out to the blade's edges ({edge} vs {mid} down the middle)");
         let (start0, end0, _, _) = lay(0.0);
         assert!((end0 - start0).abs() < 0.15 * start0.max(end0), "flat without the bevel ({start0} vs {end0})");
+    }
+
+    #[test]
+    fn a_mixed_knife_slice_lays_its_two_colours_in_bands_across_the_blade() {
+        // A knife slice of red with black as its second colour: with the mix the width shows bands of both,
+        // with the ramp (no mix) the middle of the mark is one tone across its width.
+        let black = vec![0.0, 0.0, 4.0, 0.0];
+        let run = |mix: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [72.0, 20.0]], width0: 16.0, width1: 16.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize_ramp(&mut c, &BrushConfig { knife: 1.0, mix, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() }, Some(&black));
+            c.dry(0.0);
+            let img = c.to_image();
+            (13..28).map(|y| { let p = img.get_pixel(40, y).0; crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(p)) }).collect::<Vec<f32>>()
+        };
+        let (mixed, ramped) = (run(1.0), run(0.0));
+        let spread = |v: &[f32]| v.iter().cloned().fold(0.0f32, f32::max) - v.iter().cloned().fold(1.0f32, f32::min);
+        assert!(spread(&mixed) > 0.08, "the mixed slice shows both colours across its width ({:?})", mixed);
+        assert!(spread(&ramped) < 0.03, "the ramped slice is one tone across its width at its middle ({:?})", ramped);
+    }
+
+    #[test]
+    fn the_spread_reads_a_slabs_flank_over_a_band_not_a_hairline() {
+        // A thick slab; relit sharp, its flank is a line or two at the edge; with the spread the band of pixels
+        // inside the slab that differ from its interior is several pixels wide.
+        let mut c = Canvas::white(160, 80, palette::ZORN, 0.9);
+        let slab = Stroke { path: vec![[10.0, 40.0], [70.0, 40.0]], width0: 50.0, width1: 50.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+        slab.rasterize(&mut c, &BrushConfig { viscosity: 3.0, k_pickup: 0.0, streak: 0.0, round: 0.0, flat_ends: true, deplete: 0.0, ..BrushConfig::default() });
+        c.dry(0.0);
+        let luma = |img: &image::RgbImage, x: u32| -> f32 {
+            (35..45).map(|y| { let p = img.get_pixel(x, y).0; crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(p)) }).sum::<f32>() / 10.0
+        };
+        let band = |spread: f32| {
+            let img = c.to_image_finished(&crate::paint::canvas::Finish { impasto: 1.0, light: 360.0, spread, ..Default::default() });
+            let inner = luma(&img, 30);
+            (40..70).filter(|&x| (luma(&img, x) - inner).abs() > 0.01).count()
+        };
+        let (sharp, wide) = (band(0.0), band(1.0));
+        assert!(wide >= sharp + 3, "the spread widens the flank's band ({sharp} px sharp, {wide} px spread)");
     }
 
     #[test]

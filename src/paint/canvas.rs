@@ -1507,6 +1507,14 @@ impl Canvas {
                 let fibre = 0.12 * (value_noise(x / 1.7, y / 1.7, f.seed ^ 0x5F1B) - 0.5);
                 0.6 * interlock * (tx + ty) * 0.5 + ridges + fibre
             };
+            // SPREAD (see `Finish::spread`): the height blurred twice over `r`, its slope scaled back by `r`.
+            let spread = f.spread.clamp(0.0, 1.0);
+            let (wide, wide_r) = if spread > 0.0 {
+                let r = ((w.min(h) as f32 / 160.0) * spread).round().max(4.0) as usize;
+                (Self::box_blur_f(&Self::box_blur_f(&self.height, w, h, r), w, h, r), r as f32)
+            } else {
+                (Vec::new(), 0.0)
+            };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -1515,6 +1523,11 @@ impl Canvas {
                     let yb = (y + 1).min(h - 1);
                     let hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak;
                     let hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak;
+                    let (hx, hy) = if spread > 0.0 {
+                        (hx + (wide[y * w + xr] - wide[y * w + xl]) / peak * wide_r, hy + (wide[yb * w + x] - wide[yt * w + x]) / peak * wide_r)
+                    } else {
+                        (hx, hy)
+                    };
                     let facing = hx * lx + hy * ly;
                     // Gate by the paint AMOUNT here: thin / flat passages (a wash, a bare background) barely stand
                     // off the surface, so they get little relief — only built-up strokes catch light. Keeps the
@@ -1744,13 +1757,18 @@ pub struct Finish {
     /// narrow highlight on every fascia turned to the lamp, the thick paint's slabs catching the light on their
     /// edges and the gentle swell of a plane left alone.
     pub phong: f32,
+    /// SPREAD (0..1, 0 = off): the relief's slope read over a WINDOW of the picture's scale — the height blurred
+    /// over `r` (a 160th of the short side at the key, four pixels at least), its gradient scaled back by `r` so
+    /// a slab's step keeps its slope but spends it over the window's width, added to the sharp slope: a slab's
+    /// flank a band of light and shadow the eye reads at the picture's size, not a hairline at its edge.
+    pub spread: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, seed: 0 }
     }
 }
 
