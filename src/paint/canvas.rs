@@ -980,6 +980,34 @@ impl Canvas {
 
     /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
     /// cells actually inside).
+    /// The min and the max of `src` over a square window of radius `r` (separable: along x, then along y).
+    fn local_min_max(src: &[f32], w: usize, h: usize, r: usize) -> (Vec<f32>, Vec<f32>) {
+        let pass = |s: &[f32], f: fn(f32, f32) -> f32, init: f32| -> Vec<f32> {
+            let mut t = vec![init; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut m = init;
+                    for d in x.saturating_sub(r)..=(x + r).min(w - 1) {
+                        m = f(m, s[y * w + d]);
+                    }
+                    t[y * w + x] = m;
+                }
+            }
+            let mut o = vec![init; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut m = init;
+                    for d in y.saturating_sub(r)..=(y + r).min(h - 1) {
+                        m = f(m, t[d * w + x]);
+                    }
+                    o[y * w + x] = m;
+                }
+            }
+            o
+        };
+        (pass(src, f32::min, f32::MAX), pass(src, f32::max, f32::MIN))
+    }
+
     fn box_blur_f(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
         let pass = |line: &[f32], out: &mut [f32]| {
             let len = line.len();
@@ -1432,7 +1460,7 @@ impl Canvas {
             }
         }
         // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 {
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 || f.peak > 1e-4 {
             // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
             // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
             let peak = if f.relief_robust {
@@ -1487,6 +1515,10 @@ impl Canvas {
             // THE GLOSS (see `Finish::gloss`): the paint's height against its 5×5 surround, for the peaks.
             let gloss = f.gloss.clamp(0.0, 1.0);
             let mean5: Vec<f32> = if gloss > 0.0 { Self::box_blur_f(&self.height, w, h, 2) } else { Vec::new() };
+            // PEAK (see `Finish::peak`): the height's min and max over a window of a 40th of the short side — the
+            // local relief's range, its top tenth the crests.
+            let peak_k = f.peak.clamp(0.0, 1.0);
+            let (peak_lo, peak_hi) = if peak_k > 0.0 { Self::local_min_max(&self.height, w, h, (w.min(h) / 40).max(4)) } else { (Vec::new(), Vec::new()) };
             let linen = |x: f32, y: f32| -> f32 {
                 // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
                 // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
@@ -1588,6 +1620,20 @@ impl Canvas {
                         let tall = ((hp / peak - 0.45) / 0.4).clamp(0.0, 1.0);
                         let fc = (facing / 0.35).clamp(0.0, 1.0);
                         shade += gloss * fc * fc * fc * fc * peakness * tall * amt;
+                    }
+                    if peak_k > 0.0 {
+                        // PEAK (see `Finish::peak`): the pixels in the top tenth of the LOCAL range are lit — the
+                        // crest flat to the lamp's half-vector takes 0.4, a fascia turned to the lamp the rest.
+                        let i = y * w + x;
+                        let span = peak_hi[i] - peak_lo[i];
+                        if span > 1e-4 {
+                            let t = ((self.height[i] - peak_lo[i] - 0.9 * span) / (0.1 * span)).clamp(0.0, 1.0);
+                            if t > 0.0 {
+                                let g = (hx * hx + hy * hy).sqrt();
+                                let face = if g > 1e-6 { ((hx * lx + hy * ly) / g).max(0.0).powi(4) } else { 1.0 };
+                                shade += 0.9 * peak_k * t * (0.4 + 0.6 * face) * amt;
+                            }
+                        }
                     }
                     if sag > 0.0 {
                         // The dip's slope, over the blur's own radius so a full dip reads as a half-unit tilt.
@@ -1762,13 +1808,19 @@ pub struct Finish {
     /// a slab's step keeps its slope but spends it over the window's width, added to the sharp slope: a slab's
     /// flank a band of light and shadow the eye reads at the picture's size, not a hairline at its edge.
     pub spread: f32,
+    /// PEAK (0..1, 0 = off): a sharp SPECULAR on the LOCAL CRESTS of the relief — the pixels in the top tenth of
+    /// the height's range over a window of a 40th of the short side (the local z-buffer's peaks: a sky's rims
+    /// and a wave's crests as much as the thickest clot on the sheet — `gloss` glints only against the sheet's
+    /// own peak), lit by the key: the crest itself (a flat top meets the lamp's half-vector), brightest where the
+    /// fascia turns to the lamp (the facing's azimuth to the fourth), least where it turns away.
+    pub peak: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, seed: 0 }
     }
 }
 
@@ -2295,6 +2347,31 @@ mod flow_tests {
         assert!(at(&sel, 30) < at(&flood, 30) * 0.5, "the water holds back at the hard edge: {} vs {}", at(&sel, 30), at(&flood, 30));
         // Far from it the lane gap is filled either way.
         assert!(at(&sel, 70) > 0.0 && at(&flood, 70) > 0.0, "the soft mass still floods");
+    }
+
+    #[test]
+    fn the_peak_lights_a_low_crest_the_gloss_passes_over() {
+        // Two ridges on a thin ground, a tall one on the left and a low one on the right. The gloss (against the
+        // sheet's own peak) glints the tall ridge only; the peak (the local top tenth) lights both crests.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = match x { 10..=12 => 2.0, 42..=44 => 0.6, _ => 0.1 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let plain = c.to_image_finished(&Finish { impasto: 0.0, ..Default::default() });
+        let glossed = c.to_image_finished(&Finish { gloss: 1.0, impasto: 0.0, ..Default::default() });
+        let peaked = c.to_image_finished(&Finish { peak: 1.0, impasto: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&peaked, 11) > at(&plain, 11) + 3.0, "the tall crest is lit by the peak ({} vs {})", at(&peaked, 11), at(&plain, 11));
+        assert!(at(&peaked, 43) > at(&plain, 43) + 3.0, "and the low crest too ({} vs {})", at(&peaked, 43), at(&plain, 43));
+        assert!((at(&peaked, 25) - at(&plain, 25)).abs() < 1.0, "the ground between is left alone ({} vs {})", at(&peaked, 25), at(&plain, 25));
+        assert!((at(&glossed, 43) - at(&plain, 43)).abs() < 1.0, "the gloss passes the low crest over ({} vs {})", at(&glossed, 43), at(&plain, 43));
     }
 
     #[test]

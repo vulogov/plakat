@@ -108,6 +108,23 @@ pub struct BrushConfig {
     /// the mean of its 5×5 surround (by `skid × fade·t`), the hollows left alone: the skidding knife, the dry
     /// brush over the ridges.
     pub skid: f32,
+    /// RIM (0..1, 0 = off; a knife mark only): the EDGE BEAD — a wide blade does not lay the paint flat, it
+    /// squeezes it out to its two edges, so the slice's section is a U: the height at the outer lanes up to
+    /// ×2.05 and the middle down to ×0.65 (a smoothstep over the outer 45% of the half-width), by the key and by
+    /// how WIDE the mark is against a 60th of the sheet's short side (16 px at least) — the broad slabs get their
+    /// beads of paint along the sides, a narrow slice keeps its flat section. A height multiplier only.
+    pub rim: f32,
+    /// SLIP (0..1, 0 = off; a knife mark only): the wide blade's UNEVEN PRESSURE — a low-frequency value noise
+    /// (a period of 1.2 widths, the mark's own) gates the paint: where it falls under `0.4·key·wide` nothing is laid
+    /// (over a ramp of 0.15), so the slab is torn at its edges and holed inside — the blade lifting from the
+    /// canvas over a large passage. `wide` as the rim's. The pixels the slip skips are not sheared either.
+    pub slip: f32,
+    /// BED (0..1, 0 = off; a knife mark only): the THIN mark RIDES THE RELIEF beneath — where its paint lands,
+    /// the height under it is first raised toward the local maximum of its 5×5 surround (by half the
+    /// difference × the key × how THIN the mark is: `1 − wide`), a max with decay, so the thin slice bends up
+    /// over the dried lumps of the layers below instead of lying across them as an appliqué: its own film is
+    /// then laid on that bent bed.
+    pub bed: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -177,7 +194,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -201,6 +218,18 @@ const CHARGE_PX: f32 = 12.0;
 const SAT_THROTTLE: f32 = 0.4;
 
 /// Deterministic per-lane hash in `[0,1]` (a hashed LCG) — for reproducible bristle-load variation.
+/// A VALUE NOISE in 0..1: the unit lattice's corners hashed from the seed, bilinear between them with a
+/// smoothstep — slow and smooth at the scale of a unit (see `BrushConfig::slip`).
+pub(crate) fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let at = |i: f32, j: f32| lane_hash(seed ^ ((i as i64 as u64).wrapping_mul(0x9E37_79B9)), (j as i64 as u64).wrapping_mul(0x85EB_CA6B) ^ 0x7F4A_7C15);
+    let top = at(x0, y0) + (at(x0 + 1.0, y0) - at(x0, y0)) * sx;
+    let bot = at(x0, y0 + 1.0) + (at(x0 + 1.0, y0 + 1.0) - at(x0, y0 + 1.0)) * sx;
+    top + (bot - top) * sy
+}
+
 fn lane_hash(seed: u64, b: u64) -> f32 {
     let mut z = seed.wrapping_add(b.wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add(0x1234_5678);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -308,6 +337,37 @@ impl Stroke {
         // the ends faded, the halo a feathered edge. 0 under a brush without nijimi (every other medium untouched).
         let flood = if brush.nijimi > 0.0 { ((self.wetness.clamp(0.0, 1.0) - 0.5) / 0.4).clamp(0.0, 1.0) } else { 0.0 };
         let maxw = self.width0.max(self.width1).max(1.0) * spread;
+        // RIM / SLIP / BED (see `BrushConfig::rim`): how WIDE the mark is against a 60th of the sheet's short side.
+        let wide = (maxw / (canvas.w.min(canvas.h) as f32 / 60.0).max(16.0)).clamp(0.0, 1.0);
+        let slip_t = if brush.knife > 0.0 && brush.slip > 0.0 { brush.slip.clamp(0.0, 1.0) * wide } else { 0.0 };
+        let slip_per = (maxw * 1.2).max(6.0);
+        let bed_t = if brush.knife > 0.0 && brush.bed > 0.0 { brush.bed.clamp(0.0, 1.0) * (1.0 - wide) } else { 0.0 };
+        // The BED reads the relief as it stands BEFORE this mark (a snapshot over the mark's reach): read live, the
+        // mark's own fresh paint was the local maximum its next pixel rose toward, and the whole slice climbed.
+        let bed_base: Option<(Vec<f32>, i64, i64, usize, usize)> = (bed_t > 0.0).then(|| {
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for q in &pts {
+                x0 = x0.min(q[0]);
+                y0 = y0.min(q[1]);
+                x1 = x1.max(q[0]);
+                y1 = y1.max(q[1]);
+            }
+            let pad = maxw * 0.5 + 3.0;
+            let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as i64, ((y0 - pad).floor().max(0.0)) as i64);
+            let (bx1, by1) = (((x1 + pad).ceil().min(canvas.w as f32 - 1.0)) as i64, ((y1 + pad).ceil().min(canvas.h as f32 - 1.0)) as i64);
+            let (bw, bh) = ((bx1 - bx0 + 1).max(1) as usize, (by1 - by0 + 1).max(1) as usize);
+            let mut v = vec![0f32; bw * bh];
+            for yy in 0..bh {
+                for xx in 0..bw {
+                    let (sx, sy) = (bx0 as usize + xx, by0 as usize + yy);
+                    if sx < canvas.w as usize && sy < canvas.h as usize {
+                        v[yy * bw + xx] = canvas.height[sy * canvas.w as usize + sx];
+                    }
+                }
+            }
+            (v, bx0, by0, bw, bh)
+        });
+        let bed_arg: Option<(f32, &[f32], i64, i64, usize, usize)> = bed_base.as_ref().map(|(v, bx0, by0, bw, bh)| (bed_t, v.as_slice(), *bx0, *by0, *bw, *bh));
         // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
         // untouched (the rounding), and a wash came out as a dotted screen.
         let dense = brush.flat_ends || brush.hold_charge;
@@ -608,6 +668,15 @@ impl Stroke {
                 } else {
                     1.0
                 };
+                // RIM (see `BrushConfig::rim`): the wide slice's section a U — the beads of paint at its two edges.
+                let rim_h = if brush.knife > 0.0 && brush.rim > 0.0 && nb > 2 && wide > 0.0 {
+                    let u = (2.0 * b as f32 / (nb - 1) as f32 - 1.0).abs();
+                    let s = ((u - 0.55) / 0.45).clamp(0.0, 1.0);
+                    let s = s * s * (3.0 - 2.0 * s);
+                    1.0 + brush.rim.clamp(0.0, 1.0) * wide * (1.4 * s - 0.35)
+                } else {
+                    1.0
+                };
                 // FADE (see `BrushConfig::fade`): the paint runs out along the slice — the height toward the tail
                 // by the key, the deposit by half as much.
                 let fade_t = if brush.knife > 0.0 && brush.fade > 0.0 { 1.0 - brush.fade.clamp(0.0, 1.0) * t } else { 1.0 };
@@ -617,6 +686,13 @@ impl Stroke {
                     let a = brush.kasure.clamp(0.0, 1.0) * t.powf(1.5) * (1.0 - flood);
                     let nz = 0.75 * lane_hash(seed ^ 0x6A5E, b as u64) + 0.25 * lane_hash(seed ^ 0x6A5F, ((b as u64) << 20) ^ (i as u64 / 8));
                     edge * ((nz - a) / 0.08).clamp(0.0, 1.0)
+                } else {
+                    edge
+                };
+                // SLIP (see `BrushConfig::slip`): the wide blade's uneven pressure — the paint gated by a slow noise.
+                let edge = if slip_t > 0.0 {
+                    let nz = value_noise(seed ^ 0x5117_B1AD, x / slip_per, y / slip_per);
+                    edge * ((nz - 0.4 * slip_t) / 0.15).clamp(0.0, 1.0)
                 } else {
                     edge
                 };
@@ -691,7 +767,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, agent_t);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t);
                 }
             }
         }
@@ -780,7 +856,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, agent_t: Option<(f32, f32)>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, bed: Option<(f32, &[f32], i64, i64, usize, usize)>, agent_t: Option<(f32, f32)>) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
@@ -903,6 +979,25 @@ impl Stroke {
             let would = Self::load_norm(load) * df;
             if would > room {
                 df *= room / would.max(1e-6);
+            }
+        }
+        if let Some((bed_t, base, bx0, by0, bw, bh)) = bed {
+            if df > 0.0 {
+                // BED (see `BrushConfig::bed`): the thin mark rides the relief beneath — the height under its paint
+                // raised toward the local maximum of the 5×5 surround AS IT STOOD BEFORE THE MARK (the snapshot) by
+                // half the difference × the key: a max with decay, the slice bending up over the lumps of the
+                // layers below, never over its own fresh paint.
+                let (cx, cy) = (px as i64 - bx0, py as i64 - by0);
+                let mut lm = f32::MIN;
+                for yy in (cy - 2).max(0)..=(cy + 2).min(bh as i64 - 1) {
+                    for xx in (cx - 2).max(0)..=(cx + 2).min(bw as i64 - 1) {
+                        lm = lm.max(base[yy as usize * bw + xx as usize]);
+                    }
+                }
+                let hp = canvas.height[p];
+                if lm > hp {
+                    canvas.height[p] = hp + (lm - hp) * 0.5 * bed_t.clamp(0.0, 1.0);
+                }
             }
         }
         deposit.clear();
@@ -1254,6 +1349,75 @@ mod tests {
         let ((on0, off0), (on1, off1)) = (tail(0.0), tail(1.0));
         assert!(off1 < off0 * 0.7, "the skidding tail leaves the hollow beside the ridge alone ({off1} vs {off0})");
         assert!(on1 > off1 * 1.5 && on1 > on0 * 0.6, "and lays its paint on the ridge ({on1} vs {on0}, beside {off1})");
+    }
+
+    #[test]
+    fn the_value_noise_is_bounded_and_slow() {
+        // Samples in 0..1, and a step of a twentieth of a unit changes the value a little.
+        let mut worst = 0f32;
+        for i in 0..400 {
+            let (x, y) = (i as f32 * 0.05, (i % 7) as f32 * 0.37);
+            let v = value_noise(42, x, y);
+            assert!((0.0..=1.0).contains(&v), "bounded ({v})");
+            worst = worst.max((value_noise(42, x + 0.05, y) - v).abs());
+        }
+        assert!(worst < 0.12, "slow ({worst})");
+    }
+
+    #[test]
+    fn a_wide_knife_slice_with_the_rim_stands_higher_at_its_edges_than_in_its_middle() {
+        // A wide knife slice: flat in section without the rim; with it the outer lanes stand well above the
+        // middle — the beads of paint squeezed out to the blade's two edges.
+        let section = |rim: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [72.0, 20.0]], width0: 16.0, width1: 16.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, rim, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let row = |y: usize| (20..60).map(|x| c.height[y * 80 + x]).sum::<f32>() / 40.0;
+            ((row(13) + row(28)) / 2.0, (row(20) + row(21)) / 2.0)
+        };
+        let ((e0, m0), (e1, m1)) = (section(0.0), section(1.0));
+        assert!(e0 < m0 * 1.25 && e0 > m0 * 0.75, "without the rim the section is flat (edge {e0} vs middle {m0})");
+        assert!(e1 > m1 * 1.8, "with the rim the edges stand well above the middle (edge {e1} vs middle {m1})");
+    }
+
+    #[test]
+    fn the_slipping_wide_blade_leaves_holes_in_its_slab() {
+        // A wide knife slice over a white canvas: without the slip every pixel of the swath takes paint; with it
+        // a share of them stays bare — the blade's uneven pressure over a large passage.
+        let bare = |slip: f32| {
+            let mut c = Canvas::white(120, 60, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[10.0, 30.0], [110.0, 30.0]], width0: 24.0, width1: 24.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, slip, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let mut n = 0usize;
+            for y in 20..40 {
+                for x in 25..95 {
+                    if c.height[y * 120 + x] < 1e-5 {
+                        n += 1;
+                    }
+                }
+            }
+            n as f32 / (20.0 * 70.0)
+        };
+        let (b0, b1) = (bare(0.0), bare(1.0));
+        assert!(b0 < 0.02, "without the slip the swath is solid ({b0} bare)");
+        assert!(b1 > 0.08 && b1 < 0.7, "with the slip a share of the slab is holed ({b1} bare)");
+    }
+
+    #[test]
+    fn a_thin_knife_slice_with_the_bed_rides_up_over_a_lump_beneath() {
+        // A thick lump dried on the canvas, then a thin knife slice across it: without the bed the slice beside the
+        // lump lies at its own height; with it the height beside the lump is raised toward the lump's — the thin
+        // mark bending up over the relief beneath.
+        let beside = |bed: f32| {
+            let mut c = Canvas::white(80, 40, palette::ZORN, 0.9);
+            Stroke { path: vec![[40.0, 12.0], [40.0, 28.0]], width0: 6.0, width1: 6.0, load: vec![0.0, 0.0, 0.0, 4.0], pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &BrushConfig { viscosity: 4.0, k_pickup: 0.0, streak: 0.0, round: 0.0, deplete: 0.0, ..BrushConfig::default() });
+            c.dry(0.0);
+            Stroke { path: vec![[8.0, 20.0], [72.0, 20.0]], width0: 4.0, width1: 4.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &BrushConfig { knife: 1.0, pile: 1.0, bed, viscosity: 1.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            ((19..22).map(|y| c.height[y * 80 + 45]).sum::<f32>() / 3.0, (19..22).map(|y| c.height[y * 80 + 20]).sum::<f32>() / 3.0)
+        };
+        let ((near0, far0), (near1, far1)) = (beside(0.0), beside(1.0));
+        assert!((near0 - far0).abs() < far0 * 0.5, "without the bed the slice beside the lump lies at its own height ({near0} vs {far0})");
+        assert!(near1 > near0 * 1.3 && (far1 - far0).abs() < far0 * 0.3, "with the bed the slice rises beside the lump and not away from it ({near1} vs {near0}; far {far1} vs {far0})");
     }
 
     #[test]

@@ -416,6 +416,82 @@ pub struct MediumProfile {
     /// the seed (the local range toward 0.3), the slice narrows (×(1 − 0.6·key·busy·depth)) and lengthens
     /// (×(1 + 0.8·key·busy·depth)): a line laid with the blade's edge along the feature.
     pub blade_edge: f32,
+    /// BLADE RIM (0..1, 0 = off): the EDGE BEAD of the wide knife (see `BrushConfig::rim`) — the slice's section a
+    /// U, the paint squeezed out to the blade's two edges (×2.05 at the outer lanes, ×0.65 in the middle, by the
+    /// key and the mark's width against a 60th of the short side): the broad slabs of a sky get beads of paint
+    /// along their sides and so a relief, where a flat section read as a digital blur. In the header (`brim`).
+    pub blade_rim: f32,
+    /// BLADE SLIP (0..1, 0 = off): the wide blade's UNEVEN PRESSURE (see `BrushConfig::slip`) — a slow value
+    /// noise at the mark's scale gates the paint of the wide knives (under `0.4·key·wide` nothing is laid): torn
+    /// edges and holes inside the slab, the blade lifting from the canvas over a large passage — the scumble of
+    /// the broad planes. In the header (`bslip`).
+    pub blade_slip: f32,
+    /// BLADE TUFT (0..1, 0 = off): the GRASS laid as one pull of the medium knife — where the scene's grass detector
+    /// finds grass (CLIP over crops, the nib tuft's `nib_grass_regions`; none found, nothing) and the texture there
+    /// is fine (the pixels whose value range over a small window is wide are dense), the picture is not descended
+    /// into: on the lower two fifths of the ladder (the log-depth past 0.6 — the 12 and 5 px knives of a 120…5
+    /// ladder) the mark is skipped by the key × the texture; on the middle of the ladder (0.2…0.6 — the 56 and 26 px
+    /// knives) it is ONE PULL of the medium knife: longer (×(1 + 1.2·key·texture)), laid straight, its chord turned
+    /// toward the vertical by the texture, its second colour (`blade_mix`) taken fully — the bands of several greens
+    /// in one upward stroke, the tuft in one motion instead of a thousand touches of the narrow knife. Not on a face.
+    /// (The value's range and the structure tensor's coherence alone, at any window, could not tell a photograph's
+    /// grass from a fur's strands; the detector can.)
+    pub blade_tuft: f32,
+    /// BLADE BED (0..1, 0 = off): the thin knives RIDE THE RELIEF beneath (see `BrushConfig::bed`) — where a thin
+    /// mark lands, the height under it is first raised toward the local maximum of its 5×5 surround (a max with
+    /// decay, by the key and the mark's thinness), so the narrow slices of the detail bend up over the dried lumps
+    /// of the wide layers instead of lying across them as an appliqué. In the header (`bbed`).
+    pub blade_bed: f32,
+    /// BLADE ANISO (0..1, 0 = off): the TENSOR's reading of the grass in place of the scene detector — with it the
+    /// CLIP grass regions are not computed for the blade's tuft; the tuft's map is instead gated by the structure
+    /// tensor's ANISOTROPY: the coherence index (λ₁ − λ₂)/(λ₁ + λ₂) of the tensor over a window of two small radii,
+    /// its INCOHERENCE averaged over six — a photograph's grass is a mesh of crossing blades, its orientation flips
+    /// every few pixels and the mean incoherence is high; a fur's strands, a lock of hair keep one orientation
+    /// across the window and it is low. The key is the share of that gate (1 full). (Measured: the shore's grass about
+    /// 0.45–0.5, the fox's fur 0.25–0.35 with spots at the grass's level — a partial separation; the coherence alone
+    /// on the pass's own window did not separate the two at all, both are fine and locally straight.)
+    pub blade_aniso: f32,
+    /// BLADE SLOPE (0..1, 0 = off; with `blade_tuft`): the tuft's pull laid BY THE SLOPE — the chord's turn toward
+    /// the vertical taken back where the low-frequency gradient of the value is steep (the picture's hill: the
+    /// value blurred over a 30th of the short side, its gradient's change across that window toward 0.15), so on
+    /// a steep bank the knife follows the hill's geometry and on a flat meadow it pulls straight up. The key is the
+    /// share of the take-back.
+    pub blade_slope: f32,
+    /// BLADE BREAK (0..1, 0 = off): the WIDE PLATES BROKEN — on the upper rungs of the ladder (the log-depth under
+    /// 0.4: the two widest knives of a five-rung ladder) a GLOBAL slow value noise (a period of a tenth of the short
+    /// side, the picture's own seed) cuts the slice's length by up to `0.8·key`, so the wide blade leaves the canvas
+    /// on its own even where the colour never departs: the long plane of a sky a cascade of overlapping slabs, each
+    /// with its own edge beads (`blade_rim`).
+    pub blade_break: f32,
+    /// BLADE ROUTE (0..1, 0 = off; with `blade_tuft` and `blade_aniso`): the two readings of the grass ROUTED by the
+    /// FINENESS of the texture — the mean local contrast (the value's range on the eye's scale over a window of a
+    /// 400th of the short side, averaged over six such) from 0.10 to 0.25: where the texture is fine and contrasty
+    /// (a fur's strands, an eye) the scene detector's regions decide (CLIP over the crops, probed only on those
+    /// passages — the coarse ones are spared the model), where it is coarse (a meadow at a distance, a foliage) the
+    /// tensor's gate decides, without the model. The key is the detector's share at full fineness. (Measured: the
+    /// fox's fur 0.3–0.5, the shore's far grass 0.04–0.17 and its near grass 0.2–0.3, the village 0.2–0.5.)
+    pub blade_route: f32,
+    /// BLADE SCATTER (0..1, 0 = off; with `blade_tuft`): the tuft's pull SCATTERED — after the turn toward the
+    /// vertical and the slope's take-back, the slice's angle turned by a hash of the mark, ±10° at 1: the regularity
+    /// of a field of pulls all on the hill's one line taken out, the hand's carelessness with the knife.
+    pub blade_scatter: f32,
+    /// BLADE TINT (0..1, 0 = off; with `blade_break`): the broken plates' HUE DRIFTING — in the zones the break's
+    /// noise cuts the wide slices in, each slab's hue is turned by a hash of the mark, up to ±2% of the hue circle
+    /// at 1 × the break's noise there (the chroma and the value kept): the blade not quite clean of the last colour
+    /// it carried, the neighbouring slabs of a sky a little apart in hue.
+    pub blade_tint: f32,
+    /// BLADE FOCUS (0..1, 0 = off): the PAINTING'S FOCUS — the centre of mass of the fine contrasty textures (the
+    /// fineness of `blade_route`: a fur, a face, the near grass) and the fineness's RMS reach about it; from 1.2
+    /// reaches out to 2.2 the sheet is OUT OF FOCUS by the key: the narrow knives keep off (a mark skipped by the
+    /// key × the distance × the ladder's depth past 0.4), the slices widen (×1.8 at full) and lengthen (×1.6),
+    /// and the knives' thinning with the ladder (`blade_layers`) is taken back — the periphery in wide, abstract,
+    /// thick slabs of impasto, the detail kept at the centre, the way a lens's bokeh holds the eye. Not on a face.
+    pub blade_focus: f32,
+    /// BLADE PEAK (0..1, 0 = off): the SPECULAR on the LOCAL CRESTS of the relief (see `Finish::peak`, in the
+    /// header as `peak`) — the pixels in the top tenth of the height's range over a window of a 40th of the short
+    /// side, lit sharply from the lamp: a sky's rims and a wave's crests glint as the thickest clot does (`gloss`
+    /// glints only against the sheet's own peak), the crest to the lamp's half-vector, its lit fascia brightest.
+    pub blade_peak: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1334,6 +1410,18 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -1550,6 +1638,18 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -1766,6 +1866,18 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2023,6 +2135,18 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2248,6 +2372,18 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2468,6 +2604,18 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2684,6 +2832,18 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2903,6 +3063,18 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3122,6 +3294,18 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3341,6 +3525,18 @@ pub const DURER: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3563,6 +3759,18 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -3782,6 +3990,18 @@ pub const PENCIL: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4003,6 +4223,18 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4219,6 +4451,18 @@ pub const PASTEL: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4435,6 +4679,18 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4657,6 +4913,18 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4880,6 +5148,18 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     blade_detail: 0.0,
     blade_layers: 0.0,
     blade_edge: 0.0,
+    blade_rim: 0.0,
+    blade_slip: 0.0,
+    blade_tuft: 0.0,
+    blade_bed: 0.0,
+    blade_aniso: 0.0,
+    blade_slope: 0.0,
+    blade_break: 0.0,
+    blade_route: 0.0,
+    blade_scatter: 0.0,
+    blade_tint: 0.0,
+    blade_focus: 0.0,
+    blade_peak: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

@@ -1353,11 +1353,19 @@ async fn nib_person_regions(path: &std::path::Path, w: u32, h: u32, has_face: bo
 /// people, books, floor, water, fur…, softmax at CLIP's scale of 100), averaged over the tenth-cells the crops cover; a
 /// cell over 0.6 is grass (a crop of sky over far hills scores up to 0.6). (OWL-ViT names things, not stuff: it scored grass under 0.07 even on a meadow.) `None` when
 /// no cell is grass: no grass, no tufts.
-async fn nib_grass_regions(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
+/// With `route` (BLADE ROUTE, see `MediumProfile::blade_route`) the crops are probed only where the texture is fine
+/// (`blade_fine_map_of` of the picture at the painting's size, × the key, over 0.15 on the crop's mean); the rest
+/// count as no grass — the tensor reads them in the painter.
+async fn nib_grass_regions(path: &std::path::Path, w: u32, h: u32, route: Option<f32>) -> Result<Option<Vec<f32>>> {
     let device = crate::device::select("auto")?;
     let clip = crate::pipelines::clip_embed::ClipEmbedder::load(&device).await.context("loading CLIP")?;
     let img = image::open(path).context("opening the picture for the grass")?.to_rgb8();
     let (iw, ih) = img.dimensions();
+    let fine: Option<Vec<f32>> = route.map(|_| {
+        let small = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+        crate::paint::painter::blade_fine_map_of(&small, (w.min(h) as f32 / 400.0).round().max(2.0) as usize)
+    });
+    let (mut probed, mut total) = (0usize, 0usize);
     let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
     const GRASS: [&str; 3] = ["grass", "a grassy meadow", "tall dry grass"];
     const STUFF: [&str; 20] = ["the sky", "clouds", "a stone wall", "rocks", "a dirt road", "trees", "a forest", "a person", "clothing", "a face", "books on shelves", "a wooden floor", "a table", "a window", "water", "a building", "an animal's fur", "a bird's feathers", "snow", "sand"];
@@ -1373,16 +1381,39 @@ async fn nib_grass_regions(path: &std::path::Path, w: u32, h: u32) -> Result<Opt
         let mut x0 = 0u32;
         while x0 + crop / 2 < iw {
             let (cw, ch) = (crop.min(iw - x0), crop.min(ih - y0));
-            image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image().save(tmp.path()).context("saving a grass crop")?;
-            let e = clip.embed_image(tmp.path())?;
-            let logits: Vec<f32> = texts.iter().map(|t| 100.0 * crate::pipelines::clip_embed::cosine(&e, t)).collect();
-            let m = logits.iter().copied().fold(f32::MIN, f32::max);
-            let ex: Vec<f32> = logits.iter().map(|l| (l - m).exp()).collect();
-            let g = ex[..GRASS.len()].iter().sum::<f32>() / ex.iter().sum::<f32>();
-            if loud {
-                let best = (0..ex.len()).max_by(|a, b| ex[*a].total_cmp(&ex[*b])).unwrap_or(0);
-                found!(style("·").dim(), "nib grass probe: crop ({x0},{y0}) grass {:.2} · best {:?}", g, GRASS.iter().chain(STUFF.iter()).nth(best).unwrap_or(&""));
-            }
+            total += 1;
+            let coarse = match (&fine, route) {
+                (Some(f), Some(k)) => {
+                    let (sx, sy) = (w as f32 / iw as f32, h as f32 / ih as f32);
+                    let (fx0, fy0) = (((x0 as f32 * sx) as u32).min(w - 1), ((y0 as f32 * sy) as u32).min(h - 1));
+                    let (fx1, fy1) = ((((x0 + cw) as f32 * sx) as u32).clamp(fx0 + 1, w), (((y0 + ch) as f32 * sy) as u32).clamp(fy0 + 1, h));
+                    let (mut s, mut n) = (0f32, 0f32);
+                    for y in (fy0..fy1).step_by(4) {
+                        for x in (fx0..fx1).step_by(4) {
+                            s += f[(y * w + x) as usize];
+                            n += 1.0;
+                        }
+                    }
+                    s / n.max(1.0) * k < 0.15
+                }
+                _ => false,
+            };
+            let g = if coarse {
+                0.0
+            } else {
+                probed += 1;
+                image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image().save(tmp.path()).context("saving a grass crop")?;
+                let e = clip.embed_image(tmp.path())?;
+                let logits: Vec<f32> = texts.iter().map(|t| 100.0 * crate::pipelines::clip_embed::cosine(&e, t)).collect();
+                let m = logits.iter().copied().fold(f32::MIN, f32::max);
+                let ex: Vec<f32> = logits.iter().map(|l| (l - m).exp()).collect();
+                let g = ex[..GRASS.len()].iter().sum::<f32>() / ex.iter().sum::<f32>();
+                if loud {
+                    let best = (0..ex.len()).max_by(|a, b| ex[*a].total_cmp(&ex[*b])).unwrap_or(0);
+                    found!(style("·").dim(), "nib grass probe: crop ({x0},{y0}) grass {:.2} · best {:?}", g, GRASS.iter().chain(STUFF.iter()).nth(best).unwrap_or(&""));
+                }
+                g
+            };
             for cj in (y0 / stride) as usize..(((y0 + ch) as usize).div_ceil(stride as usize)).min(rows) {
                 for ci in (x0 / stride) as usize..(((x0 + cw) as usize).div_ceil(stride as usize)).min(cols) {
                     acc[cj * cols + ci] += g;
@@ -1392,6 +1423,9 @@ async fn nib_grass_regions(path: &std::path::Path, w: u32, h: u32) -> Result<Opt
             x0 += stride;
         }
         y0 += stride;
+    }
+    if route.is_some() {
+        found!(style("·").dim(), "tuft: the detector probed {probed} of {total} crops — the fine passages; the tensor reads the rest");
     }
     let cellv: Vec<f32> = acc.iter().zip(&cnt).map(|(a, c)| if *c > 0.0 { a / c } else { 0.0 }).collect();
     let out: Vec<f32> = (0..(w * h) as usize).map(|i| {
@@ -1793,6 +1827,18 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.blade_detail = plan.medium.blade_detail;
     params.blade_layers = plan.medium.blade_layers;
     params.blade_edge = plan.medium.blade_edge;
+    params.brush.rim = plan.medium.blade_rim;
+    params.brush.slip = plan.medium.blade_slip;
+    params.blade_tuft = plan.medium.blade_tuft;
+    params.blade_aniso = plan.medium.blade_aniso;
+    params.blade_slope = plan.medium.blade_slope;
+    params.blade_break = plan.medium.blade_break;
+    params.blade_route = plan.medium.blade_route;
+    params.blade_scatter = plan.medium.blade_scatter;
+    params.blade_tint = plan.medium.blade_tint;
+    params.blade_focus = plan.medium.blade_focus;
+    params.blade_peak = plan.medium.blade_peak;
+    params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
     params.dishes = plan.medium.dishes;
@@ -2714,6 +2760,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.blade_detail = m.blade_detail;
         params.blade_layers = m.blade_layers;
         params.blade_edge = m.blade_edge;
+        params.brush.rim = m.blade_rim;
+        params.brush.slip = m.blade_slip;
+        params.blade_tuft = m.blade_tuft;
+        params.blade_aniso = m.blade_aniso;
+        params.blade_slope = m.blade_slope;
+        params.blade_break = m.blade_break;
+        params.blade_route = m.blade_route;
+        params.blade_scatter = m.blade_scatter;
+        params.blade_tint = m.blade_tint;
+        params.blade_focus = m.blade_focus;
+        params.blade_peak = m.blade_peak;
+        params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
         params.dishes = m.dishes;
@@ -2912,6 +2970,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.blade_detail { params.blade_detail = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_layers { params.blade_layers = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_edge { params.blade_edge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_rim { params.brush.rim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_slip { params.brush.slip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_tuft { params.blade_tuft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_aniso { params.blade_aniso = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_slope { params.blade_slope = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_break { params.blade_break = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_route { params.blade_route = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_scatter { params.blade_scatter = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_tint { params.blade_tint = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_focus { params.blade_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_peak { params.blade_peak = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_bed { params.brush.bed = v.clamp(0.0, 1.0); }
         // BLADE KNIVES (see `PlanMedium::blade_knives`): the plan's own ladder of knife widths.
         if let Some(k) = pl.blade_knives.as_ref().filter(|v| !v.is_empty()) { brush_sizes = k.iter().map(|v| v.max(1.0)).collect(); }
         if let Some(v) = pl.hatch { params.hatch = v.clamp(0.0, 1.0); }
@@ -3412,20 +3482,24 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             Err(e) => found!(style("·").yellow(), "nib object: detection failed ({e})"),
         }
     }
-    // NIB TUFT (see `MediumProfile::nib_tuft`): the grass the tufts may go on — none found, no tufts.
-    if params.nib > 0.0 && params.nib_tuft > 0.0 {
-        match nib_grass_regions(&a.input, w, h).await {
+    // NIB TUFT (see `MediumProfile::nib_tuft`) and BLADE TUFT (`MediumProfile::blade_tuft`): the grass the tufts may
+    // go on — none found, no tufts. (BLADE ANISO reads the grass from the tensor instead: no detector; BLADE ROUTE
+    // runs the detector as well, on the fine passages only, the tensor reading the coarse ones.)
+    let route = if params.blade_tuft > 0.0 && params.blade_aniso > 0.0 && params.blade_route > 0.0 { Some(params.blade_route) } else { None };
+    if (params.nib > 0.0 && params.nib_tuft > 0.0) || (params.blade_tuft > 0.0 && (params.blade_aniso <= 0.0 || route.is_some())) {
+        match nib_grass_regions(&a.input, w, h, route).await {
             Ok(Some(m)) => {
                 let n = m.iter().filter(|&&v| v >= 0.5).count();
-                found!(style("·").dim(), "nib tuft: grass over {}% of the frame — the tufts kept to it", n * 100 / m.len().max(1));
+                found!(style("·").dim(), "tuft: grass over {}% of the frame — the tufts kept to it", n * 100 / m.len().max(1));
                 if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
                     let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
                     let _ = g.save(std::path::Path::new(&dir).join("mask_grass.png"));
                 }
                 params.nib_grass_mask = Some(m);
             }
-            Ok(None) => found!(style("·").yellow(), "nib tuft: no grass found — no tufts"),
-            Err(e) => found!(style("·").yellow(), "nib tuft: grass detection failed ({e}) — no tufts"),
+            Ok(None) if route.is_some() => found!(style("·").dim(), "tuft: no grass found by the detector — the tensor's reading alone"),
+            Ok(None) => found!(style("·").yellow(), "tuft: no grass found — no tufts"),
+            Err(e) => found!(style("·").yellow(), "tuft: grass detection failed ({e}) — no tufts"),
         }
     }
     // NIB DEPTH (see `MediumProfile::nib_depth`): how near the picture is everywhere, for the far planes' pen.

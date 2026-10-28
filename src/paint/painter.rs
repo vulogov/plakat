@@ -518,6 +518,24 @@ pub struct PaintParams {
     pub blade_layers: f32,
     /// BLADE EDGE (0..1, 0 = off): the knife's edge draws the busy passages (see `MediumProfile::blade_edge`).
     pub blade_edge: f32,
+    /// BLADE TUFT (0..1, 0 = off): a fine texture laid as one pull of the medium knife (see `MediumProfile::blade_tuft`).
+    pub blade_tuft: f32,
+    /// BLADE ANISO (0..1, 0 = off): the tensor's reading of the grass (see `MediumProfile::blade_aniso`).
+    pub blade_aniso: f32,
+    /// BLADE SLOPE (0..1, 0 = off): the tuft's pull by the slope (see `MediumProfile::blade_slope`).
+    pub blade_slope: f32,
+    /// BLADE BREAK (0..1, 0 = off): the wide plates broken by a global slow noise (see `MediumProfile::blade_break`).
+    pub blade_break: f32,
+    /// BLADE ROUTE (0..1, 0 = off): the two readings of the grass routed by the fineness (see `MediumProfile::blade_route`).
+    pub blade_route: f32,
+    /// BLADE SCATTER (0..1, 0 = off): the tuft's pull scattered ±10° (see `MediumProfile::blade_scatter`).
+    pub blade_scatter: f32,
+    /// BLADE TINT (0..1, 0 = off): the broken plates' hue drifting (see `MediumProfile::blade_tint`).
+    pub blade_tint: f32,
+    /// BLADE FOCUS (0..1, 0 = off): the periphery wide and thick, the detail at the focus (see `MediumProfile::blade_focus`).
+    pub blade_focus: f32,
+    /// BLADE PEAK (0..1, 0 = off): the specular on the local crests of the relief (see `MediumProfile::blade_peak`).
+    pub blade_peak: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay straight hatch lines of one width (see `MediumProfile::hatch`).
     pub hatch: f32,
     /// VERDACCIO (0..1, 0 = off): the flesh underpainted in a greenish grey (see `MediumProfile::verdaccio`).
@@ -788,7 +806,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -2976,7 +2994,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let anchor_z: f32 = { let q = p.anchor.clamp(0.01, 0.5); ((1.0 - q) / q).ln() / 1.702 };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, old_paper: p.old_paper, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave, sag: p.sag, gloss: p.gloss, hiding: p.hiding, tone: 0.0, water: wash_water, agent: wash_agent, light: p.blade_light, phong: p.blade_phong, spread: p.blade_relief, collide: None, hold_mask: None },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, old_paper: p.old_paper, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave, sag: p.sag, gloss: p.gloss, hiding: p.hiding, tone: 0.0, water: wash_water, agent: wash_agent, light: p.blade_light, phong: p.blade_phong, spread: p.blade_relief, peak: p.blade_peak, collide: None, hold_mask: None },
         strokes: Vec::new(),
     };
 
@@ -4087,6 +4105,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // "smooth here" for the sfumato and the length's spread on every pass after the block-in.
         let range_map: Option<Vec<f32>> = (!block_in && (p.sfumato > 0.0 || p.vary > 0.0 || p.blade_size > 0.0 || p.blade_rest > 0.0 || (p.accent > 0.0 && last_pass))).then(|| local_range(&luma, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize));
         let accent_map: Option<&Vec<f32>> = if p.accent > 0.0 && last_pass && !block_in { range_map.as_ref() } else { None };
+        // BLADE TUFT (see `MediumProfile::blade_tuft`): the grass's fine texture's map, from the picture before the
+        // planes where there is one.
+        // BLADE SLOPE (see `MediumProfile::blade_slope`): the picture's hill, for the tuft's direction.
+        let slope_map: Option<Vec<f32>> = (p.blade_tuft > 0.0 && p.blade_slope > 0.0 && !block_in).then(|| blade_slope_map(flow_luma.as_deref().unwrap_or(&luma), w as usize, h as usize, (w.min(h) as f32 / 30.0).round().max(4.0) as usize));
+        // BLADE FOCUS (see `MediumProfile::blade_focus`): how far outside the picture's focus each pixel lies.
+        let focus_far: Option<Vec<f32>> = (p.blade_focus > 0.0).then(|| blade_focus_map(flow_luma.as_deref().unwrap_or(&luma), w as usize, h as usize, (w.min(h) as f32 / 400.0).round().max(2.0) as usize));
+        let tuft_map: Option<Vec<f32>> = (p.blade_tuft > 0.0 && !block_in).then(|| blade_tuft_map(flow_luma.as_deref().unwrap_or(&luma), p.nib_grass_mask.as_deref(), p.blade_aniso, p.blade_route, w as usize, h as usize, (w.min(h) as f32 / 400.0).round().max(2.0) as usize));
         // The glaze pass leaves the sharp contrasts alone — the picture's range at the FINEST brush's scale —
         // so the accents laid there stand crisp and thick over the film rather than being softened under it:
         // a painter glazes the flats, not the highlights.
@@ -4175,6 +4200,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius),
         );
         let depth_t = if r_coarse > r_fine + 1e-6 { ((r_coarse - radius) / (r_coarse - r_fine)).clamp(0.0, 1.0) } else { 0.0 };
+        // The pass's LOG depth in the ladder (0 the widest brush, 1 the narrowest, each halving a like step) — the
+        // ladder's geometric position, for what reads "the middle knives" and "the narrow ones" (BLADE TUFT).
+        let ladder_t = if r_coarse > r_fine * 1.001 && radius > 0.0 { ((r_coarse / radius).ln() / (r_coarse / r_fine).ln()).clamp(0.0, 1.0) } else { 0.0 };
         let len_mul = profile.len * (1.0 + (p.detail_len - 1.0) * depth_t);
         // NIB WASH DRY: the dry brush's mark is a DRAG, three times the profile's length, not the detail's short touch.
         let len_mul = if dry_pass { profile.len * 3.0 } else { len_mul };
@@ -4523,6 +4551,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     lab.a *= cut;
                     lab.b *= cut;
                     color::lab_to_srgb(lab)
+                } else {
+                    target
+                };
+                // BLADE TINT (see `MediumProfile::blade_tint`): in the zones the wide plates are broken in (the
+                // break's noise, `blade_break`, on the ladder's upper rungs) each slab's hue drifts by a hash of the
+                // mark, up to ±2% of the circle × the key × the break there — the blade not quite clean of the
+                // last colour it carried.
+                let target = if p.blade_tint > 0.0 && p.blade_break > 0.0 && ladder_t < 0.4 && !on_face && !glazing && !cresting && !lost_here {
+                    let per = (w.min(h) as f32 / 10.0).max(8.0);
+                    let nz = crate::paint::stroke::value_noise(p.seed ^ 0xB1A_DB4, cx / per, cy / per);
+                    blade_tint_tone(target, 0.02 * p.blade_tint.clamp(0.0, 1.0) * nz * 2.0 * jitter(p.seed ^ 0xB1A_D71, k.wrapping_add(107)))
                 } else {
                     target
                 };
@@ -4996,6 +5035,23 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 } else {
                     (lvar, rw)
                 };
+                // BLADE FOCUS (see `MediumProfile::blade_focus`): outside the picture's focus the narrow knives keep
+                // off (skipped by the key × the distance × the ladder's depth past 0.4) and the slices widen and
+                // lengthen — the periphery wide, abstract and thick, the detail where the fine texture gathers.
+                let far_here = if p.blade_focus > 0.0 && !on_face { p.blade_focus.clamp(0.0, 1.0) * focus_far.as_ref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) } else { 0.0 };
+                if far_here > 0.0 && ladder_t > 0.4 && jitter(p.seed ^ 0xB1A_DF0, k.wrapping_add(109)) + 0.5 < far_here * ((ladder_t - 0.4) / 0.6).clamp(0.0, 1.0) {
+                    return None;
+                }
+                let (lvar, rw) = (lvar * (1.0 + 0.6 * far_here), rw * (1.0 + 0.8 * far_here));
+                // BLADE TUFT (see `MediumProfile::blade_tuft`): a fine incoherent texture is not descended into —
+                // the narrow knives (the ladder's log depth past 0.6) skip it by the key × the texture; the medium
+                // knives (0.2…0.6) lay it as one long pull, straight and upright (below), the second colour full.
+                let tuft_here = if p.blade_tuft > 0.0 && !block_in && !on_face { p.blade_tuft.clamp(0.0, 1.0) * tuft_map.as_ref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) } else { 0.0 };
+                if tuft_here > 0.0 && ladder_t > 0.6 && jitter(p.seed ^ 0xB1A_D7F, k.wrapping_add(97)) + 0.5 < tuft_here {
+                    return None;
+                }
+                let tufted = tuft_here > 0.0 && ladder_t > 0.2 && ladder_t <= 0.6;
+                let lvar = if tufted { lvar * (1.0 + 1.2 * tuft_here) } else { lvar };
                 // HATCH (see `MediumProfile::hatch`): every restating mark a hatch line — narrowed toward a line
                 // (`1 − 0.45·hatch` of the width, the lights narrower still), longer for it, straight (below),
                 // of one width end to end, dry, no pickup, `1 − 0.3·hatch` of the charge. Not the block-in,
@@ -5069,6 +5125,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // (A lost mark grows its path along the wide blur it is coloured from, so it runs across the seam
                 // instead of stopping at it.)
                 let blade_len_mul = (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 } * if hatched { 1.0 + 0.6 * hatch_here } else { 1.0 } * span_here * (1.0 - 0.5 * calm)).max(0.2);
+                // BLADE BREAK (see `MediumProfile::blade_break`): on the upper rungs of the ladder (the log-depth under
+                // 0.4) the slice's length is cut by a global slow noise (a period of a tenth of the short side) — the
+                // wide blade leaving the canvas on its own, the long plane a cascade of overlapping slabs.
+                let blade_len_mul = if p.blade_break > 0.0 && ladder_t < 0.4 {
+                    let per = (w.min(h) as f32 / 10.0).max(8.0);
+                    let nz = crate::paint::stroke::value_noise(p.seed ^ 0xB1A_DB4, cx / per, cy / per);
+                    blade_len_mul * (1.0 - 0.8 * p.blade_break.clamp(0.0, 1.0) * nz)
+                } else {
+                    blade_len_mul
+                };
                 let path = grow_path(cx, cy, radius, &gx, &gy, if lost_here { lost_pick.unwrap_or(&reference) } else { &reference }, target, if clear_here { face_clear.as_deref() } else { protect_all.as_deref() }, region, hard_ref, blade_len_mul, STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 } * if hatched { 1.0 - 0.6 * edge_here } else { 1.0 });
                 // A GLINT on an ISOLATED light (see `MediumProfile::glint`) — a small star, the point of a lamp, a
                 // light smaller than the brush — is a STAMP: the flow field has no direction at a point, and
@@ -5078,11 +5144,31 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // chord, as long each way as the grown path reached, stopped where the grower stops (a protected
                 // shape, the seed's region, the reference departing from the mark's tone): the slice ends at the
                 // plane's edge, it does not cut the corner of the form it was grown along.
-                let path = if p.blade_flow > 0.0 && path.len() >= 3 && jitter(p.seed ^ 0xB1A_DEF, k.wrapping_add(89)) + 0.5 < p.blade_flow {
+                let path = if p.blade_flow > 0.0 && path.len() >= 3 && (tufted || jitter(p.seed ^ 0xB1A_DEF, k.wrapping_add(89)) + 0.5 < p.blade_flow) {
                     let (dx, dy) = (path[path.len() - 1][0] - path[0][0], path[path.len() - 1][1] - path[0][1]);
                     let m = (dx * dx + dy * dy).sqrt();
                     if m > 1e-3 {
                         let (ux, uy) = (dx / m, dy / m);
+                        // BLADE TUFT: the pull upright — the chord turned toward the vertical by the texture.
+                        // (BLADE SLOPE: the turn taken back by the key × the hill's steepness here.)
+                        let (ux, uy) = if tufted {
+                            let steep = slope_map.as_ref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0);
+                            let t = tuft_here * (1.0 - p.blade_slope.clamp(0.0, 1.0) * steep);
+                            let (ax, ay) = (ux * (1.0 - t), uy * (1.0 - t) + if uy < 0.0 { -t } else { t });
+                            let am = (ax * ax + ay * ay).sqrt().max(1e-3);
+                            let (ax, ay) = (ax / am, ay / am);
+                            // BLADE SCATTER (see `MediumProfile::blade_scatter`): the pull's angle scattered by a hash
+                            // of the mark, ±10° at 1 — the hand's carelessness, the regularity of the slope taken out.
+                            if p.blade_scatter > 0.0 {
+                                let ang = jitter(p.seed ^ 0xB1A_D5C, k.wrapping_add(103)) * 2.0 * p.blade_scatter.clamp(0.0, 1.0) * 10.0f32.to_radians();
+                                let (s, c) = ang.sin_cos();
+                                (ax * c - ay * s, ax * s + ay * c)
+                            } else {
+                                (ax, ay)
+                            }
+                        } else {
+                            (ux, uy)
+                        };
                         let d2 = |q: &[f32; 2]| (q[0] - cx).powi(2) + (q[1] - cy).powi(2);
                         let si = (0..path.len()).min_by(|a, b| d2(&path[*a]).partial_cmp(&d2(&path[*b])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
                         let arc = |a: usize, b: usize| -> f32 { (a..b).map(|i| ((path[i + 1][0] - path[i][0]).powi(2) + (path[i + 1][1] - path[i][1]).powi(2)).sqrt()).sum() };
@@ -5374,7 +5460,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // BLADE LAYERS (see `MediumProfile::blade_layers`): the narrow knife a thin film that shears
                     // less of the paint beneath — both in the record (the stroke's knife share, its viscosity).
                     if p.blade_layers > 0.0 && !block_in {
-                        let k = p.blade_layers.clamp(0.0, 1.0) * depth_t;
+                        // (BLADE FOCUS: outside the focus the knives stay thick — the thinning taken back by the distance.)
+                        let k = p.blade_layers.clamp(0.0, 1.0) * depth_t * (1.0 - far_here);
                         stroke_brush.knife = (stroke_brush.knife * (1.0 - k)).max(0.15);
                         stroke_brush.viscosity *= 1.0 - 0.8 * k;
                     }
@@ -5641,7 +5728,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // where the two halves are alike (a plain passage). In the record as the mark's second charge.
                 let load_end = match load_end {
                     None if knifed && p.brush.mix > 0.0 && erase_wet.is_none() && s.path.len() >= 2 => {
-                        let k = p.brush.mix.clamp(0.0, 1.0);
+                        // (BLADE TUFT: the second colour taken fully — the greens of the tuft in one pull.)
+                        let k = if tufted { (p.brush.mix.clamp(0.0, 1.0) * (1.0 + 2.0 * tuft_here)).min(1.0) } else { p.brush.mix.clamp(0.0, 1.0) };
                         let src = blade_raw.as_ref().unwrap_or(&reference);
                         let (rw_, rh_) = ((src.width() - 1) as f32, (src.height() - 1) as f32);
                         let n_s = 12usize;
@@ -6372,6 +6460,141 @@ fn blade_facet_ref(planes: &RgbImage, raw: &RgbImage, n: usize, levels: f32, mas
         out.put_pixel(x, y, image::Rgb(color::linear_to_srgb(facet)));
     }
     out
+}
+
+/// BLADE TUFT (see `MediumProfile::blade_tuft`): the GRASS's fine texture's map in 0..1 — the pixels that are BUSY
+/// (the value's range on the eye's scale over a small window of radius `r` reaching 0.03 — a photograph's grass is
+/// dark and its texture a few hundredths) are DENSE: their share over a window three times wider, from 0.35 to 0.7
+/// (an edge is a thin line of busy pixels in a quiet field, a texture fills its window); × the GRASS gate: with
+/// `aniso` off, `grass` the regions the scene's grass detector found (CLIP over crops, as the nib tuft's; none,
+/// nothing); with it (BLADE ANISO, see `MediumProfile::blade_aniso`), `blade_aniso_gate` — the tensor's own
+/// reading, no detector; with `route` as well (BLADE ROUTE, see `MediumProfile::blade_route`) the two blended by
+/// the FINENESS (`blade_fine_map`): the detector's regions where the texture is fine and contrasty (a fur, an eye),
+/// the tensor's gate where it is coarse (a meadow, a foliage) — `route × fine` the detector's share.
+fn blade_tuft_map(luma: &[f32], grass: Option<&[f32]>, aniso: f32, route: f32, w: usize, h: usize, r: usize) -> Vec<f32> {
+    let n = w * h;
+    let eye: Vec<f32> = luma.iter().map(|l| l.max(0.0).powf(1.0 / 2.2)).collect();
+    let gate: Vec<f32> = if aniso > 0.0 {
+        let tensor = blade_aniso_gate(&eye, w, h, r, aniso);
+        if route > 0.0 {
+            let fine = blade_fine_map(&eye, w, h, r);
+            let clip: Vec<f32> = grass.filter(|g| g.len() == n).map(|g| g.iter().map(|v| v.clamp(0.0, 1.0)).collect()).unwrap_or_else(|| vec![0.0; n]);
+            let route = route.clamp(0.0, 1.0);
+            (0..n).map(|i| { let s = route * fine[i]; s * clip[i] + (1.0 - s) * tensor[i] }).collect()
+        } else {
+            tensor
+        }
+    } else {
+        let Some(grass) = grass.filter(|g| g.len() == n) else { return vec![0.0; n] };
+        grass.iter().map(|g| g.clamp(0.0, 1.0)).collect()
+    };
+    let rs = local_range(&eye, w, h, r);
+    let busy: Vec<f32> = rs.iter().map(|v| if *v >= 0.03 { 1.0 } else { 0.0 }).collect();
+    let dens = box_blur(&busy, w as u32, h as u32, (3 * r) as i32);
+    (0..n).map(|i| ((dens[i] - 0.35) / 0.35).clamp(0.0, 1.0) * gate[i]).collect()
+}
+
+/// BLADE ANISO (see `MediumProfile::blade_aniso`): the gate in 0..1 from the structure tensor of `eye` — the
+/// coherence index (λ₁ − λ₂)/(λ₁ + λ₂) of the tensor summed over a window of `2r`, its INCOHERENCE (1 − the
+/// index) averaged over `6r`; the mean incoherence from 0.30 to 0.45 opens the gate (a mesh of crossing blades
+/// flips its orientation every few pixels; strands keep theirs — measured on the shore's grass about 0.45–0.5 and on
+/// the fox's fur 0.25–0.35, with spots of the fur reaching the grass's level: a partial separation). `k` the share
+/// of the gate against open.
+fn blade_aniso_gate(eye: &[f32], w: usize, h: usize, r: usize, k: f32) -> Vec<f32> {
+    let n = w * h;
+    let (gx, gy) = sobel(eye, w as u32, h as u32);
+    let (mut jxx, mut jyy, mut jxy) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    for i in 0..n {
+        jxx[i] = gx[i] * gx[i];
+        jyy[i] = gy[i] * gy[i];
+        jxy[i] = gx[i] * gy[i];
+    }
+    let r2 = (2 * r) as i32;
+    let (jxx, jyy, jxy) = (box_blur(&jxx, w as u32, h as u32, r2), box_blur(&jyy, w as u32, h as u32, r2), box_blur(&jxy, w as u32, h as u32, r2));
+    let inco: Vec<f32> = (0..n)
+        .map(|i| {
+            let disc = ((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]).sqrt();
+            1.0 - (disc / (jxx[i] + jyy[i] + 1e-6)).clamp(0.0, 1.0)
+        })
+        .collect();
+    let mean = box_blur(&inco, w as u32, h as u32, (6 * r) as i32);
+    let k = k.clamp(0.0, 1.0);
+    mean.iter().map(|m| 1.0 - k * (1.0 - ((m - 0.3) / 0.15).clamp(0.0, 1.0))).collect()
+}
+
+/// BLADE ROUTE (see `MediumProfile::blade_route`): the FINENESS of the texture in 0..1 — the value's range (on the
+/// eye's scale, `eye`) over a window of radius `r`, averaged over `6r`: the mean local contrast, from FINE_A to
+/// FINE_A + FINE_B. A fur's strands, an eye are contrasty within a few pixels; a meadow's blades at a distance are a
+/// few hundredths (measured at a 400th of the short side: the fox's fur 0.3–0.5, the shore's far grass 0.04–0.17,
+/// its near grass 0.2–0.3, the village's houses and foliage 0.2–0.5, a sky 0.02).
+const FINE_A: f32 = 0.10;
+const FINE_B: f32 = 0.15;
+pub(crate) fn blade_fine_map(eye: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let rs = local_range(eye, w, h, r);
+    let c = box_blur(&rs, w as u32, h as u32, (6 * r) as i32);
+    c.iter().map(|v| ((v - FINE_A) / FINE_B).clamp(0.0, 1.0)).collect()
+}
+
+/// BLADE FOCUS (see `MediumProfile::blade_focus`): how far outside the picture's FOCUS each pixel lies, 0..1 —
+/// the focus the centre of mass of the fineness (`blade_fine_map`: the fine contrasty textures, a fur, a face, the
+/// near grass), its reach the fineness's RMS radius about it; the distance from 1.2 reaches to 2.2 smoothstepped.
+/// A sheet with no fine texture has no focus (zeros).
+fn blade_focus_map(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let eye: Vec<f32> = luma.iter().map(|l| l.max(0.0).powf(1.0 / 2.2)).collect();
+    let fine = blade_fine_map(&eye, w, h, r);
+    let total: f64 = fine.iter().map(|v| *v as f64).sum();
+    if total < 1.0 {
+        return vec![0.0; w * h];
+    }
+    let (mut sx, mut sy) = (0f64, 0f64);
+    for (i, v) in fine.iter().enumerate() {
+        sx += *v as f64 * (i % w) as f64;
+        sy += *v as f64 * (i / w) as f64;
+    }
+    let (cx, cy) = (sx / total, sy / total);
+    let mut s2 = 0f64;
+    for (i, v) in fine.iter().enumerate() {
+        s2 += *v as f64 * (((i % w) as f64 - cx).powi(2) + ((i / w) as f64 - cy).powi(2));
+    }
+    let reach = (s2 / total).sqrt().max(1.0);
+    (0..w * h)
+        .map(|i| {
+            let d = (((i % w) as f64 - cx).powi(2) + ((i / w) as f64 - cy).powi(2)).sqrt();
+            let t = ((d - 1.2 * reach) / reach).clamp(0.0, 1.0) as f32;
+            t * t * (3.0 - 2.0 * t)
+        })
+        .collect()
+}
+
+/// `blade_fine_map` of a picture — for the scene detector's routing (the crops it is spared).
+pub fn blade_fine_map_of(img: &RgbImage, r: usize) -> Vec<f32> {
+    let (w, h) = img.dimensions();
+    let eye: Vec<f32> = img.pixels().map(|p| color::linear_luma(color::srgb_to_linear(p.0)).max(0.0).powf(1.0 / 2.2)).collect();
+    blade_fine_map(&eye, w as usize, h as usize, r)
+}
+
+/// BLADE TINT (see `MediumProfile::blade_tint`): `target` with its hue turned by `turn` of the circle (the chroma
+/// and the value kept — a rotation of a and b in Lab).
+fn blade_tint_tone(target: Srgb, turn: f32) -> Srgb {
+    if turn.abs() < 1e-6 {
+        return target;
+    }
+    let mut lab = color::srgb_to_lab(target);
+    let (s, c) = (turn * std::f32::consts::TAU).sin_cos();
+    let (a, b) = (lab.a, lab.b);
+    lab.a = a * c - b * s;
+    lab.b = a * s + b * c;
+    color::lab_to_srgb(lab)
+}
+
+/// BLADE SLOPE (see `MediumProfile::blade_slope`): the picture's HILL — the value (on the eye's scale) blurred over a
+/// window of radius `big`, its gradient's change across that window (|∇| × big) toward 0.15: 1 on a steep bank, 0 on a
+/// flat meadow or a sky's slow ramp.
+fn blade_slope_map(luma: &[f32], w: usize, h: usize, big: usize) -> Vec<f32> {
+    let eye: Vec<f32> = luma.iter().map(|l| l.max(0.0).powf(1.0 / 2.2)).collect();
+    let low = box_blur(&eye, w as u32, h as u32, big as i32);
+    let (gx, gy) = sobel(&low, w as u32, h as u32);
+    (0..w * h).map(|i| ((gx[i] * gx[i] + gy[i] * gy[i]).sqrt() * big as f32 / 0.15).clamp(0.0, 1.0)).collect()
 }
 
 /// BLADE DETAIL (see `MediumProfile::blade_detail`): `planes` (the global planes) with every pixel whose LOCAL
@@ -13662,7 +13885,7 @@ mod tempera_tests {
         p.ground = Some(tone);
         p.bole = 1.0;
         p.from_scratch = true;
-        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "tempera".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: Some(tone), brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, collide: None, hold_mask: None };
+        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "tempera".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: Some(tone), brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let mut canvas = Canvas::toned(w, h, crate::paint::palette::ZORN, tone, 0.85).with_opacity(1.0);
         let mut score = StrokeScore { header: header.clone(), strokes: Vec::new() };
         let (mut placed, mut k) = (0usize, 0u64);
@@ -13836,7 +14059,7 @@ mod transmittance_tests {
         // from the text as from memory — the flag, `kd` and `cap` all survive serialisation.
         let pal = palette::EARTH;
         let mut sc = crate::paint::score::StrokeScore {
-            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, collide: None, hold_mask: None },
+            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None },
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();
@@ -13874,7 +14097,7 @@ mod pastel_tests {
         let (gx, gy) = (vec![0.0f32; (w * h) as usize], vec![1.0f32; (w * h) as usize]);
         let mut p = PaintParams::new(crate::paint::palette::ZORN, 10_000);
         p.blend = 1.0;
-        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, collide: None, hold_mask: None };
+        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let mut canvas = Canvas::white(w, h, crate::paint::palette::ZORN, 0.85);
         let patch = Stroke { path: vec![[4.0, 24.0], [36.0, 24.0]], width0: 40.0, width1: 40.0, load: vec![0.0, 0.0, 6.0, 0.0], pressure: 1.0, wetness: 0.3 };
         patch.rasterize(&mut canvas, &BrushConfig { k_pickup: 0.0, hold_charge: true, ..BrushConfig::default() });
@@ -13951,6 +14174,133 @@ mod blade_tests {
         // BLADE SOFT: on the smooth ramp the terraces give way toward the picture's own slope — more tones.
         let softened = blade_facet_ref(&planes, &img, 4, 0.0, &mask, 1.0, 1.0);
         assert!(distinct(&softened) > distinct(&out) + 2, "the soft facet is a slope on the smooth ramp ({} vs {})", distinct(&softened), distinct(&out));
+    }
+
+    #[test]
+    fn the_tuft_map_finds_a_fine_texture_and_not_a_ramp_or_a_clean_edge() {
+        // A sheet all grass in three bands: a smooth ramp, a fine hashed texture, a flat field with one clean vertical edge.
+        // The texture's map is high in the texture and near nothing on the ramp and along the edge (a thin line of
+        // busy pixels in a quiet field).
+        let (w, h) = (96usize, 32usize);
+        let mut luma = vec![0.5f32; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                luma[y * w + x] = if x < 32 {
+                    // (a sky's ramp: a few hundredths across the whole band — nothing within a small window)
+                    0.3 + 0.03 * x as f32 / 32.0
+                } else if x < 64 {
+                    let z = (x as u64).wrapping_mul(0x9E37_79B9).wrapping_add((y as u64).wrapping_mul(0x85EB_CA6B)) ^ 0x1234;
+                    let z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+                    0.2 + 0.6 * ((z >> 8) & 0xFF) as f32 / 255.0
+                } else if x < 80 {
+                    0.25
+                } else {
+                    0.75
+                };
+            }
+        }
+        let ones = vec![1.0f32; w * h];
+        let map = blade_tuft_map(&luma, Some(&ones), 0.0, 0.0, w, h, 2);
+        assert!(blade_tuft_map(&luma, None, 0.0, 0.0, w, h, 2).iter().all(|v| *v == 0.0), "no grass found, no tufts");
+        let mean = |x0: usize, x1: usize| (8..24).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| map[i]).sum::<f32>() / ((x1 - x0) * 16) as f32;
+        let (ramp, tex, edge) = (mean(4, 28), mean(36, 60), mean(76, 84));
+        assert!(tex > 0.5, "the fine texture reads as a tuft ({tex})");
+        assert!(ramp < 0.1, "the smooth ramp does not ({ramp})");
+        assert!(edge < 0.25, "nor the clean edge ({edge})");
+    }
+
+    #[test]
+    fn the_anisotropy_gate_passes_a_hashed_texture_and_stops_coherent_stripes() {
+        // Two fine textures, no grass regions: a hashed mesh (its orientation flipping every pixel) and vertical
+        // stripes (one orientation). The tensor's gate opens on the mesh and stays shut on the stripes.
+        let (w, h) = (128usize, 48usize);
+        let mut luma = vec![0.5f32; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                luma[y * w + x] = if x < 64 {
+                    let z = (x as u64).wrapping_mul(0x9E37_79B9).wrapping_add((y as u64).wrapping_mul(0x85EB_CA6B)) ^ 0x1234;
+                    let z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+                    0.2 + 0.6 * ((z >> 8) & 0xFF) as f32 / 255.0
+                } else {
+                    0.5 + 0.3 * (x as f32 * 1.1).sin()
+                };
+            }
+        }
+        let map = blade_tuft_map(&luma, None, 1.0, 0.0, w, h, 2);
+        let mean = |x0: usize, x1: usize| (12..36).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| map[i]).sum::<f32>() / ((x1 - x0) * 24) as f32;
+        let (mesh, stripes) = (mean(8, 56), mean(72, 120));
+        assert!(mesh > 0.5, "the mesh reads as a tuft ({mesh})");
+        assert!(stripes < 0.15, "the stripes do not ({stripes})");
+    }
+
+    /// A hashed mesh of a given contrast over a band.
+    fn mesh(x: usize, y: usize, amp: f32) -> f32 {
+        let z = (x as u64).wrapping_mul(0x9E37_79B9).wrapping_add((y as u64).wrapping_mul(0x85EB_CA6B)) ^ 0x1234;
+        let z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+        0.5 - amp / 2.0 + amp * ((z >> 8) & 0xFF) as f32 / 255.0
+    }
+
+    #[test]
+    fn the_route_hands_the_fine_texture_to_the_detector_and_the_coarse_one_to_the_tensor() {
+        // Two hashed meshes, both incoherent (the tensor opens on both): a faint one (a meadow at a distance) and a
+        // contrasty one (a fur). The detector found no grass. Routed, the faint band keeps the tensor's tufts and
+        // the contrasty band takes the detector's answer — none; unrouted, both are tufted.
+        let (w, h) = (128usize, 48usize);
+        let luma: Vec<f32> = (0..w * h).map(|i| { let (x, y) = (i % w, i / w); mesh(x, y, if x < 64 { 0.08 } else { 0.8 }) }).collect();
+        let fine = blade_fine_map(&luma.iter().map(|l| l.powf(1.0 / 2.2)).collect::<Vec<_>>(), w, h, 2);
+        let mean = |m: &[f32], x0: usize, x1: usize| (12..36).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| m[i]).sum::<f32>() / ((x1 - x0) * 24) as f32;
+        assert!(mean(&fine, 8, 56) < 0.2, "the faint mesh is coarse ({})", mean(&fine, 8, 56));
+        assert!(mean(&fine, 72, 120) > 0.8, "the contrasty mesh is fine ({})", mean(&fine, 72, 120));
+        let none = vec![0.0f32; w * h];
+        let plain = blade_tuft_map(&luma, Some(&none), 1.0, 0.0, w, h, 2);
+        let routed = blade_tuft_map(&luma, Some(&none), 1.0, 1.0, w, h, 2);
+        assert!(mean(&plain, 72, 120) > 0.5, "unrouted, the tensor tufts the contrasty mesh ({})", mean(&plain, 72, 120));
+        assert!(mean(&routed, 72, 120) < 0.1, "routed, the detector's no-grass holds on the fine mesh ({})", mean(&routed, 72, 120));
+        assert!(mean(&routed, 8, 56) > 0.5, "routed, the tensor still tufts the coarse mesh ({})", mean(&routed, 8, 56));
+        let grass = vec![1.0f32; w * h];
+        let found = blade_tuft_map(&luma, Some(&grass), 1.0, 1.0, w, h, 2);
+        assert!(mean(&found, 72, 120) > 0.5, "routed, the detector's grass is tufted on the fine mesh ({})", mean(&found, 72, 120));
+    }
+
+    #[test]
+    fn the_focus_map_is_nothing_at_the_fine_texture_and_full_far_from_it() {
+        // A contrasty mesh in the left quarter of a flat sheet: the focus sits in the mesh, the far right is out
+        // of it; a sheet with no fine texture has no focus at all.
+        let (w, h) = (160usize, 48usize);
+        let luma: Vec<f32> = (0..w * h).map(|i| { let (x, y) = (i % w, i / w); if x < 40 { mesh(x, y, 0.8) } else { 0.5 } }).collect();
+        let map = blade_focus_map(&luma, w, h, 2);
+        let mean = |x0: usize, x1: usize| (12..36).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| map[i]).sum::<f32>() / ((x1 - x0) * 24) as f32;
+        assert!(mean(8, 32) < 0.05, "the mesh is in focus ({})", mean(8, 32));
+        assert!(mean(120, 152) > 0.95, "the far right is out of it ({})", mean(120, 152));
+        let flat = vec![0.5f32; w * h];
+        assert!(blade_focus_map(&flat, w, h, 2).iter().all(|v| *v == 0.0), "no fine texture, no focus");
+    }
+
+    #[test]
+    fn the_tint_turns_the_hue_and_keeps_the_value() {
+        let red: Srgb = [200, 40, 40];
+        let same = blade_tint_tone(red, 0.0);
+        assert_eq!(same, red, "no turn, the colour kept");
+        let turned = blade_tint_tone(red, 0.25);
+        let (l0, l1) = (color::srgb_to_lab(red), color::srgb_to_lab(turned));
+        assert!((l0.l - l1.l).abs() < 1.5, "the value kept ({} vs {})", l0.l, l1.l);
+        assert!(l1.b > l1.a.abs(), "a quarter turn from red lands toward yellow (a {} b {})", l1.a, l1.b);
+        let small = blade_tint_tone(red, 0.02);
+        let d = (0..3).map(|i| (small[i] as i32 - red[i] as i32).abs()).max().unwrap_or(0);
+        assert!((1..=24).contains(&d), "two percent of the circle is a drift, not a change ({d})");
+    }
+
+    #[test]
+    fn the_slope_map_is_steep_on_a_bank_and_flat_on_a_meadow() {
+        // A value ramp over the left half, a flat field on the right: the hill's map high on the ramp, nothing on
+        // the flat.
+        let (w, h) = (128usize, 48usize);
+        let luma: Vec<f32> = (0..w * h).map(|i| { let x = i % w; if x < 64 { 0.2 + 0.5 * x as f32 / 64.0 } else { 0.7 } }).collect();
+        let map = blade_slope_map(&luma, w, h, 6);
+        let mean = |x0: usize, x1: usize| (12..36).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| map[i]).sum::<f32>() / ((x1 - x0) * 24) as f32;
+        let (bank, meadow) = (mean(16, 48), mean(88, 120));
+        assert!(bank > 0.5, "the bank is steep ({bank})");
+        assert!(meadow < 0.05, "the meadow is flat ({meadow})");
     }
 
     #[test]
