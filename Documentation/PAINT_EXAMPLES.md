@@ -349,6 +349,46 @@ plakat paint from photo.png --medium acrylic --plan acrylic.hjson -o out-acrylic
 #   impasto: 0.05              ridges: 0.0              impasto_map: 0.0        sheen: 0.05
 #
 plakat paint from photo.png --medium tempera --plan tempera.hjson -o out-tempera.png
+
+# ── PALETTE KNIFE ────────────────────────────────────────────────────────────
+# The picture in thick flat slices of a rigid blade (7.14.0): every mark on every pass a knife slice that shears
+# the paint under it to a plateau and lays its own flat, thick and nearly dry; the reference cut into six planes
+# of value, the slice sized by the flatness and laid along the picture's flow, a ladder of five knives from the
+# wide slabs of the sky (broken into a cascade) to the edge drawing the detail, the grass as one upright pull of
+# the medium knife, and the blade's physics on the impasto — bevel, bead, lip, stiction, tilt, heel, the wet layer
+# dragged, the dirty blade, the torn flank — relit under a raking lamp with a glint on the crests. Every blade key
+# is 0 in the profile — run it with the plan (the keys in PAINT_CONTROLS.md and RELEASE_HISTORY.md):
+#
+#   medium: palette-knife      palette: image             style: legible             new: true
+#   armature: 384              armature_face: 768         armature_body: 384         semantic: true
+#   sam: true                  families: true             commit_shadows: 1.0        shadow_floor: 0.16
+#   detail_len: 0.5            infill: follow             rigger: 0.0                hotspot: 0.0
+#   dry: 1.0                   pickup: 0.0                bleed: 0.0                 wash_in: 0.0
+#   wet_cap: 0.3               scumble: 0.0               skip: 0.0                  deplete: 0.5
+#   turbulence: 0              accent: 0.0                loose: 0.3                 vary: 0.3
+#   comma: 0.0                 body_vary: 0.0             broken: 0.1                shade: 0.0
+#   imprimatura: 0.0           sfumato: 0.0               glaze: 0.0                 glaze_pass: 0.0
+#   lost: 0.0                  aerial: 0.0                crest: 0.0                 sink: 0.0
+#   film: 0.0                  split: 0.0                 tint: 0.0                  twist: 0.0
+#   blade: 1.0                 blade_planes: 6            blade_levels: 0.5          blade_size: 1.0
+#   blade_bevel: 1.0           blade_light: 225           blade_phong: 0.5           blade_flow: 1.0
+#   blade_rest: 0.7            blade_relief: 1.0          blade_mix: 0.6             blade_along: 1.0
+#   blade_inertia: 0.7         blade_facet: 0.5           blade_fade: 0.6            blade_visc: 1.0
+#   blade_pile: 0.6            blade_soft: 0.6            blade_skid: 0.8            blade_knives: [120, 56, 26, 12, 5]
+#   blade_detail: 1.0          blade_layers: 0.8          blade_edge: 0.8            blade_rim: 0.8
+#   blade_slip: 0.6            blade_tuft: 0.8            blade_bed: 0.8             blade_aniso: 1.0
+#   blade_slope: 0.8           blade_break: 0.7           blade_route: 1.0           blade_scatter: 1.0
+#   blade_tint: 1.0            blade_focus: 1.0           blade_peak: 0.8            weave: 0.4
+#   blade_band: 1.0            blade_drag: 0.7            blade_age: 1.0             blade_bridge: 1.0
+#   blade_liftoff: 1.0         blade_broken: 1.0          blade_lip: 1.0             blade_marble: 1.0
+#   blade_slump: 0.7           blade_tilt: 0.7            blade_stiction: 1.0        blade_wet: 0.6
+#   blade_heel: 1.0            blade_dirty: 0.6           blade_tear: 0.7            knife: 1.0
+#   skim: 0.0                  hiding: 1.0                impasto: 0.8               ridges: 0.0
+#   impasto_map: 0.0           sheen: 0.3                 gloss: 0.3                 sag: 0.0
+#   (blade_facet 1.0 hewed the face too hard — 0.5 with blade_soft 0.6; blade_wet costs +3–11% of a full run;
+#   the dirty blade is wiped unless the next slice starts within three widths of the last one's end)
+#
+plakat paint from photo.png --medium palette-knife --plan palette-knife.hjson -o out-knife.png
 ```
 
 ---

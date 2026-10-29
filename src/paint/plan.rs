@@ -285,6 +285,156 @@ pub struct PaintPlan {
     pub twist: Option<f32>,
     #[serde(default)]
     pub skim: Option<f32>,
+    /// BLADE (0..1): the palette knife as the medium's own tool — this share of all the marks on every pass, the
+    /// subject and the faces included (`MediumProfile::blade`; `--medium palette-knife`).
+    #[serde(default)]
+    pub blade: Option<f32>,
+    /// BLADE PLANES (a count): the reference cut into flat planes of value (`MediumProfile::blade_planes`). BLADE
+    /// LEVELS (0..1): the cuts even (0) or at the picture's quantiles (1). BLADE SIZE (0..1): the slice's size by
+    /// the flatness under it.
+    #[serde(default)]
+    pub blade_planes: Option<f32>,
+    #[serde(default)]
+    pub blade_levels: Option<f32>,
+    #[serde(default)]
+    pub blade_size: Option<f32>,
+    /// BLADE BEVEL (0..1): the thickness profile of a knife slice — thin at the start, a ridge at the lift-off, the
+    /// paint squeezed to the blade's edges (`MediumProfile::blade_bevel`, `BrushConfig::bevel`).
+    #[serde(default)]
+    pub blade_bevel: Option<f32>,
+    /// BLADE LIGHT (degrees): the lamp's azimuth for the relief's relight. BLADE PHONG (0..1): a specular
+    /// lobe on the relief's facets that face the lamp (`MediumProfile::blade_light`, `blade_phong`).
+    #[serde(default)]
+    pub blade_light: Option<f32>,
+    #[serde(default)]
+    pub blade_phong: Option<f32>,
+    /// BLADE FLOW (0..1): the slices along the picture's form, straight. BLADE REST (0..1): the restating passes
+    /// leave the flat slabs alone. BLADE RELIEF (0..1): the relief's slope read over a window of the picture's
+    /// scale. BLADE MIX (0..1): two colours across the blade (`MediumProfile::blade_flow`, `blade_rest`,
+    /// `blade_relief`, `blade_mix`).
+    #[serde(default)]
+    pub blade_flow: Option<f32>,
+    #[serde(default)]
+    pub blade_rest: Option<f32>,
+    #[serde(default)]
+    pub blade_relief: Option<f32>,
+    #[serde(default)]
+    pub blade_mix: Option<f32>,
+    /// BLADE ALONG (0..1): the flatness read along the flow. BLADE INERTIA (0..1): the straight slice through the
+    /// noise to a hard stop. BLADE FACET (0..1): the face cut into its own planes. BLADE FADE (0..1): the paint
+    /// running out along the slice (`MediumProfile::blade_along`, `blade_inertia`, `blade_facet`, `blade_fade`).
+    #[serde(default)]
+    pub blade_along: Option<f32>,
+    #[serde(default)]
+    pub blade_inertia: Option<f32>,
+    #[serde(default)]
+    pub blade_facet: Option<f32>,
+    #[serde(default)]
+    pub blade_fade: Option<f32>,
+    /// BLADE VISC (0..1): the colour stop rising along the flow. BLADE PILE (0..1): the relief accumulating.
+    /// BLADE SOFT (0..1): the face's terraces softened on the smooth skin. BLADE SKID (0..1): the blade at low
+    /// pressure riding the peaks (`MediumProfile::blade_visc`, `blade_pile`, `blade_soft`, `blade_skid`).
+    #[serde(default)]
+    pub blade_visc: Option<f32>,
+    #[serde(default)]
+    pub blade_pile: Option<f32>,
+    #[serde(default)]
+    pub blade_soft: Option<f32>,
+    #[serde(default)]
+    pub blade_skid: Option<f32>,
+    /// BLADE DETAIL (0..1): the narrow knives keep the detail (local planes). BLADE LAYERS (0..1): the knives thin
+    /// with the ladder and shear less. BLADE EDGE (0..1): the knife's edge draws the busy passages
+    /// (`MediumProfile::blade_detail`, `blade_layers`, `blade_edge`).
+    #[serde(default)]
+    pub blade_detail: Option<f32>,
+    #[serde(default)]
+    pub blade_layers: Option<f32>,
+    #[serde(default)]
+    pub blade_edge: Option<f32>,
+    /// BLADE RIM (0..1): the wide knife's edge bead. BLADE SLIP (0..1): the wide blade's uneven pressure. BLADE
+    /// TUFT (0..1): a fine texture laid as one pull of the medium knife. BLADE BED (0..1): the thin knives ride the
+    /// relief beneath (`MediumProfile::blade_rim`, `blade_slip`, `blade_tuft`, `blade_bed`).
+    #[serde(default)]
+    pub blade_rim: Option<f32>,
+    #[serde(default)]
+    pub blade_slip: Option<f32>,
+    #[serde(default)]
+    pub blade_tuft: Option<f32>,
+    #[serde(default)]
+    pub blade_bed: Option<f32>,
+    /// BLADE ANISO (0..1): the tensor's reading of the grass in place of the scene detector. BLADE SLOPE (0..1): the
+    /// tuft's pull by the slope. BLADE BREAK (0..1): the wide plates broken by a global slow noise
+    /// (`MediumProfile::blade_aniso`, `blade_slope`, `blade_break`).
+    #[serde(default)]
+    pub blade_aniso: Option<f32>,
+    #[serde(default)]
+    pub blade_slope: Option<f32>,
+    #[serde(default)]
+    pub blade_break: Option<f32>,
+    /// BLADE ROUTE (0..1): the grass's two readings routed by the fineness. BLADE SCATTER (0..1): the tuft's pull
+    /// scattered ±10°. BLADE TINT (0..1): the broken plates' hue drifting (`MediumProfile::blade_route`,
+    /// `blade_scatter`, `blade_tint`).
+    #[serde(default)]
+    pub blade_route: Option<f32>,
+    #[serde(default)]
+    pub blade_scatter: Option<f32>,
+    #[serde(default)]
+    pub blade_tint: Option<f32>,
+    /// BLADE FOCUS (0..1): the periphery wide and thick, the detail at the focus. BLADE PEAK (0..1): the specular
+    /// on the local crests of the relief (`MediumProfile::blade_focus`, `blade_peak`).
+    #[serde(default)]
+    pub blade_focus: Option<f32>,
+    #[serde(default)]
+    pub blade_peak: Option<f32>,
+    /// BLADE BAND (0..1): the focus as a horizontal band. BLADE DRAG (0..1): the cloth's friction on the fading
+    /// blade. BLADE AGE (0..1): the crests' specular by the age of the paint (`MediumProfile::blade_band`,
+    /// `blade_drag`, `blade_age`).
+    #[serde(default)]
+    pub blade_band: Option<f32>,
+    #[serde(default)]
+    pub blade_drag: Option<f32>,
+    #[serde(default)]
+    pub blade_age: Option<f32>,
+    /// BLADE BRIDGE (0..1): the paint's surface tension over the cloth. BLADE LIFTOFF (0..1): the bead where a
+    /// hard-cut slice leaves the canvas. BLADE BROKEN (0..1): the lower layer's colour in the drag's voids
+    /// (`MediumProfile::blade_bridge`, `blade_liftoff`, `blade_broken`).
+    #[serde(default)]
+    pub blade_bridge: Option<f32>,
+    #[serde(default)]
+    pub blade_liftoff: Option<f32>,
+    #[serde(default)]
+    pub blade_broken: Option<f32>,
+    /// BLADE LIP (0..1): the lift-off's bead skewed to the very end. BLADE MARBLE (0..1): the mix's bands wandering
+    /// along the slice. BLADE SLUMP (0..1): the fresh paint's height settling at the slab's edges
+    /// (`MediumProfile::blade_lip`, `blade_marble`, `blade_slump`).
+    #[serde(default)]
+    pub blade_lip: Option<f32>,
+    #[serde(default)]
+    pub blade_marble: Option<f32>,
+    #[serde(default)]
+    pub blade_slump: Option<f32>,
+    /// BLADE TILT (0..1): the blade's roll across its motion. BLADE STICTION (0..1): the lift-off's bead broken
+    /// into peaks across the blade. BLADE WET (0..1): the wet layer below dragged along a slice laid over it
+    /// (`MediumProfile::blade_tilt`, `blade_stiction`, `blade_wet`).
+    #[serde(default)]
+    pub blade_tilt: Option<f32>,
+    #[serde(default)]
+    pub blade_stiction: Option<f32>,
+    #[serde(default)]
+    pub blade_wet: Option<f32>,
+    /// BLADE HEEL (0..1): the bump of the blade's first contact. BLADE DIRTY (0..1): the residue on the blade
+    /// carried into the next slice's start. BLADE TEAR (0..1): the slice's sides torn by a noise
+    /// (`MediumProfile::blade_heel`, `blade_dirty`, `blade_tear`).
+    #[serde(default)]
+    pub blade_heel: Option<f32>,
+    #[serde(default)]
+    pub blade_dirty: Option<f32>,
+    #[serde(default)]
+    pub blade_tear: Option<f32>,
+    /// BLADE KNIVES: the ladder of knife widths, pixels, widest first (e.g. `[120, 56, 24, 10, 4]`) — in place of
+    /// the default ladder (a 18th of the long side halving to the finest) or `--brush`.
+    #[serde(default)]
+    pub blade_knives: Option<Vec<f32>>,
     /// The tempera's layers: HATCH (0..1): the restating marks straight hatch lines of one width. VERDACCIO
     /// (0..1): the flesh underpainted in a greenish grey. DISHES (a count): the marks laid in this many value
     /// steps. LIGHTS (0..1): the share of the finest marks on the subject's top values hatched in toward white.
@@ -698,6 +848,56 @@ impl Default for PaintPlan {
             hiding: None,
             twist: None,
             skim: None,
+            blade: None,
+            blade_planes: None,
+            blade_levels: None,
+            blade_size: None,
+            blade_bevel: None,
+            blade_light: None,
+            blade_phong: None,
+            blade_flow: None,
+            blade_rest: None,
+            blade_relief: None,
+            blade_mix: None,
+            blade_along: None,
+            blade_inertia: None,
+            blade_facet: None,
+            blade_fade: None,
+            blade_visc: None,
+            blade_pile: None,
+            blade_soft: None,
+            blade_skid: None,
+            blade_detail: None,
+            blade_layers: None,
+            blade_edge: None,
+            blade_rim: None,
+            blade_slip: None,
+            blade_tuft: None,
+            blade_bed: None,
+            blade_aniso: None,
+            blade_slope: None,
+            blade_break: None,
+            blade_route: None,
+            blade_scatter: None,
+            blade_tint: None,
+            blade_focus: None,
+            blade_peak: None,
+            blade_band: None,
+            blade_drag: None,
+            blade_age: None,
+            blade_bridge: None,
+            blade_liftoff: None,
+            blade_broken: None,
+            blade_lip: None,
+            blade_marble: None,
+            blade_slump: None,
+            blade_tilt: None,
+            blade_stiction: None,
+            blade_wet: None,
+            blade_heel: None,
+            blade_dirty: None,
+            blade_tear: None,
+            blade_knives: None,
             hatch: None,
             verdaccio: None,
             dishes: None,
@@ -924,7 +1124,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("katsu", self.katsu), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("nib_wash_scurve", self.nib_wash_scurve), ("nib_wash_vary", self.nib_wash_vary), ("nib_wash_mass", self.nib_wash_mass), ("nib_wash_hold", self.nib_wash_hold), ("nib_wash_debt", self.nib_wash_debt), ("nib_wash_dry", self.nib_wash_dry), ("nib_wash_cap", self.nib_wash_cap), ("nib_wash_tone", self.nib_wash_tone), ("nib_wash_draw", self.nib_wash_draw), ("nib_wash_planes", self.nib_wash_planes), ("nib_wash_edge", self.nib_wash_edge), ("nib_wash_depth", self.nib_wash_depth), ("nib_wash_scale", self.nib_wash_scale), ("nib_wash_levels", self.nib_wash_levels), ("nib_wash_faces", self.nib_wash_faces), ("nib_wash_rag", self.nib_wash_rag), ("nib_wash_mask", self.nib_wash_mask), ("nib_wash_half", self.nib_wash_half), ("nib_wash_grain", self.nib_wash_grain), ("nib_wash_grade", self.nib_wash_grade), ("nib_wash_profile", self.nib_wash_profile), ("nib_wash_streak", self.nib_wash_streak), ("nib_wash_sweep", self.nib_wash_sweep), ("nib_wash_water", self.nib_wash_water), ("nib_wash_agent", self.nib_wash_agent), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("blade", self.blade), ("blade_planes", self.blade_planes), ("blade_levels", self.blade_levels), ("blade_size", self.blade_size), ("blade_bevel", self.blade_bevel), ("blade_light", self.blade_light), ("blade_phong", self.blade_phong), ("blade_flow", self.blade_flow), ("blade_rest", self.blade_rest), ("blade_relief", self.blade_relief), ("blade_mix", self.blade_mix), ("blade_along", self.blade_along), ("blade_inertia", self.blade_inertia), ("blade_facet", self.blade_facet), ("blade_fade", self.blade_fade), ("blade_visc", self.blade_visc), ("blade_pile", self.blade_pile), ("blade_soft", self.blade_soft), ("blade_skid", self.blade_skid), ("blade_detail", self.blade_detail), ("blade_layers", self.blade_layers), ("blade_edge", self.blade_edge), ("blade_rim", self.blade_rim), ("blade_slip", self.blade_slip), ("blade_tuft", self.blade_tuft), ("blade_bed", self.blade_bed), ("blade_aniso", self.blade_aniso), ("blade_slope", self.blade_slope), ("blade_break", self.blade_break), ("blade_route", self.blade_route), ("blade_scatter", self.blade_scatter), ("blade_tint", self.blade_tint), ("blade_focus", self.blade_focus), ("blade_peak", self.blade_peak), ("blade_band", self.blade_band), ("blade_drag", self.blade_drag), ("blade_age", self.blade_age), ("blade_bridge", self.blade_bridge), ("blade_liftoff", self.blade_liftoff), ("blade_broken", self.blade_broken), ("blade_lip", self.blade_lip), ("blade_marble", self.blade_marble), ("blade_slump", self.blade_slump), ("blade_tilt", self.blade_tilt), ("blade_stiction", self.blade_stiction), ("blade_wet", self.blade_wet), ("blade_heel", self.blade_heel), ("blade_dirty", self.blade_dirty), ("blade_tear", self.blade_tear), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("katsu", self.katsu), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("nib_wash_scurve", self.nib_wash_scurve), ("nib_wash_vary", self.nib_wash_vary), ("nib_wash_mass", self.nib_wash_mass), ("nib_wash_hold", self.nib_wash_hold), ("nib_wash_debt", self.nib_wash_debt), ("nib_wash_dry", self.nib_wash_dry), ("nib_wash_cap", self.nib_wash_cap), ("nib_wash_tone", self.nib_wash_tone), ("nib_wash_draw", self.nib_wash_draw), ("nib_wash_planes", self.nib_wash_planes), ("nib_wash_edge", self.nib_wash_edge), ("nib_wash_depth", self.nib_wash_depth), ("nib_wash_scale", self.nib_wash_scale), ("nib_wash_levels", self.nib_wash_levels), ("nib_wash_faces", self.nib_wash_faces), ("nib_wash_rag", self.nib_wash_rag), ("nib_wash_mask", self.nib_wash_mask), ("nib_wash_half", self.nib_wash_half), ("nib_wash_grain", self.nib_wash_grain), ("nib_wash_grade", self.nib_wash_grade), ("nib_wash_profile", self.nib_wash_profile), ("nib_wash_streak", self.nib_wash_streak), ("nib_wash_sweep", self.nib_wash_sweep), ("nib_wash_water", self.nib_wash_water), ("nib_wash_agent", self.nib_wash_agent), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -1271,6 +1471,56 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             hiding: None,
             twist: None,
             skim: None,
+            blade: None,
+            blade_planes: None,
+            blade_levels: None,
+            blade_size: None,
+            blade_bevel: None,
+            blade_light: None,
+            blade_phong: None,
+            blade_flow: None,
+            blade_rest: None,
+            blade_relief: None,
+            blade_mix: None,
+            blade_along: None,
+            blade_inertia: None,
+            blade_facet: None,
+            blade_fade: None,
+            blade_visc: None,
+            blade_pile: None,
+            blade_soft: None,
+            blade_skid: None,
+            blade_detail: None,
+            blade_layers: None,
+            blade_edge: None,
+            blade_rim: None,
+            blade_slip: None,
+            blade_tuft: None,
+            blade_bed: None,
+            blade_aniso: None,
+            blade_slope: None,
+            blade_break: None,
+            blade_route: None,
+            blade_scatter: None,
+            blade_tint: None,
+            blade_focus: None,
+            blade_peak: None,
+            blade_band: None,
+            blade_drag: None,
+            blade_age: None,
+            blade_bridge: None,
+            blade_liftoff: None,
+            blade_broken: None,
+            blade_lip: None,
+            blade_marble: None,
+            blade_slump: None,
+            blade_tilt: None,
+            blade_stiction: None,
+            blade_wet: None,
+            blade_heel: None,
+            blade_dirty: None,
+            blade_tear: None,
+            blade_knives: None,
             hatch: None,
             verdaccio: None,
             dishes: None,

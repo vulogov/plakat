@@ -852,6 +852,45 @@ hotspot: 0.2
 
 ---
 
+### Palette knife — `medium: palette-knife`  🎯 *the picture in thick flat slices of a rigid blade: planes of value, a ladder of knives, the blade's physics on the impasto (7.14.0)*
+Every mark on every pass is a knife slice (`blade`): a flat rigid blade full width with square ends that shears
+the paint under it to a plateau and lays its own flat, thick and nearly dry — no pickup, no bleed, no glaze, no
+brush. The reference is **cut into flat planes of value** with the hue kept (`blade_planes`, `blade_levels`; the
+face by `blade_facet`, `blade_soft`), the slice **sized by the flatness and laid along the picture's flow**
+(`blade_size`, `blade_flow`, `blade_along`, `blade_inertia`, `blade_rest`), **a ladder of knives** of several widths
+(`blade_knives`, `blade_detail`, `blade_layers`, `blade_edge`), the wide plates broken and tinted (`blade_break`,
+`blade_tint`), the painting's focus and its band (`blade_focus`, `blade_band`), the **grass as one upright pull**
+of the medium knife (`blade_tuft`, `blade_aniso`, `blade_slope`, `blade_scatter`, `blade_route`); the **blade's
+physics** on the impasto z-buffer — `blade_bevel`, `blade_fade`, `blade_visc`, `blade_pile`, `blade_skid`,
+`blade_rim`, `blade_slip`, `blade_bed`, `blade_drag`, `blade_bridge`, `blade_broken`, `blade_liftoff`, `blade_lip`,
+`blade_stiction`, `blade_mix`, `blade_marble`, `blade_slump`, `blade_tilt`, `blade_wet`, `blade_heel`,
+`blade_dirty`, `blade_tear`; and the relief **relit** under a raking lamp (`blade_light` in degrees, `blade_phong`,
+`blade_relief`, `blade_peak`, `blade_age`, `weave`). Each is a plan key, 0 in every profile (`blade_knives` a list
+of widths in px at 2048², `blade_planes` a count); the recommended plan with every key is in
+`PAINT_EXAMPLES.md`, and `RELEASE_HISTORY.md` (7.14.0) says what each one does.
+- Defaults: `opacity opaque` · `bleed 0.08` · `pickup 0` · `impasto 0.5` · `sheen 0.3` · `lift 0.8` · `broken 0.2` ·
+  palette `zorn`. Without a plan the profile paints with the brush engine; `blade 1` makes the knife the tool.
+- Tune: `blade_planes` (4–8) and `blade_knives` are the character; `blade_size`/`blade_rest` up for broader, calmer
+  slabs; `blade_detail`/`blade_edge` up to keep the fine passages; `blade_light` for the lamp; `blade_wet` costs a
+  few per cent of the run. Use `palette: image`, `style: legible`, `dry 1`, `pickup 0`, `comma 0`.
+
+```hjson
+medium: palette-knife
+palette: image
+style: legible
+blade: 1.0
+blade_planes: 6
+blade_levels: 0.5
+blade_size: 1.0
+blade_knives: [120, 56, 26, 12, 5]
+blade_light: 225
+blade_phong: 0.5
+hiding: 1.0
+impasto: 0.8
+```
+
+---
+
 ## Quick reference — default behaviour by medium
 
 | medium        | body | bleed | pickup | impasto | chroma | dry_shift | granulate | sheen | lift | broken | contour | marks      | whites   | palette |
@@ -872,6 +911,7 @@ hotspot: 0.2
 | pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous · a stick of chalk on the tooth (a light touch on the raised grain, a hard press in the hollows, a full tooth sliding), the broad passes with the stick's side, the calm passages rubbed with a finger | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
 | acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
+| palette-knife | 1.00 | 0.08  | 0.00   | 0.50    | 1.08   | 0.00      | 0.00      | 0.30  | 0.80 | 0.20   | 0.00    | continuous · with `blade 1` every mark a rigid knife slice: planes of value, a ladder of knives, the impasto relit | pigment  | zorn |
 
 Every value is a **default** — set the same‑named field in the spec (or the CLI flag) to override it. The score
 records the applied `bleed` / `opacity` / `impasto` so a re‑render (`plakat paint replay`) reproduces the
