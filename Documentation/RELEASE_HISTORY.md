@@ -8,6 +8,68 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.14.0 — Palette knife: the picture laid in thick flat slices of the blade — the planes of value, the ladder of knives, the relief relit, and the blade's own physics
+
+### `plakat paint`
+
+- **`--medium palette-knife` — the knife as the medium's own tool** (`blade`). A new medium beside `acrylic`'s
+  `knife` key: every mark on every pass — the subject and the faces included — is a flat rigid blade full width
+  with square ends that shears the paint standing under it to a plateau and lays its own flat, thick and nearly
+  dry; no pickup, no bleed, no glaze, no scumble, no finger, nothing of a brush. The paint hides by its own power
+  (`hiding`), the relief is thick and relit with a sheen and a glint on the crests. Profile defaults: `body 1`,
+  `bleed 0.08`, `impasto 0.5`, `sheen 0.3`, `pickup 0`, palette `zorn`; every `blade_*` key below is a plan key,
+  0 in every profile — the recommended plan is the block in `PAINT_EXAMPLES.md`.
+- **The picture cut into planes of value** (`blade_planes`, `blade_levels`): the reference the knife paints from
+  is cut into a few flat planes of value with the hue kept, the cuts halfway between even steps and the picture's
+  own quantiles, so no slice blends a gradation; the face smoothed and cut into planes of its own range
+  (`blade_facet`), its terraces giving way toward the picture's own slope on the smooth skin (`blade_soft`).
+- **The slice sized by the flatness and laid along the flow** (`blade_size`, `blade_flow`, `blade_along`,
+  `blade_inertia`, `blade_rest`): wide slabs on a sky and a sea, small hard ones at the detail; the slices along the
+  picture's form before the planes (the fur, the shoreline), every slice a straight quad that keeps its direction
+  through the local noise to a hard stop; the flatness judged along the flow — a long slab along a wave's bed; the
+  restating passes leave the flat slabs alone.
+- **The ladder of knives** (`blade_knives`, `blade_detail`, `blade_layers`, `blade_edge`): knives of several widths
+  (the plan's `[120, 56, 26, 12, 5]` px at 2048²), the narrow ones keeping an eye, a mouth, a crest by planes of
+  their own range, laid as a film over the thick slabs and shearing a fifth of what the wide one shears, the
+  blade's edge drawing the busy passages in narrower, longer slices. **The wide plates broken** (`blade_break`,
+  `blade_tint`): the two widest knives' slices cut by a global slow noise — the sky a cascade of overlapping slabs,
+  each slab's hue drifting a little. **The painting's focus** (`blade_focus`, `blade_band`): the periphery in wide,
+  thick, abstract slabs and the narrow knives kept to the fine textures' centre; the focus a horizontal band of
+  the perspective — the near ground sharp, the far hills and the sky out of it.
+- **The grass and the foliage as one pull of the medium knife** (`blade_tuft`, `blade_aniso`, `blade_slope`,
+  `blade_scatter`, `blade_route`): on a fine incoherent texture the narrow knives keep off and the medium knife
+  lays one upright pull of several greens; the texture read from the structure tensor's mean incoherence, the
+  pull by the hill's slope (upright on a flat meadow), scattered ±10° about it; CLIP decides on the fine contrasty
+  textures (a fur) and the tensor on the coarse ones (a meadow).
+- **The blade's physics on the impasto z-buffer.** The slice's thickness profile — thin where the blade is pressed
+  down, a sharp ridge at the lift-off, the paint squeezed to the blade's two edges (`blade_bevel`); the paint
+  running out along the slice (`blade_fade`) and the colour stop tripling along the flow (`blade_visc`); the relief
+  piling where slices cross, the added height saturating (`blade_pile`); the blade at low pressure riding the
+  peaks of the paint beneath (`blade_skid`). The wide knife's edge bead — the slice's section a U (`blade_rim`) —
+  and its uneven pressure, torn edges and holes inside the slab (`blade_slip`); the thin slices bending up over
+  the dried lumps of the wide layers (`blade_bed`). The fading blade's paint settling on the cloth's tops — a
+  grainy scumbled tail (`blade_drag`), the thick paint spanning the furrows while it lasts and the cloth showing
+  in ragged breaks (`blade_bridge`), the drag's voids taking the lower layer's peaks' colour (`blade_broken`). A
+  slice cut hard at a colour's edge ending in a bead across the blade (`blade_liftoff`), the bead drawn out to the
+  last pixels with a trough behind it (`blade_lip`) and broken into discrete peaks across the blade
+  (`blade_stiction`). Two colours across the blade, unmixed (`blade_mix`), their bands wandering, pinching and
+  swelling along the slice (`blade_marble`); the fresh slab's edges sagging over a pixel or two with the body
+  kept (`blade_slump`). The blade rolled across its motion by a slow noise — one edge scraped to the ground, the
+  other a dominant bead (`blade_tilt`); a slice over a still-wet layer dragging it along by a share of its width,
+  the wetness fading with the passes (`blade_wet`, one bbox snapshot per slice, +3–11% on a full run); a sharp bump
+  of height where the knife comes down, on the pressed edge under the tilt (`blade_heel`); the dirty knife — the
+  blade keeps half of what it carried, unspent charge and the paint its plateau scraped off, and the next slice
+  starts in that colour when it starts within three widths of the last one's end, the knife wiped otherwise
+  (`blade_dirty`); the slice's flanks cut in by a thresholded noise at a quarter-width's period, deeper on the fast
+  slices and toward the tail (`blade_tear`). Each in the score's header (`bbevel` … `btear`), so a replay is
+  byte-identical.
+- **The relief relit** (`blade_light`, `blade_phong`, `blade_relief`, `blade_peak`, `blade_age`, `weave`): a raking
+  lamp from a chosen azimuth with a Blinn–Phong highlight on every facet that faces it; the slab's flank read over
+  a window of the picture's scale — a band of light and shadow, not a hairline; the top tenth of the local relief
+  glinting — the sky's rims and the wave crests; the glint broad and matte on the old wide plates, narrow and
+  bright on the fresh fine finishing marks; the linen's threads in the relight where the paint is bare or thin.
+- Nothing changes in the other media: the sixteen paint sheets of 7.13.0 render byte-identical.
+
 ## What's new in 7.13.0 — Ink and wash: the pens and the washes — the planes of the ink, the water, and the mark that looks at the sheet
 
 ### `plakat paint`
