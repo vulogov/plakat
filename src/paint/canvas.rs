@@ -38,6 +38,18 @@ pub struct Smear {
 }
 
 /// A pigment canvas over a fixed palette basis.
+/// WET MARKS (see `Canvas::wet_at`): the ticks a smearing knife mark's paint takes to dry to 1/e.
+pub const WET_TAU: f32 = 500.0;
+
+/// The paint over a box of the canvas (see `Canvas::snapshot_paint`).
+pub struct PaintPatch {
+    pub conc: Vec<f32>,
+    pub film: Vec<f32>,
+    pub film_eff: Vec<f32>,
+    pub height: Vec<f32>,
+    pub n: usize,
+}
+
 #[derive(Clone)]
 pub struct Canvas {
     pub w: u32,
@@ -72,6 +84,24 @@ pub struct Canvas {
     pub wetness: Vec<f32>,
     /// Per-pixel static surface tooth in `[0,1]` (how much the brush catches), row-major.
     pub tooth: Vec<f32>,
+    /// AGE (see `BrushConfig::age`): the THINNESS of the last knife to lay paint at each pixel (0 the widest
+    /// blade, 1 the finest), blended in by the mark's contact; empty until a knife with the key first lays paint.
+    /// Read by the finish (`Finish::age`) for the breadth and brightness of the crests' specular.
+    pub age: Vec<f32>,
+    /// The cloth's seed for the knife's DRAG (see `BrushConfig::drag`, `linen_uv`): the same linen the finish's
+    /// `weave` shows. 0 until set (`with_cloth_seed`).
+    pub cloth_seed: u64,
+    /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
+    /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
+    /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
+    pub laid: Vec<u32>,
+    pub tick: u32,
+    /// THE DIRTY KNIFE (see `BrushConfig::dirty`): the paint left on the blade after the last knife mark — the
+    /// pigment amounts in the units of a lane's charge (empty = a clean blade); half fades with each mark.
+    pub blade: Vec<f32>,
+    /// ...and where that mark ended, with the reach (three of its widths) within which the next mark's start
+    /// still finds the blade dirty: moved further, the hand wipes the knife.
+    pub blade_at: (f32, f32, f32),
     /// The ground's linear reflectance — shown through where the paint film is thin (glaze) and hidden where
     /// it's built up (opaque). Stored separately so it can never dilute the paint's own colour as a proportion.
     ground_lin: LinRgb,
@@ -142,7 +172,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -226,6 +256,76 @@ impl Canvas {
     /// `1 − amount` — a cadmium laid thick hides what is under it, an ultramarine or a lake laid as thick
     /// stays a translucent glaze over it, and the ground shows through a lake's film as it does not through
     /// a cadmium's. Off, the arithmetic is the old one to the bit.
+    /// The cloth's seed (see `cloth_seed`): the linen a knife's drag reads, the finish's weave's own.
+    pub fn with_cloth_seed(mut self, seed: u64) -> Self {
+        self.cloth_seed = seed;
+        self
+    }
+
+    /// A smearing knife mark begins (see `BrushConfig::smear`): the wet stamps are allotted, the tick advanced.
+    pub fn begin_wet_mark(&mut self) {
+        if self.laid.is_empty() {
+            self.laid = vec![0; self.w as usize * self.h as usize];
+        }
+        self.tick += 1;
+    }
+
+    /// The pixel laid by the current wet mark.
+    pub fn stamp_wet(&mut self, x: u32, y: u32) {
+        let p = y as usize * self.w as usize + x as usize;
+        self.laid[p] = self.tick;
+    }
+
+    /// How WET the paint at a pixel still is (0..1): 0 where no smearing mark has laid, or after the drying.
+    pub fn wet_at(&self, x: u32, y: u32) -> f32 {
+        if self.laid.is_empty() {
+            return 0.0;
+        }
+        let l = self.laid[y as usize * self.w as usize + x as usize];
+        if l == 0 {
+            0.0
+        } else {
+            (-(self.tick.saturating_sub(l) as f32) / WET_TAU).exp()
+        }
+    }
+
+    /// The paint over a box of the canvas as it stands now (the colour, the film and the height), for the
+    /// smear to read the layer below a mark from while the mark is being laid over it.
+    pub fn snapshot_paint(&self, bx0: usize, by0: usize, bw: usize, bh: usize) -> PaintPatch {
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let mut conc = vec![0f32; bw * bh * n];
+        let mut film = vec![0f32; bw * bh];
+        let mut film_eff = vec![0f32; bw * bh];
+        let mut height = vec![0f32; bw * bh];
+        for yy in 0..bh {
+            for xx in 0..bw {
+                let (sx, sy) = (bx0 + xx, by0 + yy);
+                if sx < w && sy < h {
+                    let (i, p, q) = ((sy * w + sx) * n, sy * w + sx, yy * bw + xx);
+                    conc[q * n..q * n + n].copy_from_slice(&self.conc[i..i + n]);
+                    film[q] = self.film[p];
+                    film_eff[q] = self.film_eff.get(p).copied().unwrap_or(0.0);
+                    height[q] = self.height[p];
+                }
+            }
+        }
+        PaintPatch { conc, film, film_eff, height, n }
+    }
+
+    /// SMEAR (see `BrushConfig::smear`): the pixel takes `t` of the snapshot's paint at the patch index `q` — the
+    /// wet layer below the mark shifted along the blade's motion: the colour, the film and the height alike.
+    pub fn smear_to(&mut self, x: u32, y: u32, patch: &PaintPatch, q: usize, t: f32) {
+        let (i, p) = (self.idx(x, y), y as usize * self.w as usize + x as usize);
+        for c in 0..self.n.min(patch.n) {
+            self.conc[i + c] += (patch.conc[q * patch.n + c] - self.conc[i + c]) * t;
+        }
+        self.film[p] += (patch.film[q] - self.film[p]) * t;
+        if !self.film_eff.is_empty() {
+            self.film_eff[p] += (patch.film_eff[q] - self.film_eff[p]) * t;
+        }
+        self.height[p] += (patch.height[q] - self.height[p]) * t;
+    }
+
     pub fn with_hiding(mut self, amount: f32) -> Self {
         let a = amount.clamp(0.0, 1.0);
         self.hiding = a;
@@ -575,6 +675,13 @@ impl Canvas {
         }
         for w in &mut self.wetness {
             *w *= k;
+        }
+        if !self.laid.is_empty() {
+            // The wet marks age by the same share: fully dry at 0, by τ·ln(1/keep) ticks otherwise.
+            let age = if k <= 0.0 { u32::MAX } else { (WET_TAU * (1.0 / k).ln()).ceil() as u32 };
+            for l in &mut self.laid {
+                *l = if *l == 0 || age >= *l { 0 } else { *l - age };
+            }
         }
     }
 
@@ -1483,7 +1590,6 @@ impl Canvas {
             // hides the threads entirely and a glaze or the bare ground shows them.
             let weave = f.weave.clamp(0.0, 1.0);
             let period = (w.min(h) as f32 / 400.0).max(3.0);
-            let kw = std::f32::consts::TAU / period;
             let (h50, local_h) = if weave > 0.0 {
                 // The local height: the max over a 3-px window, lightly smoothed.
                 let r3 = 3usize;
@@ -1518,27 +1624,9 @@ impl Canvas {
             // PEAK (see `Finish::peak`): the height's min and max over a window of a 40th of the short side — the
             // local relief's range, its top tenth the crests.
             let peak_k = f.peak.clamp(0.0, 1.0);
+            let age_k = if self.age.is_empty() { 0.0 } else { f.age.clamp(0.0, 1.0) };
             let (peak_lo, peak_hi) = if peak_k > 0.0 { Self::local_min_max(&self.height, w, h, (w.min(h) / 40).max(4)) } else { (Vec::new(), Vec::new()) };
-            let linen = |x: f32, y: f32| -> f32 {
-                // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
-                // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
-                // straight grid to the eye — a dot screen on the sky.)
-                let wx = (value_noise(x / (period * 12.0), y / (period * 12.0), f.seed ^ 0x11EA) - 0.5) * 3.0 * period
-                    + (value_noise(x / (period * 3.5), y / (period * 3.5), f.seed ^ 0x77A1) - 0.5) * 0.8 * period;
-                let wy = (value_noise(x / (period * 12.0) + 7.3, y / (period * 12.0) + 3.1, f.seed ^ 0x2BEE) - 0.5) * 3.0 * period
-                    + (value_noise(x / (period * 3.5) + 2.2, y / (period * 3.5) + 9.1, f.seed ^ 0x88B2) - 0.5) * 0.8 * period;
-                let (u, v) = (x + wx, y + wy);
-                let sx = (kw * u).sin();
-                let sy = (kw * v).sin();
-                // Slubs: a warp thread (running in y) varies along y, a weft thread along x.
-                let tx = 0.55 + 0.9 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), f.seed ^ 0x3C0D);
-                let ty = 0.55 + 0.9 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, f.seed ^ 0x4D1E);
-                // Interlock (the checker of crossings) + the threads' own ridges + fibrous roughness.
-                let interlock = sx * sy;
-                let ridges = 0.35 * (sx.abs() * tx + sy.abs() * ty);
-                let fibre = 0.12 * (value_noise(x / 1.7, y / 1.7, f.seed ^ 0x5F1B) - 0.5);
-                0.6 * interlock * (tx + ty) * 0.5 + ridges + fibre
-            };
+            let linen = |x: f32, y: f32| -> f32 { linen_height(x, y, period, f.seed) };
             // SPREAD (see `Finish::spread`): the height blurred twice over `r`, its slope scaled back by `r`.
             let spread = f.spread.clamp(0.0, 1.0);
             let (wide, wide_r) = if spread > 0.0 {
@@ -1627,11 +1715,22 @@ impl Canvas {
                         let i = y * w + x;
                         let span = peak_hi[i] - peak_lo[i];
                         if span > 1e-4 {
-                            let t = ((self.height[i] - peak_lo[i] - 0.9 * span) / (0.1 * span)).clamp(0.0, 1.0);
+                            // AGE (see `Finish::age`): the thinness of the knife that laid the pixel — a wide plate's
+                            // highlight broad, dim and spread down the fascia (the dried underpainting gone matte), a
+                            // fine mark's narrow, bright and kept to the crest (the fresh paint's binder).
+                            let fine = if age_k > 0.0 { self.age[i].clamp(0.0, 1.0) } else { 0.0 };
+                            let matte = age_k * (1.0 - fine);
+                            let t = ((self.height[i] - peak_lo[i] - (0.9 - 0.15 * matte) * span) / ((0.1 + 0.15 * matte) * span)).clamp(0.0, 1.0);
                             if t > 0.0 {
                                 let g = (hx * hx + hy * hy).sqrt();
-                                let face = if g > 1e-6 { ((hx * lx + hy * ly) / g).max(0.0).powi(4) } else { 1.0 };
-                                shade += 0.9 * peak_k * t * (0.4 + 0.6 * face) * amt;
+                                let face = if g > 1e-6 {
+                                    let c = ((hx * lx + hy * ly) / g).max(0.0);
+                                    if age_k > 0.0 { c.powf(4.0 + age_k * (1.5 + 10.5 * fine - 4.0)) } else { c.powi(4) }
+                                } else {
+                                    1.0
+                                };
+                                let wgt = 1.0 + age_k * (0.5 + 0.9 * fine - 1.0);
+                                shade += 0.9 * peak_k * wgt * t * (0.4 + 0.6 * face) * amt;
                             }
                         }
                     }
@@ -1814,13 +1913,19 @@ pub struct Finish {
     /// own peak), lit by the key: the crest itself (a flat top meets the lamp's half-vector), brightest where the
     /// fascia turns to the lamp (the facing's azimuth to the fourth), least where it turns away.
     pub peak: f32,
+    /// AGE (0..1, 0 = off; with `peak`): the crests' specular by the AGE of the paint — the thinness of the knife
+    /// that laid each pixel (`Canvas::age`: the widest blade 0, the finest 1) sets the lobe. On the wide plates of
+    /// the underpainting (dried matte) the highlight is BROAD (the facing's power down toward 1.5), DIM (half the
+    /// weight) and spread over the top quarter of the local range; on the fine finishing marks (the fresh paint's
+    /// binder) NARROW (the power up to 12), BRIGHT (×1.4) and kept to the top tenth. By the key.
+    pub age: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
     }
 }
 
@@ -1840,6 +1945,39 @@ fn hash01(ix: i64, iy: i64, seed: u64) -> f32 {
 
 /// Smooth VALUE NOISE in `[0,1]`: hashed lattice points, smoothstep-interpolated. Correlated across neighbouring
 /// pixels (unlike a per-pixel hash), so it reads as clustered mottle rather than static.
+/// The LINEN's warped coordinates and thread phases at a pixel (see `Finish::weave`): the warp and weft
+/// domain-warped by a slow noise (the cloth stretched unevenly on its bars), and the sine of each thread's phase
+/// — `(u, v, sin(kw·u), sin(kw·v))`, `kw` the period's wavenumber. The finish's relight draws the cloth from
+/// these; a knife's DRAG (see `BrushConfig::drag`) reads the same cloth at stroke time.
+pub(crate) fn linen_uv(x: f32, y: f32, period: f32, seed: u64) -> (f32, f32, f32, f32) {
+    let kw = std::f32::consts::TAU / period;
+    let wx = (value_noise(x / (period * 12.0), y / (period * 12.0), seed ^ 0x11EA) - 0.5) * 3.0 * period
+        + (value_noise(x / (period * 3.5), y / (period * 3.5), seed ^ 0x77A1) - 0.5) * 0.8 * period;
+    let wy = (value_noise(x / (period * 12.0) + 7.3, y / (period * 12.0) + 3.1, seed ^ 0x2BEE) - 0.5) * 3.0 * period
+        + (value_noise(x / (period * 3.5) + 2.2, y / (period * 3.5) + 9.1, seed ^ 0x88B2) - 0.5) * 0.8 * period;
+    let (u, v) = (x + wx, y + wy);
+    (u, v, (kw * u).sin(), (kw * v).sin())
+}
+
+/// The LINEN's height at a pixel (see `Finish::weave`): the interlock (the checker of crossings), each thread's
+/// ridge with its thickness wandering along its length (slubs), and a fibrous roughness — about −0.5..1.5, the
+/// crests where a thread crosses over. The finish's relight shades the cloth by its slope; a knife's DRAG (see
+/// `BrushConfig::drag`) lays its fading paint on its tops.
+pub(crate) fn linen_height(x: f32, y: f32, period: f32, seed: u64) -> f32 {
+    // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
+    // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
+    // straight grid to the eye — a dot screen on the sky.)
+    let (u, v, sx, sy) = linen_uv(x, y, period, seed);
+    // Slubs: a warp thread (running in y) varies along y, a weft thread along x.
+    let tx = 0.55 + 0.9 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), seed ^ 0x3C0D);
+    let ty = 0.55 + 0.9 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, seed ^ 0x4D1E);
+    // Interlock (the checker of crossings) + the threads' own ridges + fibrous roughness.
+    let interlock = sx * sy;
+    let ridges = 0.35 * (sx.abs() * tx + sy.abs() * ty);
+    let fibre = 0.12 * (value_noise(x / 1.7, y / 1.7, seed ^ 0x5F1B) - 0.5);
+    0.6 * interlock * (tx + ty) * 0.5 + ridges + fibre
+}
+
 pub(crate) fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
     let x0 = fx.floor() as i64;
     let y0 = fy.floor() as i64;
@@ -2372,6 +2510,35 @@ mod flow_tests {
         assert!(at(&peaked, 43) > at(&plain, 43) + 3.0, "and the low crest too ({} vs {})", at(&peaked, 43), at(&plain, 43));
         assert!((at(&peaked, 25) - at(&plain, 25)).abs() < 1.0, "the ground between is left alone ({} vs {})", at(&peaked, 25), at(&plain, 25));
         assert!((at(&glossed, 43) - at(&plain, 43)).abs() < 1.0, "the gloss passes the low crest over ({} vs {})", at(&glossed, 43), at(&plain, 43));
+    }
+
+    #[test]
+    fn the_aged_peak_is_broad_and_dim_on_the_wide_knife_and_narrow_and_bright_on_the_fine() {
+        // Two plateaus rising over a four-pixel ramp, lit from the default lamp (mostly from +y): the upper one
+        // laid by the widest knife (age 0), the lower by the finest (age 1). With the age the fine plateau's first
+        // row glints brighter than the wide one's; the wide one's ramp is lit (the broad matte spill down the
+        // fascia), the fine one's is not — and without the age neither ramp is lit.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(32, 64, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        let ramp = |y: u32, top: u32| -> f32 { if y + 4 < top { 0.0 } else if y < top { 0.2 * (y + 5 - top) as f32 } else if y < top + 8 { 1.0 } else { 0.0 } };
+        for y in 0..64u32 {
+            for x in 0..32u32 {
+                let h = 0.05 + 2.0 * (ramp(y, 16) + ramp(y, 40));
+                c.deposit(x, y, &load, h * 0.5);
+                c.deposit(x, y, &load, h * 0.5);
+            }
+        }
+        c.age = (0..32 * 64).map(|i| if i / 32 >= 30 { 1.0 } else { 0.0 }).collect();
+        let plain = c.to_image_finished(&Finish { peak: 1.0, impasto: 0.0, ..Default::default() });
+        let aged = c.to_image_finished(&Finish { peak: 1.0, age: 1.0, impasto: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, y: u32| (8..24).map(|x| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&aged, 40) > at(&aged, 16) + 3.0, "the fine knife's crest glints brighter than the wide one's ({} vs {})", at(&aged, 40), at(&aged, 16));
+        assert!(at(&aged, 15) > at(&plain, 15) + 2.0, "the wide plate's fascia takes the broad matte spill ({} vs {})", at(&aged, 15), at(&plain, 15));
+        assert!((at(&aged, 39) - at(&plain, 39)).abs() < 1.0, "the fine mark's fascia does not ({} vs {})", at(&aged, 39), at(&plain, 39));
+        assert!((at(&plain, 16) - at(&plain, 40)).abs() < 1.0, "without the age the two crests are alike ({} vs {})", at(&plain, 16), at(&plain, 40));
     }
 
     #[test]

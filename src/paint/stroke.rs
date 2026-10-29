@@ -125,6 +125,100 @@ pub struct BrushConfig {
     /// over the dried lumps of the layers below instead of lying across them as an appliqué: its own film is
     /// then laid on that bent bed.
     pub bed: f32,
+    /// DRAG (0..1, 0 = off; a knife mark only, with `fade`): the CLOTH'S FRICTION on the fading blade — at each
+    /// point of the slice the pressure is `1 − fade·t`, and the paint is gated by the cloth's TOPS (the linen's
+    /// height — `Canvas::linen_height` at the canvas's `cloth_seed`, the finish's own weave: the interlock, the
+    /// slubs, the fibre — six tenths) and by the threads running ACROSS the motion (the squared sine of the
+    /// thread phase across the blade's direction, the warp's for a horizontal pull, the weft's for a vertical
+    /// one — four tenths): the CRESTS (the sum over 0.4..0.7) take the paint whole, the FURROWS between
+    /// them `(1 − key·(1 − pressure))²` of it, and nothing under 8% (a ramp to 20%) — under full pressure the
+    /// slice is whole, at full key and no pressure only the thread crests take paint, the slice's plane torn into grains toward its tail. The
+    /// pixels it skips are not sheared either.
+    pub drag: f32,
+    /// AGE (0..1, 0 = off; a knife mark only): the mark leaves the THINNESS of its blade at every pixel it lays
+    /// (`Canvas::age`: `log10((short/20)/width)` clamped to 0..1 — a blade of a 20th of the short side 0, of a
+    /// 200th 1), blended in by the contact. For the finish's `Finish::age`.
+    pub age: f32,
+    /// BRIDGE (0..1, 0 = off; a knife mark only, with `drag`): the paint's SURFACE TENSION over the cloth — the
+    /// thick paint does not sink into every furrow, it spans them while there is enough of it on the blade. The
+    /// paint left on the blade is the pressure `1 − fade·t`; a furrow of depth `1 − crest` (the drag's crest) is
+    /// spanned whole where that volume exceeds `key × depth × (0.7..1.3, a slow noise at the mark's own period)`,
+    /// over a step of 0.05: the tear is not a gradient along the pressure but a break — where the paint runs short
+    /// the furrow opens at once, and the noise makes the break ragged. Below the break the drag's own gate.
+    pub bridge: f32,
+    /// LIFTOFF (0..1, 0 = off; a knife mark only): the RIDGE AT THE LIFT-OFF — over the last half-width of the
+    /// mark the height rises by `2.5 × key × (the paint left on the blade: 1 − fade·t) × e²` (e the way along that
+    /// tail): the paint still on the blade gathered into a bead across the mark where the knife leaves the canvas.
+    /// A mark that ran its paint out has no bead; the painter sets it on the marks it cut hard (see
+    /// `StrokeRecord::stop`), so a slice stopped at a colour's edge ends in a peak the relight catches.
+    pub liftoff: f32,
+    /// BROKEN (0..1, 0 = off; a knife mark only, with `drag`): the BROKEN COLOUR in the drag's voids — a pixel the
+    /// drag leaves bare takes, instead of nothing, the colour of the highest paint of its 5×5 surround AS IT
+    /// STOOD BEFORE THE MARK (the bed's snapshot: the dried relief below, never the mark's own fresh paint),
+    /// laid as a thin film (the mark's own deposit rate × the key, no height): the skidding blade's smear of the
+    /// lower layer's peaks into the hollows, the void an optical mix of the two layers and not the ground.
+    pub broken: f32,
+    /// LIP (0..1, 0 = off; a knife mark only, with `liftoff`): the lift-off's bead SKEWED to the very end — the
+    /// paint drawn after the blade as it leaves, not heaped evenly over the tail. The tail lengthens to the mark's
+    /// width (×(1 + key)), the rise over it goes from `e²` to `e^(2 + 8·key)` (the crest in the last eighth of the
+    /// tail, 1.6× the even bead's height at full key), and behind the crest a shallow trough (`0.4 × key × e × (1 − g)`
+    /// off the height) where the paint was pulled forward from: a sharp overhanging lip the relight's peak catches
+    /// as a narrow bright line, not a fence.
+    pub lip: f32,
+    /// MARBLE (0..1, 0 = off; a knife mark only, with `mix`): the two colours' bands MARBLED — the band's edge not
+    /// a straight line the length of the slice but wandering along it: every lane carries both colours, and the
+    /// one it lays at each step is chosen by the band under a position across the blade shifted by a slow noise
+    /// along the mark (±0.6 of a band at full key, a period of 1.5 widths) and breathed wider and narrower
+    /// (±30%) by a second: the veins wind, pinch and swell within one plate.
+    pub marble: f32,
+    /// SLUMP (0..1, 0 = off; a knife mark only): the fresh paint SETTLES — the plastic impasto does not hold a
+    /// vertical cliff. After the mark is laid, its own fresh height (over the bed's snapshot of the relief before
+    /// it) is eased by a 3×3 binomial, and by a second pass where it stands thick, the share at each pixel the
+    /// key × the local thickness against the mark's own mean: the slab's edges sag over a pixel or two, its body
+    /// is kept, the thin tails hardly move. The colour is not touched, and the paint beneath is not.
+    pub slump: f32,
+    /// TILT (0..1, 0 = off; a knife mark only): the blade's ROLL across its motion — the hand seldom presses the
+    /// knife flat. The roll of a mark is a slow spatial noise at its start (the canvas's own seed, a period of an
+    /// eighth of the short side, ×1.5 and clamped, so most marks roll well one way or the other), by the key:
+    /// across the blade the PRESSED edge shears the standing paint nearly to the ground (its plateau ×(1 − 0.9·k)
+    /// at the edge) and lays thin (×(1 − 0.6·k)), the RAISED edge gathers the squeezed paint into one dominant
+    /// bead (×(1 + 1.5·k) over its outer quarter): the section a wedge, not the rim's even U — the skewed planes
+    /// of a wall or a stone.
+    pub tilt: f32,
+    /// STICTION (0..1, 0 = off; a knife mark only, with `liftoff`): the bead at the lift-off BROKEN ACROSS THE
+    /// BLADE — the thick paint parts from the flat tool in threads, not as one line. Each lane's bead by its own
+    /// hash: its height ×(0.15 + 1.7·h²) (most lanes low, a few high: discrete peaks) and its reach ×(1 − 0.5·h'),
+    /// blended from the even bead by the key. The relight's peak then flickers along the line instead of ruling it.
+    pub stiction: f32,
+    /// SMEAR (0..1, 0 = off; a knife mark only): WET-IN-WET — the layer below the mark, where it is still wet,
+    /// is DRAGGED along the blade's motion as the mark is laid over it. The canvas stamps each pixel with the tick
+    /// of the smearing mark that laid it; a pixel's wetness decays by `e^(−Δ/500 marks)` and dries with the
+    /// passes (`Canvas::dry`). At each pixel the mark covers, the paint of the pixel `0.3 × the width` behind it
+    /// along the motion, as it stood BEFORE this mark (a snapshot), is blended in by `0.6 × key × that pixel's
+    /// wetness` — the colour, the film and the height alike — before the mark's own paint is laid: the wet
+    /// lower stroke shifted a fraction of a width along the new one, so crossing tufts of fur and foliage run into
+    /// each other at their borders instead of sitting edge on edge.
+    pub smear: f32,
+    /// HEEL (0..1, 0 = off; a knife mark only): the blade's HEEL printed at the first contact — over the mark's
+    /// first half-width the height rises by `2 × key × s²` (s falling from 1 at the start), a sharp bump at
+    /// t = 0 where the knife comes down on the canvas; with the `tilt` the bump sits on the PRESSED edge (its
+    /// share `1 − tilt·(1 − pressed)`), the raised edge's heel never touching.
+    pub heel: f32,
+    /// DIRTY (0..1, 0 = off; a knife mark only): the DIRTY KNIFE — the blade remembers what it carried. After each
+    /// mark the canvas's blade holds half of what it held plus half of what this mark left on it: the lanes' unspent
+    /// charge and the paint the plateau's shear scraped off the ridges beneath (its colour weighted by the height
+    /// removed). The next mark's first half-width lays, by `key × (the residue against its own charge) × s²`, that
+    /// residue's colour in place of its own, the lane's amount kept — but only where it starts within three of
+    /// the last mark's widths of that mark's end (`Canvas::blade_at`): moved further, the hand wipes the knife
+    /// (the marks come in no spatial order, and an unwiped blade carried the fur into the bare ground across the
+    /// whole sheet). The colour of one passage carried into the starts of the next, fading by halves.
+    pub dirty: f32,
+    /// TEAR (0..1, 0 = off; a knife mark only): the slice's SIDES TORN — each side's edge cut in by a noise along
+    /// the mark at a quarter-width's period (thresholded, so the cut is nothing for a stretch and then a tooth),
+    /// up to 0.3 of the width at full key, more on a FAST slice (a length over twice the width ramps it from 0.4
+    /// to 1) and toward the tail where the pressure falls (0.6 + 0.4 × the paint spent): the straight parallel
+    /// flanks of the plates ragged, not ruled.
+    pub tear: f32,
     /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
     /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
@@ -194,7 +288,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -342,9 +436,61 @@ impl Stroke {
         let slip_t = if brush.knife > 0.0 && brush.slip > 0.0 { brush.slip.clamp(0.0, 1.0) * wide } else { 0.0 };
         let slip_per = (maxw * 1.2).max(6.0);
         let bed_t = if brush.knife > 0.0 && brush.bed > 0.0 { brush.bed.clamp(0.0, 1.0) * (1.0 - wide) } else { 0.0 };
+        // DRAG (see `BrushConfig::drag`): the cloth's friction on the fading blade — the linen's period as the finish's.
+        let drag_k = if brush.knife > 0.0 && brush.drag > 0.0 && brush.fade > 0.0 { brush.drag.clamp(0.0, 1.0) } else { 0.0 };
+        let cloth_per = (canvas.w.min(canvas.h) as f32 / 400.0).max(3.0);
+        // AGE (see `BrushConfig::age`): the blade's thinness, a log scale over a decade under a 20th of the short side.
+        let age_arg = if brush.knife > 0.0 && brush.age > 0.0 { ((canvas.w.min(canvas.h) as f32 / 20.0) / maxw).max(1e-3).log10().clamp(0.0, 1.0) } else { -1.0 };
+        // BRIDGE / BROKEN (see `BrushConfig::bridge`, `broken`): with the drag only. LIFTOFF: the tail's length.
+        let bridge_k = if drag_k > 0.0 && brush.bridge > 0.0 { brush.bridge.clamp(0.0, 1.0) } else { 0.0 };
+        let broken_k = if drag_k > 0.0 && brush.broken > 0.0 { brush.broken.clamp(0.0, 1.0) } else { 0.0 };
+        let lift_k = if brush.knife > 0.0 && brush.liftoff > 0.0 { brush.liftoff.clamp(0.0, 1.0) } else { 0.0 };
+        // LIP (see `BrushConfig::lip`): the bead's tail lengthened toward the mark's width. SLUMP: the settling.
+        let lip_k = if lift_k > 0.0 && brush.lip > 0.0 { brush.lip.clamp(0.0, 1.0) } else { 0.0 };
+        let lift_len = (0.5 * maxw * (1.0 + lip_k)).max(2.0);
+        let slump_k = if brush.knife > 0.0 && brush.slump > 0.0 { brush.slump.clamp(0.0, 1.0) } else { 0.0 };
+        // TILT (see `BrushConfig::tilt`): the blade's roll across its motion — a slow spatial noise at the mark's start.
+        let (tilt_k, tilt_sgn) = if brush.knife > 0.0 && brush.tilt > 0.0 && !pts.is_empty() {
+            let per = (canvas.w.min(canvas.h) as f32 / 8.0).max(8.0);
+            let roll = ((2.0 * value_noise(canvas.cloth_seed ^ 0x7117_0A11, pts[0][0] / per, pts[0][1] / per) - 1.0) * 1.5).clamp(-1.0, 1.0);
+            (brush.tilt.clamp(0.0, 1.0) * roll.abs(), if roll < 0.0 { -1.0 } else { 1.0 })
+        } else {
+            (0.0, 1.0)
+        };
+        // STICTION (see `BrushConfig::stiction`): with the lift-off only. SMEAR (see `BrushConfig::smear`): the
+        // wet layer below dragged a fraction of the width along the motion; the mark's pixels stamped at its end.
+        let stict_k = if lift_k > 0.0 && brush.stiction > 0.0 { brush.stiction.clamp(0.0, 1.0) } else { 0.0 };
+        let smear_k = if brush.knife > 0.0 && brush.smear > 0.0 { brush.smear.clamp(0.0, 1.0) } else { 0.0 };
+        let smear_d = (0.3 * maxw).max(1.5);
+        let mut laid_px: Vec<(u32, u32)> = Vec::new();
+        if smear_k > 0.0 {
+            canvas.begin_wet_mark();
+        }
+        // HEEL (see `BrushConfig::heel`): the bump at the first contact over the first half-width.
+        let heel_k = if brush.knife > 0.0 && brush.heel > 0.0 { brush.heel.clamp(0.0, 1.0) } else { 0.0 };
+        let heel_len = (0.5 * maxw).max(2.0);
+        // DIRTY (see `BrushConfig::dirty`): the residue on the blade against this mark's charge, and what this
+        // mark scrapes off the ridges beneath (gathered for the blade's memory at its end).
+        let dirty_k = if brush.knife > 0.0 && brush.dirty > 0.0 { brush.dirty.clamp(0.0, 1.0) } else { 0.0 };
+        let dirty_len = (0.5 * maxw).max(2.0);
+        let charge = Self::load_norm(&self.load).max(1e-6);
+        // (The knife is wiped when the hand moves on: the residue counts only within the last mark's reach.)
+        let blade_res: Option<(Vec<f32>, f32)> = (dirty_k > 0.0 && !canvas.blade.is_empty() && !pts.is_empty()).then(|| {
+            let nm = Self::load_norm(&canvas.blade);
+            let (bx, by, reach) = canvas.blade_at;
+            let near = if reach > 0.0 { (1.0 - ((pts[0][0] - bx).powi(2) + (pts[0][1] - by).powi(2)).sqrt() / reach).clamp(0.0, 1.0) } else { 0.0 };
+            (canvas.blade.iter().map(|v| v.max(0.0) / nm.max(1e-9)).collect::<Vec<f32>>(), (nm / charge).clamp(0.0, 1.0) * near)
+        }).filter(|(_, amt)| *amt > 1e-4);
+        let mut scraped: Vec<f32> = if dirty_k > 0.0 { vec![0.0; canvas.n_pigments()] } else { Vec::new() };
+        // TEAR (see `BrushConfig::tear`): the sides' cut by a fast slice.
+        let tear_k = if brush.knife > 0.0 && brush.tear > 0.0 { brush.tear.clamp(0.0, 1.0) } else { 0.0 };
+        let tear_amp = 0.3 * tear_k * (0.4 + 0.6 * ((pts.len() as f32 / maxw - 2.0) / 4.0).clamp(0.0, 1.0));
+        let tear_per = (0.25 * maxw).max(2.0);
         // The BED reads the relief as it stands BEFORE this mark (a snapshot over the mark's reach): read live, the
         // mark's own fresh paint was the local maximum its next pixel rose toward, and the whole slice climbed.
-        let bed_base: Option<(Vec<f32>, i64, i64, usize, usize)> = (bed_t > 0.0).then(|| {
+        // (The BROKEN colour reads the same snapshot: the relief below the mark, not the mark's own; and the
+        // SLUMP eases the height the mark adds over it.)
+        let bed_base: Option<(Vec<f32>, i64, i64, usize, usize)> = (bed_t > 0.0 || broken_k > 0.0 || slump_k > 0.0 || smear_k > 0.0).then(|| {
             let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for q in &pts {
                 x0 = x0.min(q[0]);
@@ -367,7 +513,10 @@ impl Stroke {
             }
             (v, bx0, by0, bw, bh)
         });
-        let bed_arg: Option<(f32, &[f32], i64, i64, usize, usize)> = bed_base.as_ref().map(|(v, bx0, by0, bw, bh)| (bed_t, v.as_slice(), *bx0, *by0, *bw, *bh));
+        let bed_arg: Option<(f32, &[f32], i64, i64, usize, usize)> = bed_base.as_ref().filter(|_| bed_t > 0.0).map(|(v, bx0, by0, bw, bh)| (bed_t, v.as_slice(), *bx0, *by0, *bw, *bh));
+        let void_base: Option<(&[f32], i64, i64, usize, usize)> = bed_base.as_ref().filter(|_| broken_k > 0.0).map(|(v, bx0, by0, bw, bh)| (v.as_slice(), *bx0, *by0, *bw, *bh));
+        // SMEAR (see `BrushConfig::smear`): the paint below the mark as it stands before it, over the same box.
+        let smear_base: Option<(crate::paint::canvas::PaintPatch, i64, i64, usize, usize)> = bed_base.as_ref().filter(|_| smear_k > 0.0).map(|(_, bx0, by0, bw, bh)| (canvas.snapshot_paint(*bx0 as usize, *by0 as usize, *bw, *bh), *bx0, *by0, *bw, *bh));
         // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
         // untouched (the rounding), and a wash came out as a dotted screen.
         let dense = brush.flat_ends || brush.hold_charge;
@@ -403,19 +552,41 @@ impl Stroke {
         // MIX (see `BrushConfig::mix`): a knife slice's lanes in alternating bands of its two colours — each lane
         // keeps its own streak (its charge's scale against the mark's) and takes the band's colour.
         let mixed = brush.mix > 0.0 && brush.knife > 0.0 && load_end.is_some() && nb > 1;
+        // MARBLE (see `BrushConfig::marble`): with it every lane carries BOTH colours (`bload2` the second), and
+        // the band a lane lays at each step is chosen there, the bands' edges wandering along the mark.
+        let marble_k = if mixed && brush.marble > 0.0 { brush.marble.clamp(0.0, 1.0) } else { 0.0 };
+        let marble_per = (1.5 * maxw).max(8.0);
+        let mut bload2: Vec<Vec<f32>> = Vec::new();
+        let (mut mix_bands, mut mix_parity) = (2usize, 0usize);
         if let (true, Some(le)) = (mixed, load_end) {
             let k = brush.mix.clamp(0.0, 1.0);
             let bands = 2 + (lane_hash(seed ^ 0x3B1E, 7) * 4.0).min(3.0) as usize; // 2..5
             let parity = (lane_hash(seed ^ 0x3B1F, 11) < 0.5) as usize;
             let base = Self::load_norm(&self.load).max(1e-6);
-            for (b, lane) in bload.iter_mut().enumerate() {
-                let band = b * bands / nb;
-                if band % 2 != parity {
-                    continue;
-                }
-                let r = Self::load_norm(lane) / base;
-                for c in 0..lane.len().min(le.len()).min(self.load.len()) {
-                    lane[c] = (self.load[c] + (le[c] - self.load[c]) * k) * r;
+            if marble_k > 0.0 {
+                bload2 = bload
+                    .iter()
+                    .map(|lane| {
+                        let r = Self::load_norm(lane) / base;
+                        let mut l2 = lane.clone();
+                        for c in 0..l2.len().min(le.len()).min(self.load.len()) {
+                            l2[c] = (self.load[c] + (le[c] - self.load[c]) * k) * r;
+                        }
+                        l2
+                    })
+                    .collect();
+                mix_bands = bands;
+                mix_parity = parity;
+            } else {
+                for (b, lane) in bload.iter_mut().enumerate() {
+                    let band = b * bands / nb;
+                    if band % 2 != parity {
+                        continue;
+                    }
+                    let r = Self::load_norm(lane) / base;
+                    for c in 0..lane.len().min(le.len()).min(self.load.len()) {
+                        lane[c] = (self.load[c] + (le[c] - self.load[c]) * k) * r;
+                    }
                 }
             }
         }
@@ -504,6 +675,16 @@ impl Stroke {
         for i in 0..pts.len() {
             let p = pts[i];
             across_prev = None;
+            // MARBLE (see `BrushConfig::marble`): the bands' drift and breathing at this step of the mark.
+            let (mz, mz2) = if marble_k > 0.0 { (value_noise(seed ^ 0x3A4B_1E5, i as f32 / marble_per, 0.5) - 0.5, value_noise(seed ^ 0x3A4B_1E6, i as f32 / marble_per, 7.5) - 0.5) } else { (0.0, 0.0) };
+            // TEAR (see `BrushConfig::tear`): how far each side is cut in at this step of the mark.
+            // (The noise thresholded at 0.3: the cut is nothing for a stretch and then a tooth, not a wobble.)
+            let (tear_l, tear_r) = if tear_k > 0.0 {
+                let tooth = |nz: f32| ((nz - 0.3) / 0.7).clamp(0.0, 1.0);
+                (tear_amp * tooth(value_noise(seed ^ 0x7EA4_001, i as f32 / tear_per, 0.3)), tear_amp * tooth(value_noise(seed ^ 0x7EA4_002, i as f32 / tear_per, 0.7)))
+            } else {
+                (0.0, 0.0)
+            };
             if let (Some(step), true) = (&ramp, i > 0) {
                 for lane in bload.iter_mut() {
                     for (c, d) in step.iter().enumerate() {
@@ -677,9 +858,49 @@ impl Stroke {
                 } else {
                     1.0
                 };
+                // TILT (see `BrushConfig::tilt`): the pressed edge thin and sheared to the ground, the raised edge
+                // one dominant bead — the section a wedge.
+                let (tilt_h, plateau_b, pressed) = if tilt_k > 0.0 {
+                    let side = (2.0 * fr - 1.0) * tilt_sgn;
+                    let pressed = (-side).max(0.0);
+                    let r = ((side - 0.5) / 0.5).clamp(0.0, 1.0);
+                    let raised = r * r * (3.0 - 2.0 * r);
+                    (1.0 - 0.6 * tilt_k * pressed + 1.5 * tilt_k * raised, if plateau >= 0.0 { plateau * (1.0 - 0.9 * tilt_k * pressed) } else { plateau }, pressed)
+                } else {
+                    (1.0, plateau, 0.0)
+                };
+                // HEEL (see `BrushConfig::heel`): the bump of the first contact, on the pressed edge under a tilt.
+                let heel_h = if heel_k > 0.0 {
+                    let s0 = (1.0 - i as f32 / heel_len).clamp(0.0, 1.0);
+                    1.0 + 2.0 * heel_k * s0 * s0 * (1.0 - tilt_k * (1.0 - pressed))
+                } else {
+                    1.0
+                };
                 // FADE (see `BrushConfig::fade`): the paint runs out along the slice — the height toward the tail
                 // by the key, the deposit by half as much.
                 let fade_t = if brush.knife > 0.0 && brush.fade > 0.0 { 1.0 - brush.fade.clamp(0.0, 1.0) * t } else { 1.0 };
+                // LIFTOFF (see `BrushConfig::liftoff`): the paint left on the blade gathered into a ridge across the
+                // mark over its last half-width.
+                let lift_h = if lift_k > 0.0 && pts.len() > 2 {
+                    // STICTION (see `BrushConfig::stiction`): this lane's bead — its height and its reach by its hash.
+                    let (st_amp, ll) = if stict_k > 0.0 {
+                        let sn = lane_hash(seed ^ 0x57_1C7, b as u64);
+                        ((1.0 - stict_k) + stict_k * (0.15 + 1.7 * sn * sn), lift_len * (1.0 - 0.5 * stict_k * lane_hash(seed ^ 0x57_1C8, b as u64)))
+                    } else {
+                        (1.0, lift_len)
+                    };
+                    let e = ((i as f32 - (pts.len() as f32 - 1.0 - ll)) / ll).clamp(0.0, 1.0);
+                    if lip_k > 0.0 {
+                        // LIP (see `BrushConfig::lip`): the bead skewed to the very end — a crest over the last
+                        // eighth of the tail, and a shallow trough behind it where the paint was pulled from.
+                        let g = e.powf(2.0 + 8.0 * lip_k);
+                        (1.0 + 2.5 * lift_k * st_amp * fade_t * (1.0 + 0.6 * lip_k) * g - 0.4 * lip_k * lift_k * fade_t * e * (1.0 - g)).max(0.3)
+                    } else {
+                        1.0 + 2.5 * lift_k * st_amp * fade_t * e * e
+                    }
+                } else {
+                    1.0
+                };
                 // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
                 // own slow hash falls under the dryness at this point of the mark.
                 let edge = if brush.kasure > 0.0 {
@@ -696,7 +917,45 @@ impl Stroke {
                 } else {
                     edge
                 };
+                // DRAG (see `BrushConfig::drag`): as the pressure falls along the slice, the paint settles only on
+                // the crests of the cloth's threads that run across the blade's motion.
+                let (edge, void_t) = if drag_k > 0.0 && fade_t < 1.0 {
+                    let dt = drag_k * (1.0 - fade_t);
+                    let (_, _, sx, sy) = crate::paint::canvas::linen_uv(x, y, cloth_per, canvas.cloth_seed);
+                    let cloth = ((crate::paint::canvas::linen_height(x, y, cloth_per, canvas.cloth_seed) + 0.4) / 1.6).clamp(0.0, 1.0);
+                    let (ax, ay) = (dx.abs(), dy.abs());
+                    let across = (ax * sx * sx + ay * sy * sy) / (ax + ay).max(1e-6);
+                    let crest = ((0.6 * cloth + 0.4 * across - 0.4) / 0.3).clamp(0.0, 1.0);
+                    let keep = crest + (1.0 - crest) * (1.0 - dt) * (1.0 - dt);
+                    // BRIDGE (see `BrushConfig::bridge`): the furrow spanned whole while the paint on the blade
+                    // exceeds its depth's need — a step, ragged by a slow noise at the mark's own period.
+                    let keep = if bridge_k > 0.0 {
+                        let depth = 1.0 - crest;
+                        let nz = value_noise(seed ^ 0xB21D_6E0, x / slip_per, y / slip_per);
+                        let need = bridge_k * depth * (0.7 + 0.6 * nz);
+                        let bridged = ((fade_t - need) / 0.05).clamp(0.0, 1.0);
+                        bridged + (1.0 - bridged) * keep
+                    } else {
+                        keep
+                    };
+                    let gate = keep * ((keep - 0.08) / 0.12).clamp(0.0, 1.0);
+                    // BROKEN (see `BrushConfig::broken`): the void takes the lower layer's colour instead of nothing.
+                    if gate <= 0.0 && broken_k > 0.0 {
+                        (edge, Some(broken_k))
+                    } else {
+                        (edge * gate, None)
+                    }
+                } else {
+                    (edge, None)
+                };
                 let edge = edge * end_fade;
+                // TEAR (see `BrushConfig::tear`): the lane outside either side's cut lays nothing.
+                let edge = if tear_k > 0.0 {
+                    let tp = 0.6 + 0.4 * (1.0 - fade_t);
+                    edge * ((fr - tear_l * tp) / 0.05).clamp(0.0, 1.0) * ((1.0 - tear_r * tp - fr) / 0.05).clamp(0.0, 1.0)
+                } else {
+                    edge
+                };
                 if edge <= 0.0 {
                     across_prev = None;
                     continue;
@@ -766,8 +1025,146 @@ impl Stroke {
                 } else {
                     targets.push((px, py));
                 }
+                // SMEAR (see `BrushConfig::smear`): the wet paint a fraction of the width behind this pixel, as it
+                // stood before the mark, dragged into it by its wetness before the mark's own paint is laid.
+                if let Some((patch, sbx0, sby0, sbw, sbh)) = smear_base.as_ref() {
+                    let (sx, sy) = ((x - smear_d * dx).round(), (y - smear_d * dy).round());
+                    if sx >= 0.0 && sy >= 0.0 && sx < canvas.w as f32 && sy < canvas.h as f32 {
+                        let wt = 0.6 * smear_k * canvas.wet_at(sx as u32, sy as u32);
+                        let (ix, iy) = (sx as i64 - *sbx0, sy as i64 - *sby0);
+                        if wt > 0.02 && ix >= 0 && iy >= 0 && ix < *sbw as i64 && iy < *sbh as i64 {
+                            canvas.smear_to(px, py, patch, iy as usize * *sbw + ix as usize, wt);
+                        }
+                    }
+                }
+                // MARBLE (see `BrushConfig::marble`): which of the two colours this lane lays at this step.
+                let lane2 = marble_k > 0.0 && {
+                    let u = (b as f32 / nb as f32 - 0.5) * (1.0 + 0.6 * marble_k * mz2) + 0.5 + marble_k * mz * 1.2 / mix_bands as f32;
+                    ((u * mix_bands as f32).floor() as i64).rem_euclid(mix_bands as i64) as usize % 2 == mix_parity
+                };
+                // DIRTY (see `BrushConfig::dirty`): what the plateau's shear will scrape off here, for the blade's
+                // memory; and over the first half-width the residue's colour laid in place of the lane's own.
+                if dirty_k > 0.0 && plateau_b >= 0.0 {
+                    let p = py as usize * canvas.w as usize + px as usize;
+                    let h = canvas.height[p];
+                    if h > plateau_b {
+                        let d = (h - plateau_b) * brush.knife.clamp(0.0, 1.0) * (1.0 - brush.pile.clamp(0.0, 1.0));
+                        for (c, v) in canvas.conc_at(px, py).iter().enumerate().take(scraped.len()) {
+                            scraped[c] += d * v.max(0.0);
+                        }
+                    }
+                }
+                let w_dirty = match &blade_res {
+                    Some((_, amt)) => dirty_k * amt * (1.0 - i as f32 / dirty_len).clamp(0.0, 1.0).powi(2),
+                    None => 0.0,
+                };
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * fade_t } else { ridge.max(0.05) }, plateau, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t);
+                    let lane = if lane2 { &mut bload2[b] } else { &mut bload[b] };
+                    if w_dirty > 0.0 {
+                        let dir = &blade_res.as_ref().unwrap().0;
+                        let own = Self::load_norm(lane);
+                        let mut tmp: Vec<f32> = lane.iter().enumerate().map(|(c, v)| v * (1.0 - w_dirty) + dir.get(c).copied().unwrap_or(0.0) * own * w_dirty).collect();
+                        let before = Self::load_norm(&tmp).max(1e-9);
+                        self.apply(canvas, tx, ty, &mut tmp, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
+                        let r = Self::load_norm(&tmp) / before;
+                        for v in lane.iter_mut() {
+                            *v *= r;
+                        }
+                    } else {
+                        self.apply(canvas, tx, ty, lane, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
+                    }
+                }
+                if smear_k > 0.0 {
+                    laid_px.push((px, py));
+                }
+            }
+        }
+        // SMEAR (see `BrushConfig::smear`): the mark's pixels stamped wet now, so its own paint was not its source.
+        for &(px, py) in &laid_px {
+            canvas.stamp_wet(px, py);
+        }
+        // DIRTY (see `BrushConfig::dirty`): the blade's memory — half of what it held, and half of what this mark
+        // left on it: the lanes' unspent charge and the scraped paint, each as a charge's worth of its colour.
+        if dirty_k > 0.0 {
+            let n = canvas.n_pigments();
+            let mut left = vec![0f32; n];
+            for lane in &bload {
+                for c in 0..n.min(lane.len()) {
+                    left[c] += lane[c].max(0.0) / nb as f32;
+                }
+            }
+            let sn = Self::load_norm(&scraped);
+            let picked: Vec<f32> = (0..n).map(|c| if sn > 1e-9 { 0.5 * left[c] + 0.5 * charge * scraped[c] / sn } else { left[c] }).collect();
+            if canvas.blade.len() != n {
+                canvas.blade = vec![0.0; n];
+            }
+            for c in 0..n {
+                canvas.blade[c] = 0.5 * canvas.blade[c] + 0.5 * picked[c];
+            }
+            if let Some(last) = pts.last() {
+                canvas.blade_at = (last[0], last[1], 3.0 * maxw);
+            }
+        }
+        // SLUMP (see `BrushConfig::slump`): the fresh paint settles — the height this mark added over the bed's
+        // snapshot eased by a 3×3 binomial (and a second pass where it stands thick), the share at each pixel the
+        // key × the local thickness against the mark's own mean: the cliffs at the slab's edges become slopes over
+        // a pixel or two, the body keeps its height. The height alone; the colour and the paint beneath untouched.
+        if slump_k > 0.0 {
+            if let Some((base, bx0, by0, bw, bh)) = bed_base.as_ref() {
+                let (bw, bh, w, h) = (*bw, *bh, canvas.w as usize, canvas.h as usize);
+                let mut fresh = vec![0f32; bw * bh];
+                let (mut sum, mut cnt) = (0f32, 0usize);
+                for yy in 0..bh {
+                    for xx in 0..bw {
+                        let (sx, sy) = (*bx0 as usize + xx, *by0 as usize + yy);
+                        if sx < w && sy < h {
+                            let f = canvas.height[sy * w + sx] - base[yy * bw + xx];
+                            if f > 1e-6 {
+                                fresh[yy * bw + xx] = f;
+                                sum += f;
+                                cnt += 1;
+                            }
+                        }
+                    }
+                }
+                if cnt > 0 {
+                    let tref = (sum / cnt as f32).max(1e-6);
+                    let blur = |src: &[f32]| -> Vec<f32> {
+                        let mut out = vec![0f32; bw * bh];
+                        for yy in 0..bh {
+                            for xx in 0..bw {
+                                let (mut acc, mut wsum) = (0f32, 0f32);
+                                for dy in -1i64..=1 {
+                                    for dx in -1i64..=1 {
+                                        let (qx, qy) = (xx as i64 + dx, yy as i64 + dy);
+                                        if qx < 0 || qy < 0 || qx >= bw as i64 || qy >= bh as i64 {
+                                            continue;
+                                        }
+                                        let wgt = (if dx == 0 { 2.0 } else { 1.0 }) * (if dy == 0 { 2.0 } else { 1.0 });
+                                        acc += wgt * src[qy as usize * bw + qx as usize];
+                                        wsum += wgt;
+                                    }
+                                }
+                                out[yy * bw + xx] = acc / wsum;
+                            }
+                        }
+                        out
+                    };
+                    let b1 = blur(&fresh);
+                    let b2 = blur(&b1);
+                    for yy in 0..bh {
+                        for xx in 0..bw {
+                            let (sx, sy) = (*bx0 as usize + xx, *by0 as usize + yy);
+                            if sx >= w || sy >= h {
+                                continue;
+                            }
+                            let i = yy * bw + xx;
+                            let sk = (b1[i] / tref).clamp(0.0, 1.0) * slump_k;
+                            let eased = fresh[i] + sk * (b1[i] - fresh[i]) + sk * sk * (b2[i] - b1[i]);
+                            let p = sy * w + sx;
+                            canvas.height[p] = (canvas.height[p] + eased - fresh[i]).max(0.0);
+                        }
+                    }
                 }
             }
         }
@@ -856,9 +1253,43 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, bed: Option<(f32, &[f32], i64, i64, usize, usize)>, agent_t: Option<(f32, f32)>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, bed: Option<(f32, &[f32], i64, i64, usize, usize)>, agent_t: Option<(f32, f32)>, age_t: f32, void: Option<(f32, &[f32], i64, i64, usize, usize)>) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
+            return;
+        }
+        if let Some((bk, base, bx0, by0, bw, bh)) = void {
+            // BROKEN (see `BrushConfig::broken`): the drag's void — the blade did not touch here (no shear, no
+            // pickup); the pixel takes a thin film of the colour of the highest paint of its 5×5 surround as it
+            // stood before the mark, where that stands above the pixel's own.
+            let (cx, cy) = (px as i64 - bx0, py as i64 - by0);
+            let own = if cx >= 0 && cy >= 0 && (cx as usize) < bw && (cy as usize) < bh { base[cy as usize * bw + cx as usize] } else { 0.0 };
+            let (mut best, mut top) = (None, own);
+            for yy in (cy - 2).max(0)..=(cy + 2).min(bh as i64 - 1) {
+                for xx in (cx - 2).max(0)..=(cx + 2).min(bw as i64 - 1) {
+                    let v = base[yy as usize * bw + xx as usize];
+                    if v > top {
+                        top = v;
+                        best = Some((xx as usize, yy as usize));
+                    }
+                }
+            }
+            if let Some((bx, by)) = best {
+                if top > own + 1e-4 {
+                    let (sx, sy) = ((bx0 as usize + bx) as u32, (by0 as usize + by) as u32);
+                    let contact = (self.pressure * cover.clamp(0.0, 1.0) * canvas.tooth[p]).clamp(0.0, 1.0);
+                    let amount = brush.k_deposit * contact * bk * Self::load_norm(load);
+                    deposit.clear();
+                    deposit.extend_from_slice(canvas.conc_at(sx, sy));
+                    let sum: f32 = deposit.iter().copied().map(|c| c.max(0.0)).sum();
+                    if amount > 1e-6 && sum > 1e-6 {
+                        for c in deposit.iter_mut() {
+                            *c = c.max(0.0) / sum * amount;
+                        }
+                        canvas.deposit(px, py, deposit, 0.0);
+                    }
+                }
+            }
             return;
         }
         if brush.knife > 0.0 && plateau >= 0.0 {
@@ -1022,6 +1453,13 @@ impl Stroke {
             canvas.deposit_over(px, py, &film, h * o);
         } else {
             canvas.deposit(px, py, deposit, dep_total * brush.viscosity * ridge);
+        }
+        if age_t >= 0.0 {
+            // AGE (see `BrushConfig::age`): the blade's thinness left at the pixel, blended in by the contact.
+            if canvas.age.is_empty() {
+                canvas.age = vec![0.0; canvas.w as usize * canvas.h as usize];
+            }
+            canvas.age[p] += (age_t - canvas.age[p]) * contact;
         }
 
         // Pickup: lift wet canvas pigment into the load (the dirty brush). Scales with how empty the brush is.
@@ -1434,6 +1872,249 @@ mod tests {
         let ((s0, e0), (s1, e1)) = (height(0.0), height(1.0));
         assert!(e1 < e0 * 0.5, "the faded slice's tail stands under half the plain one's ({e1} vs {e0})");
         assert!(s1 > s0 * 0.8, "and its start is nearly as high ({s1} vs {s0})");
+    }
+
+    #[test]
+    fn a_dragged_knife_slice_is_grainy_at_its_tail_and_whole_at_its_start() {
+        // A fading knife slice with and without the drag: toward the tail the dragged one lays its paint only on
+        // the cloth's thread crests (fewer pixels take paint); at the start both lay every pixel.
+        let laid = |drag: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9).with_cloth_seed(7);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 1.0, drag, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let count = |x0: usize, x1: usize| (17..23).flat_map(|y| (x0..x1).map(move |x| y * 160 + x)).filter(|&i| c.height[i] > 1e-5).count();
+            (count(12, 40), count(112, 148))
+        };
+        let ((s0, e0), (s1, e1)) = (laid(0.0), laid(1.0));
+        assert!(s1 as f32 > s0 as f32 * 0.85, "the start, under full pressure, is nearly whole either way ({s1} vs {s0})");
+        assert!((e1 as f32) < e0 as f32 * 0.75, "the dragged tail is grainy: fewer pixels take paint ({e1} vs {e0})");
+    }
+
+    #[test]
+    fn the_age_keeps_the_thinness_of_the_last_knife_at_each_pixel() {
+        // A wide slice across, then a thin one down over it, both with the age: under the wide slice alone the
+        // age is low, where the thin one crossed it is high; without the key no age is kept at all.
+        let mut c = Canvas::white(256, 256, palette::ZORN, 0.9);
+        let knife = |age: f32| BrushConfig { knife: 1.0, age, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() };
+        let wide = Stroke { path: vec![[20.0, 128.0], [236.0, 128.0]], width0: 12.0, width1: 12.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+        wide.rasterize(&mut c, &knife(0.0));
+        assert!(c.age.is_empty(), "no key, no age");
+        wide.rasterize(&mut c, &knife(1.0));
+        Stroke { path: vec![[128.0, 20.0], [128.0, 236.0]], width0: 2.0, width1: 2.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(1.0));
+        let at = |x: usize, y: usize| c.age[y * 256 + x];
+        assert!(at(60, 128) < 0.1, "under the wide knife alone the age is low ({})", at(60, 128));
+        let cross = at(128, 128).max(at(129, 128));
+        assert!(cross > 0.5, "where the thin knife crossed it is high ({cross})");
+        let along = at(128, 60).max(at(129, 60));
+        assert!(along > 0.5, "and along the thin slice ({along})");
+    }
+
+    #[test]
+    fn the_bridge_spans_the_shallow_furrows_while_the_paint_lasts() {
+        // A fading dragged slice with and without the bridge: in its middle, where the paint still spans the
+        // shallow furrows, the bridged one stands higher on average (the furrows filled); at the very tail both
+        // are torn alike.
+        let mean_h = |bridge: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9).with_cloth_seed(7);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 1.0, drag: 1.0, bridge, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let m = |x0: usize, x1: usize| (17..23).flat_map(|y| (x0..x1).map(move |x| y * 160 + x)).map(|i| c.height[i]).sum::<f32>() / (6 * (x1 - x0)) as f32;
+            (m(56, 96), m(140, 150))
+        };
+        let ((m0, e0), (m1, e1)) = (mean_h(0.0), mean_h(1.0));
+        assert!(m1 > m0 * 1.05, "the bridged middle stands higher ({m1} vs {m0})");
+        assert!((e1 - e0).abs() < e0 * 0.5 + 1e-3, "the tail is torn alike ({e1} vs {e0})");
+    }
+
+    #[test]
+    fn the_liftoff_leaves_a_bead_where_the_blade_leaves_the_canvas() {
+        // A fading knife slice with and without the lift-off: over its last few pixels the one with it stands
+        // well above the plain one, and both are alike a width before the end.
+        let at = |liftoff: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 0.5, liftoff, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |x: usize| (17..23).map(|y| c.height[y * 160 + x]).sum::<f32>() / 6.0;
+            (h(140), h(151))
+        };
+        let ((b0, e0), (b1, e1)) = (at(0.0), at(1.0));
+        assert!(e1 > e0 * 1.5, "the bead stands at the lift-off ({e1} vs {e0})");
+        assert!((b1 - b0).abs() < b0 * 0.1 + 1e-3, "a width before the end the slices are alike ({b1} vs {b0})");
+    }
+
+    #[test]
+    fn the_broken_colour_fills_the_drags_voids_with_the_lower_layers_peaks() {
+        // A thick black slice dried below (its top lane on row 19); a white fading slice dragged over the canvas
+        // just above it (rows 13..20): in the tail, the voids the drag leaves on row 17 — the black relief within
+        // their 5×5 — take its colour with the key, and stay the ground's white without.
+        let row = |broken: f32| {
+            let mut c = Canvas::white(160, 48, palette::ZORN, 0.9).with_cloth_seed(7);
+            let black = vec![0.0, 0.0, 4.0, 0.0];
+            let white = vec![0.0, 0.0, 0.0, 4.0];
+            Stroke { path: vec![[96.0, 24.0], [152.0, 24.0]], width0: 12.0, width1: 12.0, load: black, pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &BrushConfig { knife: 1.0, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            Stroke { path: vec![[8.0, 16.0], [152.0, 16.0]], width0: 8.0, width1: 8.0, load: white, pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 1.0, drag: 1.0, broken, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            (112..148).map(|x| c.color_at(x, 17)[1] as f32).sum::<f32>() / 36.0
+        };
+        let (plain, broken) = (row(0.0), row(1.0));
+        assert!(broken < plain - 8.0, "the voids beside the black relief take its colour ({broken} vs {plain})");
+    }
+
+    #[test]
+    fn the_heel_prints_a_bump_at_the_first_contact() {
+        // A flat knife slice with and without the heel: with it the height a pixel into the mark stands well
+        // above the height at its middle; without, the two are alike.
+        let ratio = |heel: f32| {
+            let mut c = Canvas::white(120, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[10.0, 20.0], [110.0, 20.0]], width0: 12.0, width1: 12.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, heel, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |x: usize| (16..25).map(|y| c.height[y * 120 + x]).sum::<f32>() / 9.0;
+            h(11) / h(60).max(1e-6)
+        };
+        let (plain, heeled) = (ratio(0.0), ratio(1.0));
+        assert!(plain < 1.05, "a flat slice starts as high as its middle ({plain})");
+        assert!(heeled > 1.8, "the heel prints a bump at the first contact ({heeled})");
+    }
+
+    #[test]
+    fn the_dirty_knife_carries_the_last_marks_colour_into_the_next_marks_start() {
+        // A black slice, then a red one starting near its end (not touching it) with the same knife: with the key
+        // the red one starts darker than its middle (the black still on the blade); without, its start is its
+        // own colour; and with the key but starting far from the black's end, the knife was wiped.
+        let start_vs_mid = |dirty: f32, far: bool| {
+            let mut c = Canvas::white(160, 60, palette::ZORN, 0.9);
+            let knife = BrushConfig { knife: 1.0, dirty, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() };
+            Stroke { path: vec![[10.0, 12.0], [150.0, 12.0]], width0: 16.0, width1: 16.0, load: vec![0.0, 0.0, 4.0, 0.0], pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife);
+            let (x0, x1) = if far { (10.0, 150.0) } else { (150.0, 10.0) };
+            Stroke { path: vec![[x0, 34.0], [x1, 34.0]], width0: 10.0, width1: 10.0, load: red_load(), pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife);
+            let luma = |x: u32| (30..39).map(|y| { let p = c.color_at(x, y); 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32 }).sum::<f32>() / 9.0;
+            (luma(if far { 11 } else { 149 }), luma(80))
+        };
+        let ((s0, m0), (s1, m1), (s2, m2)) = (start_vs_mid(0.0, false), start_vs_mid(1.0, false), start_vs_mid(1.0, true));
+        assert!((s0 - m0).abs() < 2.0, "a clean knife starts in its own colour ({s0} vs {m0})");
+        assert!(s1 < m1 - 8.0, "the dirty knife starts darker with the black it carried ({s1} vs {m1})");
+        assert!((s2 - m2).abs() < 2.0, "moved far from the last mark the knife is wiped ({s2} vs {m2})");
+    }
+
+    #[test]
+    fn the_torn_slice_has_ragged_sides() {
+        // A long slice with and without the tear: the row its edge lane lays is laid whole without it and
+        // broken with it, while the middle row is laid whole either way.
+        let rows = |tear: f32| {
+            let mut c = Canvas::white(120, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[10.0, 20.0], [110.0, 20.0]], width0: 12.0, width1: 12.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, tear, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let laid = |y: usize| (20..100).filter(|&x| c.height[y * 120 + x] > 1e-5).count();
+            (laid(15), laid(20))
+        };
+        let ((e0, m0), (e1, m1)) = (rows(0.0), rows(1.0));
+        assert!(e0 == 80 && m0 == 80, "the plain slice lays its rows whole ({e0}, {m0})");
+        assert!(m1 == 80, "the torn slice keeps its middle whole ({m1})");
+        assert!(e1 < 68, "the torn slice's edge row is broken ({e1})");
+    }
+
+    #[test]
+    fn the_tilted_blade_leaves_one_edge_thin_and_the_other_a_bead() {
+        // A knife slice with the tilt over a few cloth seeds (the roll is a spatial noise): with the key some roll
+        // leaves the slice's two edge rows unequal by half again; without it the edges stand alike for every seed.
+        let edges = |tilt: f32, seed: u64| {
+            let mut c = Canvas::white(120, 40, palette::ZORN, 0.9).with_cloth_seed(seed);
+            let s = Stroke { path: vec![[10.0, 20.0], [110.0, 20.0]], width0: 12.0, width1: 12.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, tilt, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |y: usize| (30..90).map(|x| c.height[y * 120 + x]).sum::<f32>() / 60.0;
+            let (a, b) = (h(16), h(24));
+            a.max(b) / a.min(b).max(1e-6)
+        };
+        assert!((0..12).all(|s| edges(0.0, s) < 1.05), "without the tilt the edges stand alike");
+        assert!((0..12).any(|s| edges(1.0, s) > 1.5), "with the tilt some roll leaves one edge a bead and the other thin");
+    }
+
+    #[test]
+    fn the_stiction_breaks_the_bead_into_peaks_across_the_blade() {
+        // The lip's bead with and without the stiction: at the lift-off the heights across the lanes are alike
+        // without it, and spread by a factor with it.
+        let spread = |stiction: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 10.0, width1: 10.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 0.5, liftoff: 1.0, lip: 1.0, stiction, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let hs: Vec<f32> = (16..25).map(|y| c.height[y * 160 + 152]).collect();
+            hs.iter().cloned().fold(0.0f32, f32::max) / hs.iter().cloned().fold(f32::MAX, f32::min).max(1e-6)
+        };
+        let (plain, broken) = (spread(0.0), spread(1.0));
+        assert!(plain < 1.1, "the even bead stands alike across the blade ({plain})");
+        assert!(broken > 1.8, "the stiction parts the bead into peaks ({broken})");
+    }
+
+    #[test]
+    fn the_wet_paint_under_the_blade_is_dragged_along_its_motion() {
+        // A black slice down the canvas; a white one across it, laid next with and without the smear, and with
+        // the smear after the canvas dried: just past the crossing the white slice carries the black along only
+        // while the black is wet.
+        let past = |smear: f32, dry: bool| {
+            let mut c = Canvas::white(160, 60, palette::ZORN, 0.9);
+            let knife = |smear| BrushConfig { knife: 1.0, smear, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() };
+            Stroke { path: vec![[60.0, 5.0], [60.0, 55.0]], width0: 16.0, width1: 16.0, load: vec![0.0, 0.0, 4.0, 0.0], pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(smear));
+            if dry {
+                c.dry(0.0);
+            }
+            Stroke { path: vec![[10.0, 30.0], [150.0, 30.0]], width0: 10.0, width1: 10.0, load: vec![0.0, 0.0, 0.0, 4.0], pressure: 1.0, wetness: 0.3 }.rasterize(&mut c, &knife(smear));
+            (69..72).map(|x| (27..33).map(|y| c.color_at(x, y)[1] as f32).sum::<f32>() / 6.0).sum::<f32>() / 3.0
+        };
+        let (plain, wet, dried) = (past(0.0, false), past(1.0, false), past(1.0, true));
+        assert!(wet < plain - 10.0, "the wet black is dragged past the crossing ({wet} vs {plain})");
+        assert!((dried - plain).abs() < 1.0, "the dried black stays where it was ({dried} vs {plain})");
+    }
+
+    #[test]
+    fn the_lip_puts_the_liftoffs_crest_at_the_very_end() {
+        // The lift-off bead with and without the lip: the lip's peak stands higher and falls off far more
+        // sharply behind itself (the crest in the last pixels, a trough behind it), the even bead's rise gradual.
+        let at = |lip: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, fade: 0.5, liftoff: 1.0, lip, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |x: usize| (17..23).map(|y| c.height[y * 160 + x]).sum::<f32>() / 6.0;
+            let (px, peak) = (140..=153).map(|x| (x, h(x))).fold((0usize, 0.0f32), |a, b| if b.1 > a.1 { b } else { a });
+            (peak, peak / h(px - 2).max(1e-6))
+        };
+        let ((p0, s0), (p1, s1)) = (at(0.0), at(1.0));
+        assert!(p1 > p0 * 1.15, "the lip's crest stands higher ({p1} vs {p0})");
+        assert!(s1 > s0 * 1.4, "the lip falls off sharper behind its crest ({s1} vs {s0})");
+    }
+
+    #[test]
+    fn the_marbled_slice_winds_its_bands_along_the_mark() {
+        // A mixed slice of red with black: without the marble each lane keeps one colour its whole length (the
+        // column of tones across the width the same at every x); with it the bands wander, so the columns differ.
+        let black = vec![0.0, 0.0, 4.0, 0.0];
+        let run = |marble: f32| {
+            let mut c = Canvas::white(160, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[8.0, 20.0], [152.0, 20.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize_ramp(&mut c, &BrushConfig { knife: 1.0, mix: 1.0, marble, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() }, Some(&black));
+            c.dry(0.0);
+            let img = c.to_image();
+            (40..=120).step_by(8).map(|x| (16..24).map(|y| { let p = img.get_pixel(x, y).0; crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(p)) }).collect::<Vec<f32>>()).collect::<Vec<_>>()
+        };
+        let diff = |cols: &[Vec<f32>]| cols.windows(2).map(|w| w[0].iter().zip(&w[1]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max)).fold(0.0f32, f32::max);
+        let (plain, marbled) = (run(0.0), run(1.0));
+        assert!(diff(&plain) < 0.01, "without the marble the bands run straight ({})", diff(&plain));
+        assert!(diff(&marbled) > 0.05, "with the marble the bands wander along the mark ({})", diff(&marbled));
+    }
+
+    #[test]
+    fn the_slump_eases_the_slabs_cliff_and_keeps_its_body() {
+        // A thick flat slab with and without the slump: the biggest step of height across its edge is smaller
+        // with it, and the slab's middle keeps its height.
+        let at = |slump: f32| {
+            let mut c = Canvas::white(120, 60, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[10.0, 30.0], [110.0, 30.0]], width0: 12.0, width1: 12.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            s.rasterize(&mut c, &BrushConfig { knife: 1.0, slump, viscosity: 2.0, k_pickup: 0.0, deplete: 0.0, streak: 0.0, round: 0.0, ..BrushConfig::default() });
+            let h = |y: usize| (40..80).map(|x| c.height[y * 120 + x]).sum::<f32>() / 40.0;
+            let jump = (20..42).map(|y| (h(y + 1) - h(y)).abs()).fold(0.0f32, f32::max);
+            (h(30), jump)
+        };
+        let ((b0, j0), (b1, j1)) = (at(0.0), at(1.0));
+        assert!((b1 - b0).abs() < b0 * 0.05 + 1e-4, "the body keeps its height ({b1} vs {b0})");
+        assert!(j1 < j0 * 0.85, "the cliff is eased ({j1} vs {j0})");
     }
 
     #[test]

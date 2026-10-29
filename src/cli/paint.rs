@@ -1838,6 +1838,21 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.blade_tint = plan.medium.blade_tint;
     params.blade_focus = plan.medium.blade_focus;
     params.blade_peak = plan.medium.blade_peak;
+    params.blade_band = plan.medium.blade_band;
+    params.brush.drag = plan.medium.blade_drag;
+    params.brush.age = plan.medium.blade_age;
+    params.brush.bridge = plan.medium.blade_bridge;
+    params.brush.liftoff = plan.medium.blade_liftoff;
+    params.brush.broken = plan.medium.blade_broken;
+    params.brush.lip = plan.medium.blade_lip;
+    params.brush.marble = plan.medium.blade_marble;
+    params.brush.slump = plan.medium.blade_slump;
+    params.brush.tilt = plan.medium.blade_tilt;
+    params.brush.stiction = plan.medium.blade_stiction;
+    params.brush.smear = plan.medium.blade_wet;
+    params.brush.heel = plan.medium.blade_heel;
+    params.brush.dirty = plan.medium.blade_dirty;
+    params.brush.tear = plan.medium.blade_tear;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2771,6 +2786,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.blade_tint = m.blade_tint;
         params.blade_focus = m.blade_focus;
         params.blade_peak = m.blade_peak;
+        params.blade_band = m.blade_band;
+        params.brush.drag = m.blade_drag;
+        params.brush.age = m.blade_age;
+        params.brush.bridge = m.blade_bridge;
+        params.brush.liftoff = m.blade_liftoff;
+        params.brush.broken = m.blade_broken;
+        params.brush.lip = m.blade_lip;
+        params.brush.marble = m.blade_marble;
+        params.brush.slump = m.blade_slump;
+        params.brush.tilt = m.blade_tilt;
+        params.brush.stiction = m.blade_stiction;
+        params.brush.smear = m.blade_wet;
+        params.brush.heel = m.blade_heel;
+        params.brush.dirty = m.blade_dirty;
+        params.brush.tear = m.blade_tear;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -2981,6 +3011,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.blade_tint { params.blade_tint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_focus { params.blade_focus = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_peak { params.blade_peak = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_band { params.blade_band = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_drag { params.brush.drag = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_age { params.brush.age = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_bridge { params.brush.bridge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_liftoff { params.brush.liftoff = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_broken { params.brush.broken = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_lip { params.brush.lip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_marble { params.brush.marble = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_slump { params.brush.slump = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_tilt { params.brush.tilt = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_stiction { params.brush.stiction = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_wet { params.brush.smear = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_heel { params.brush.heel = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_dirty { params.brush.dirty = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blade_tear { params.brush.tear = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_bed { params.brush.bed = v.clamp(0.0, 1.0); }
         // BLADE KNIVES (see `PlanMedium::blade_knives`): the plan's own ladder of knife widths.
         if let Some(k) = pl.blade_knives.as_ref().filter(|v| !v.is_empty()) { brush_sizes = k.iter().map(|v| v.max(1.0)).collect(); }
