@@ -8,6 +8,63 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.15.0 — Pointillism: the picture laid as a field of small hard touches of pure pigment — the Poisson disc, the colour separated in the eye, the shadows and the sky of the divisionists
+
+### `plakat paint`
+
+- **`--medium pointillism` — the dot as the medium's own tool** (`dot`). A new medium: the picture laid as a field
+  of small, hard-edged round touches of pure pigment on the ground — no stroke, no path, no blending on the canvas,
+  the mixing done in the eye. The ladder's passes are not laid (the block-in can be kept under the dots as an
+  underpainting, `dot_ground`); the dots go on the white ground, or on a toned one (`dot_tone`). Every dot is a
+  polygon fill recorded as a wash in the score, so a replay lays it alike. Profile defaults: `body 1`, `bleed 0`,
+  `pickup 0`, `impasto 0.15`, `sheen 0.1`, `lift 0.3`, palette `divisionist`; every `dot_*` key below is a plan key,
+  0 in every profile — the recommended plan is the block in `PAINT_EXAMPLES.md`.
+- **The divisionist palette** (`palette: divisionist`): the neo-impressionists' pure set — cadmium and lemon
+  yellow, cadmium orange and red, quinacridone rose, dioxazine purple, ultramarine and cerulean, viridian and sap
+  green, titanium white — no black and no earths: the darks and the greys are made in the eye from touches of
+  the complementaries side by side.
+- **The Poisson disc** (`dot_size`, `dot_space`, `dot_dense`, `dot_busy`): the sheet sampled as a Poisson disc of
+  the dot's diameter at a spacing in diameters — no two dots closer than the spacing, none farther than twice it,
+  the front's order shuffled so no overlap follows the sampling's growth; the spacing closed in the darks (by the
+  value on the eye's scale) and where the picture is busy (its local deviation over two dots' reach).
+- **The colour separated in the eye** (`dot_pure`): every dot takes the picture's mean colour over its reach and,
+  by this share, ONE pigment from that colour's ADDITIVE separation — the weights that make the colour as an
+  additive mix of the palette's masstones in linear light (a projected gradient on the simplex): an orange from
+  red and yellow dots, a grey from blue and orange. The rest take the brush's subtractive mixture.
+- **The dot sized by the picture's detail, the gaps filled, the colours alternated, the dot along the contours**
+  (`dot_edge`, `dot_fill`, `dot_diffuse`, `dot_flow`): the structure tensor over two dots' reach gives the gradient's
+  magnitude (against its 90th percentile over the sheet — the dot 1.5× on a calm sky, 0.4× at a face's features,
+  the Poisson spacing following the size) and the contours' direction (the dot an ellipse along it, its aspect by
+  the tensor's coherence, its area kept); the field's gaps found by a scan at a 7th of the dot and each given a
+  dot of 0.6 the local size; the pure dots chosen not by a random draw but by ERROR DIFFUSION along serpentine
+  bands of the spacing — each the nearest of its separation's pigments to the colour it owes (the picture's colour
+  plus the error its laid neighbours passed on), the miss passed to the unlaid dots within two spacings — so the
+  mean is held exactly and the colours alternate, yellow, red, yellow, instead of clumping (Chevreul's law).
+- **The shadows of the divisionists** (`dot_shadow`, `dot_lab`): a dark passage separates to the palette's darkest
+  pigment alone (the violet; the set has no black) and comes out a screen of one pigment; by the key its dots may
+  take any of the palette's darks and the choice is charged for repetition — the share of the laid neighbours
+  within two spacings already in that pigment — so the shadow is laid in violet, blue and green side by side, the
+  complementaries' optical dark; and the shadow's pigment chosen by the eye's distance — CIELAB with the lightness
+  at full weight and the chroma at a quarter, where linear RGB held a dark blue as far from a near-black as a mid
+  green — so the ultramarine stands beside the violet in the cool darks (the lights keep the additive distance,
+  which keeps their colours; the error itself stays in linear light, the eye's mix being additive).
+- **No pure white on the flat** (`dot_white`): on a flat passage (a clear sky, calm water) a pure dot gives up the
+  palette's white by this share — its separation redone among the chromatic pigments alone — so the light is
+  laid in lemon, cerulean and rose and the white dots that remain read as light between them, not as the bare
+  ground; where the picture is busy the white stays.
+- **The second, fine field at the edges** (`dot_fine`): the picture's sharp edges (the gradient in its top tenth
+  over the sheet, widened by the dot's radius) sampled again as a Poisson disc of dots 0.4 the size at 0.4 the
+  spacing, laid last over the field and coloured at their own reach — the large touches kept on the planes, the
+  detail resolved by small ones only where it is: two scales, not a finer field everywhere.
+- **The fill's coverage read true** (`dot_lap`): the gap scan tests each dot's actual ellipse shrunk by a tenth,
+  not the circle of its radius, so the polygon's shortfall and the ellipse's narrow axis count as bare ground and
+  take a filler — the dots overlap by that margin and the white specks go.
+- **The ground toned to the complement** (`dot_tone`): the ground under the dots the complement of the picture's
+  mean colour in CIELAB — a light ochre under a blue sky and sea, a pale cool grey under a warm scene — at a
+  lightness of 100 − 16 × key and a chroma of 30 × key: the white and the pale dots ring against it (Chevreul's
+  simultaneous contrast) and a gap between dots is the ground's warmth, not a void.
+- Nothing changes in the other media: the paint sheets of 7.14.0 render byte-identical.
+
 ## What's new in 7.14.0 — Palette knife: the picture laid in thick flat slices of the blade — the planes of value, the ladder of knives, the relief relit, and the blade's own physics
 
 ### `plakat paint`

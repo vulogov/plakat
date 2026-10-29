@@ -389,6 +389,40 @@ plakat paint from photo.png --medium tempera --plan tempera.hjson -o out-tempera
 #   the dirty blade is wiped unless the next slice starts within three widths of the last one's end)
 #
 plakat paint from photo.png --medium palette-knife --plan palette-knife.hjson -o out-knife.png
+
+# ── POINTILLISM ──────────────────────────────────────────────────────────────
+# The picture as a field of small hard touches of pure pigment, mixed in the eye (7.15.0): the sheet sampled as a
+# Poisson disc of 10 px dots at 0.65 diameters, closed in the darks and where the picture is busy; every dot one
+# pigment of the divisionist palette from the colour's additive separation, chosen by error diffusion along the
+# field so the colours alternate; the dot sized by the detail and drawn out along the contours, the gaps filled on
+# the true ellipse, a second fine field at the sharp edges; the shadows shared among the darks by the eye's
+# distance, no pure white on the flat sky, the ground a light complement. Every dot key is 0 in the profile — run
+# it with the plan (the keys in PAINT_CONTROLS.md and RELEASE_HISTORY.md):
+#
+#   medium: pointillism        palette: divisionist       style: legible             new: true
+#   armature: 384              armature_face: 768         armature_body: 384         semantic: true
+#   sam: true                  families: true             commit_shadows: 1.0        shadow_floor: 0.16
+#   detail_len: 0.5            infill: follow             rigger: 0.0                hotspot: 0.0
+#   dry: 1.0                   pickup: 0.0                bleed: 0.0                 wash_in: 0.0
+#   wet_cap: 1.0               scumble: 0.0               skip: 0.0                  deplete: 1.0
+#   turbulence: 0              accent: 0.0                loose: 0.0                 vary: 0.0
+#   comma: 0.0                 body_vary: 0.0             broken: 0.0                shade: 0.0
+#   imprimatura: 0.0           sfumato: 0.0               glaze: 0.0                 glaze_pass: 0.0
+#   lost: 0.0                  aerial: 0.0                crest: 0.0                 sink: 0.0
+#   film: 0.0                  split: 0.0                 tint: 0.0                  twist: 0.0
+#   knife: 0.0                 skim: 0.0                  hiding: 1.0
+#   dot: 1.0                   dot_size: 10               dot_space: 0.65            dot_dense: 0.3
+#   dot_busy: 0.5              dot_pure: 1.0              dot_ground: 0.0            dot_edge: 0.6
+#   dot_fill: 1.0              dot_diffuse: 0.8           dot_flow: 0.7              dot_shadow: 1.0
+#   dot_white: 0.6             dot_fine: 1.0              dot_lab: 1.0               dot_lap: 1.0
+#   dot_tone: 0.6
+#   impasto: 0.15              ridges: 0.0                impasto_map: 0.0           sheen: 0.1
+#   gloss: 0.0                 sag: 0.0
+#   (dot_size is at 2048² — a 200th of the short side when 0; dot_edge 1.0 shrinks the main dots to 0.4× at the
+#   edges — with dot_fine the fine field takes the detail and 0.6 keeps the touches large on the planes; the sheet
+#   takes seconds, the pass loop is skipped)
+#
+plakat paint from photo.png --medium pointillism --plan pointillism.hjson -o out-dots.png
 ```
 
 ---

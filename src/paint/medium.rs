@@ -626,6 +626,47 @@ pub struct MediumProfile {
     /// direction over two dots' reach, the aspect 1 + key × coherence (to 2:1 on a clean edge, round where the
     /// picture has no direction), the area kept: Signac's touches following the hull's curve and the folds.
     pub dot_flow: f32,
+    /// DOT SHADOW (0..1, 0 = off; `pointillism`): the SHADOWS BROKEN AMONG THE DARKS — a dark passage (the eye's
+    /// luma under 0.1, fully from 0.05 down) separates to the palette's darkest pigment alone (the violet: the set
+    /// has no black), and the shadow comes out a screen of one pigment; by this key its dots may take any of the
+    /// palette's darks (a luma under 0.15 — the violet, the ultramarine, the rose, the viridian, the red) and the
+    /// choice is CHARGED FOR REPETITION: the share of the laid neighbours within two spacings already in that
+    /// pigment, at a tenth of the colour distance squared at the full key, so the shadow is laid in violet, blue
+    /// and green side by side — the complementaries' optical dark — the diffusion holding its depth; without
+    /// diffusion, by this share a draw among the darks, the nearer the likelier.
+    pub dot_shadow: f32,
+    /// DOT WHITE (0..1, the share; `pointillism`): NO PURE WHITE ON THE FLAT — on a flat passage (the local
+    /// deviation under 0.06 over two dots' reach: a clear sky, calm water) a pure dot gives up the palette's white
+    /// (its lightest pigment) by this share: its separation redone among the chromatic pigments alone, so the
+    /// light is laid in the lightest colours — lemon, cerulean, rose — and the white dots that remain read as
+    /// light between them, not as the bare ground showing; where the picture is busy the white stays. Seurat's
+    /// sky: never white alone, but the warm and the cool side by side.
+    pub dot_white: f32,
+    /// DOT FINE (0..1, the share; `pointillism`): THE SECOND, FINE FIELD AT THE EDGES — the picture's sharp
+    /// edges (the gradient in its top tenth over the sheet, widened by the dot's radius) sampled again as a
+    /// Poisson disc of dots 0.4 the size at 0.4 the spacing, this share of them laid LAST over the field,
+    /// coloured from the picture at their own reach: the large touches kept on the planes, the detail resolved by
+    /// small ones only where it is — two scales, not a finer field everywhere (which would be halftoning).
+    pub dot_fine: f32,
+    /// DOT LAB (0..1, 0 = off; `pointillism`): the SHADOW'S PIGMENT CHOSEN BY THE EYE'S DISTANCE — the nearness
+    /// of a pigment to the colour a dot owes measured, in the darks (by `dot_shadow`'s weight: a luma under 0.1),
+    /// not in linear RGB (where a dark blue lies as far from a near-black as a mid green does, and the ultramarine
+    /// never enters a shadow) but in CIELAB with the lightness at full weight and the chroma at a quarter, blended
+    /// in by this key × the shadow's weight: a shadow pigment is chosen by its VALUE first and its hue second, so
+    /// the ultramarine stands beside the violet in the cool darks. The lights keep the additive distance (by the
+    /// eye's, a pale sky would go to white alone, the lemon and the cerulean lost); the error itself stays in linear
+    /// light (the eye's mix is additive).
+    pub dot_lab: f32,
+    /// DOT LAP (0..1, 0 = off; `pointillism`): the FILL'S COVERAGE READ TRUE — the gap scan of `dot_fill` tests
+    /// each dot's actual ellipse (`dot_flow` thins it across the contour) shrunk by a tenth at the full key, not
+    /// the circle of its radius, so the 16-gon's shortfall on the circle and the ellipse's narrow axis count as
+    /// bare ground and take a filler: the dots overlap by that margin and the white specks go.
+    pub dot_lap: f32,
+    /// DOT TONE (0..1, 0 = the white ground; `pointillism`): the dots' GROUND TONED to the complement of the
+    /// picture's mean colour — a light ochre under a blue sky and sea, a pale cool grey under a warm scene — at
+    /// a lightness of 100 − 16 × key and a chroma of 30 × key in CIELAB: the white and the pale dots ring against
+    /// it (Chevreul's simultaneous contrast) and a gap between dots is the ground's warmth, not a void.
+    pub dot_tone: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1582,6 +1623,12 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -1836,6 +1883,12 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2090,6 +2143,12 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2385,6 +2444,12 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2648,6 +2713,12 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2906,6 +2977,12 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3160,6 +3237,12 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3417,6 +3500,12 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3674,6 +3763,12 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3931,6 +4026,12 @@ pub const DURER: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4191,6 +4292,12 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -4448,6 +4555,12 @@ pub const PENCIL: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4707,6 +4820,12 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4961,6 +5080,12 @@ pub const PASTEL: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5215,6 +5340,12 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5475,6 +5606,12 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5736,6 +5873,12 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5995,6 +6138,12 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     dot_fill: 0.0,
     dot_diffuse: 0.0,
     dot_flow: 0.0,
+    dot_shadow: 0.0,
+    dot_white: 0.0,
+    dot_fine: 0.0,
+    dot_lab: 0.0,
+    dot_lap: 0.0,
+    dot_tone: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

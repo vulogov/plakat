@@ -891,6 +891,42 @@ impasto: 0.8
 
 ---
 
+### Pointillism — `medium: pointillism`  🎯 *the picture as a field of small hard touches of pure pigment, mixed in the eye: the Poisson disc, the divisionist palette, the error diffusion (7.15.0)*
+Every mark is a dot (`dot`): a hard-edged round touch of one pure pigment on the ground, no stroke and no
+blending on the canvas — the ladder's passes are not laid (the block-in kept under the dots by `dot_ground`). The
+sheet is **sampled as a Poisson disc** (`dot_size` px, `dot_space` in diameters, closed in the darks by `dot_dense`
+and where the picture is busy by `dot_busy`), each dot **one pigment from the colour's additive separation**
+(`dot_pure`) over the **divisionist palette** (no black, no earths); the dot **sized by the picture's detail** and
+**drawn out along the contours** from the structure tensor (`dot_edge`, `dot_flow`), **the gaps filled** (`dot_fill`,
+read on the dot's true ellipse by `dot_lap`), the pure colours **alternated by error diffusion** along the field
+(`dot_diffuse`); the **shadows shared among the darks** with a charge on repetition and chosen by the eye's distance
+in CIELAB (`dot_shadow`, `dot_lab`), **no pure white on the flat passages** (`dot_white`), **a second fine field** of
+small dots at the sharp edges only (`dot_fine`), and the **ground toned to the complement** of the picture's mean
+(`dot_tone`). Each is a plan key, 0 in every profile; the recommended plan with every key is in
+`PAINT_EXAMPLES.md`, and `RELEASE_HISTORY.md` (7.15.0) says what each one does.
+- Defaults: `opacity opaque` · `bleed 0` · `pickup 0` · `impasto 0.15` · `sheen 0.1` · `lift 0.3` · `broken 0` ·
+  palette `divisionist`. Without a plan the profile paints with the brush engine; `dot 1` makes the dot the tool.
+- Tune: `dot_size` (a 200th of the short side when 0) and `dot_space` (0.6–0.8) are the character; `dot_dense`
+  up for closed darks; `dot_edge` down and `dot_fine` up for large touches on the planes with the detail in small
+  ones; `dot_white` up for a sky without white; `dot_tone` 0.6–1.0 for the toned ground. Use `palette: divisionist`
+  (or `image`), `style: legible`, `new: true`, `dry 1`, `pickup 0`, `hiding 1`.
+
+```hjson
+medium: pointillism
+palette: divisionist
+style: legible
+dot: 1.0
+dot_size: 10
+dot_space: 0.65
+dot_pure: 1.0
+dot_diffuse: 0.8
+dot_edge: 0.6
+dot_fine: 1.0
+hiding: 1.0
+```
+
+---
+
 ## Quick reference — default behaviour by medium
 
 | medium        | body | bleed | pickup | impasto | chroma | dry_shift | granulate | sheen | lift | broken | contour | marks      | whites   | palette |
@@ -912,6 +948,7 @@ impasto: 0.8
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
 | acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
 | palette-knife | 1.00 | 0.08  | 0.00   | 0.50    | 1.08   | 0.00      | 0.00      | 0.30  | 0.80 | 0.20   | 0.00    | continuous · with `blade 1` every mark a rigid knife slice: planes of value, a ladder of knives, the impasto relit | pigment  | zorn |
+| pointillism   | 1.00 | 0.00  | 0.00   | 0.15    | 1.00   | 0.00      | 0.00      | 0.10  | 0.30 | 0.00   | 0.00    | continuous · with `dot 1` every mark a hard round touch of one pure pigment at a Poisson-disc sampling, mixed in the eye | pigment  | divisionist |
 
 Every value is a **default** — set the same‑named field in the spec (or the CLI flag) to override it. The score
 records the applied `bleed` / `opacity` / `impasto` so a re‑render (`plakat paint replay`) reproduces the
