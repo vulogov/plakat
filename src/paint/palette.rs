@@ -58,6 +58,13 @@ pub const SPLIT_PRIMARY: Palette = Palette {
     name: "split-primary",
     pigments: &[CADMIUM_YELLOW, LEMON_YELLOW, CADMIUM_RED, QUINACRIDONE_ROSE, ULTRAMARINE_BLUE, PHTHALO_BLUE, TITANIUM_WHITE],
 };
+/// Divisionist — the neo-impressionists' pure set (Seurat's; 7.15.0, the `pointillism` medium's own): two
+/// yellows, an orange, a red and a rose, a violet, two blues, two greens and white — no black and no earths: the
+/// darks and the greys are made in the eye, from touches of the complementaries side by side.
+pub const DIVISIONIST: Palette = Palette {
+    name: "divisionist",
+    pigments: &[CADMIUM_YELLOW, LEMON_YELLOW, CADMIUM_ORANGE, CADMIUM_RED, QUINACRIDONE_ROSE, DIOXAZINE_PURPLE, ULTRAMARINE_BLUE, CERULEAN_BLUE, VIRIDIAN, SAP_GREEN, TITANIUM_WHITE],
+};
 /// Verdaccio — the tempera greenish underpainting set: ochre, black, green earth, white.
 pub const VERDACCIO: Palette = Palette { name: "verdaccio", pigments: &[YELLOW_OCHRE, IVORY_BLACK, TERRE_VERTE, TITANIUM_WHITE] };
 /// Earth — the muted earths: raw umber, burnt sienna, yellow ochre, black, white.
@@ -104,7 +111,7 @@ pub const MUTED_COLORS: Palette = Palette { name: "muted-colors", pigments: &[YE
 pub const ALL: &[Palette] = &[
     ZORN, SPLIT_PRIMARY, VERDACCIO, EARTH, LIMITED_LANDSCAPE, SUMI,
     EARLY_MORNING, BRIGHT_DAY, EARLY_EVENING, LATE_EVENING, NIGHT, RAIN, STORM,
-    DESERT, FOREST, RAINFOREST, SNOW, VIVID_COLORS, RICH_COLORS, MUTED_COLORS,
+    DESERT, FOREST, RAINFOREST, SNOW, VIVID_COLORS, RICH_COLORS, MUTED_COLORS, DIVISIONIST,
 ];
 
 impl Palette {

@@ -539,6 +539,41 @@ pub struct PaintParams {
     /// BLADE BAND (0..1, 0 = off; with `blade_focus`): the focus as a horizontal band (see
     /// `MediumProfile::blade_band`) — the share by which the focus's distance is read along the vertical alone.
     pub blade_band: f32,
+    /// DOT (0..1, 0 = off): the dot as the medium's own tool — the picture as a Poisson-disc field of equal round
+    /// touches of pure pigment, the ladder's passes not laid (see `MediumProfile::dot`).
+    pub dot: f32,
+    /// DOT SIZE (px, 0 = a 200th of the short side): the dot's diameter (see `MediumProfile::dot_size`).
+    pub dot_size: f32,
+    /// DOT SPACE (diameters, 0 = 0.7): the Poisson spacing (see `MediumProfile::dot_space`).
+    pub dot_space: f32,
+    /// DOT DENSE (0..1, 0 = off): the spacing closed in the darks (see `MediumProfile::dot_dense`).
+    pub dot_dense: f32,
+    /// DOT BUSY (0..1, 0 = off): the spacing closed where the picture is busy (see `MediumProfile::dot_busy`).
+    pub dot_busy: f32,
+    /// DOT PURE (0..1): the share of dots in one pure pigment by the additive separation (see `MediumProfile::dot_pure`).
+    pub dot_pure: f32,
+    /// DOT GROUND (0..1, 0 = off): the block-in kept under the dots (see `MediumProfile::dot_ground`).
+    pub dot_ground: f32,
+    /// DOT EDGE (0..1, 0 = off): the dot's size by the picture's detail (see `MediumProfile::dot_edge`).
+    pub dot_edge: f32,
+    /// DOT FILL (0..1, 0 = off): the gaps between the dots filled (see `MediumProfile::dot_fill`).
+    pub dot_fill: f32,
+    /// DOT DIFFUSE (0..1, 0 = off): the pure dots chosen by error diffusion (see `MediumProfile::dot_diffuse`).
+    pub dot_diffuse: f32,
+    /// DOT FLOW (0..1, 0 = off): the dot elongated along the contours (see `MediumProfile::dot_flow`).
+    pub dot_flow: f32,
+    /// DOT SHADOW (0..1, 0 = off): the shadows shared among the darks, repetition charged (see `MediumProfile::dot_shadow`).
+    pub dot_shadow: f32,
+    /// DOT WHITE (0..1, 0 = off): the pure white given up on the flat passages (see `MediumProfile::dot_white`).
+    pub dot_white: f32,
+    /// DOT FINE (0..1, 0 = off): a second field of small dots at the edges (see `MediumProfile::dot_fine`).
+    pub dot_fine: f32,
+    /// DOT LAB (0..1, 0 = off): the shadow's pigment chosen by a CIELAB distance, lightness first (see `MediumProfile::dot_lab`).
+    pub dot_lab: f32,
+    /// DOT LAP (0..1, 0 = off): the fill's coverage read on the true ellipse, shrunk (see `MediumProfile::dot_lap`).
+    pub dot_lap: f32,
+    /// DOT TONE (0..1, 0 = white): the ground toned to the complement of the picture's mean (see `MediumProfile::dot_tone`).
+    pub dot_tone: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay straight hatch lines of one width (see `MediumProfile::hatch`).
     pub hatch: f32,
     /// VERDACCIO (0..1, 0 = off): the flesh underpainted in a greenish grey (see `MediumProfile::verdaccio`).
@@ -809,7 +844,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -3698,6 +3733,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let last_pass = layer + 1 == ladder_len;
         let glazing = pass.stage == "glaze";
         let cresting = pass.stage == "crest";
+        // THE DOTS (see `MediumProfile::dot`): the picture is a field of dots, not a ladder of strokes — the passes
+        // are not laid, save the block-in under `dot_ground` (the underpainting the dots go over).
+        if p.dot > 0.0 && !(block_in && p.dot_ground > 0.0) {
+            continue;
+        }
         // TIERS (see `MediumProfile::tiers`): which hatched layer this pass is — the passes before it that hatch
         // (the cross's count: past a quarter of the way from the broadest brush to the finest).
         let tier_k = if p.tiers > 0.0 {
@@ -6137,6 +6177,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     }
     if !rejected.is_empty() {
         tracing::info!(target: "plakat", "paint critic: rejected {} pass(es): {}", rejected.len(), rejected.join(", "));
+    }
+    // THE DOTS (see `MediumProfile::dot`, 7.15.0 `pointillism`): the picture as a Poisson-disc field of equal round
+    // touches of pure pigment, over the dried ground (or the block-in kept under `dot_ground`). The picture itself,
+    // not the smoothed armature: a dot's colour is the mean of what it covers.
+    if p.dot > 0.0 {
+        canvas.dry(0.0);
+        let pic = if original.dimensions() == (w, h) { original } else { input };
+        dot_pass(&mut canvas, &mut score, pic, p, &mut placed, &mut k);
     }
 
     // CONTOUR pass (line media): DRAW the strongest edges as clean lines — pen/pencil/charcoal outline the
@@ -14161,6 +14209,629 @@ mod pastel_tests {
     }
 }
 
+// ── THE DOTS (7.15.0, `pointillism`) ──────────────────────────────────────────────────────────────────────
+
+/// The wetness a dot is laid at (a nearly dry touch: nothing of it bleeds).
+const DOT_WET: f32 = 0.3;
+
+/// A small deterministic generator for the dots (splitmix64): the sheet's sampling is a pure function of the seed.
+struct DotRng(u64);
+
+impl DotRng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// Uniform in `[0, 1)`.
+    fn unit(&mut self) -> f32 {
+        ((self.next_u64() >> 40) as f32) / (1u64 << 24) as f32
+    }
+}
+
+/// POISSON-DISC SAMPLING of a `w`×`h` sheet (Bridson's growing front) with the spacing A FIELD: no two samples
+/// closer than the spacing at either of them (the lesser of the two — a dense passage keeps its density against
+/// a sparse neighbour), each grown from an earlier sample at one to two spacings off it, the sheet filled when no
+/// sample can grow. `r_min` is the field's floor (the grid's cell), `r_max` its ceiling (the search's reach). The
+/// candidate about a parent is drawn in its annulus by rejection (no trigonometry: the sampling replays exactly).
+/// The order is the front's, from the sheet's middle outward; the caller shuffles.
+fn poisson_disc(w: usize, h: usize, seed: u64, r_min: f32, r_max: f32, spacing: &dyn Fn(f32, f32) -> f32) -> Vec<[f32; 2]> {
+    let mut pts: Vec<[f32; 2]> = Vec::new();
+    if w == 0 || h == 0 {
+        return pts;
+    }
+    let r_min = r_min.max(1.0);
+    let r_max = r_max.max(r_min);
+    let cell = r_min / std::f32::consts::SQRT_2;
+    let (gw, gh) = ((w as f32 / cell).ceil() as usize + 1, (h as f32 / cell).ceil() as usize + 1);
+    let mut grid: Vec<u32> = vec![u32::MAX; gw * gh];
+    let mut rad: Vec<f32> = Vec::new();
+    let mut active: Vec<usize> = Vec::new();
+    let mut rng = DotRng(seed ^ 0x0D07_5EED);
+    let reach = (r_max / cell).ceil() as i64 + 1;
+    let fits = |x: f32, y: f32, r: f32, pts: &[[f32; 2]], rad: &[f32], grid: &[u32]| -> bool {
+        let (gx, gy) = ((x / cell) as i64, (y / cell) as i64);
+        for yy in (gy - reach).max(0)..=(gy + reach).min(gh as i64 - 1) {
+            for xx in (gx - reach).max(0)..=(gx + reach).min(gw as i64 - 1) {
+                let j = grid[yy as usize * gw + xx as usize];
+                if j != u32::MAX {
+                    let q = pts[j as usize];
+                    let need = r.min(rad[j as usize]);
+                    if (q[0] - x) * (q[0] - x) + (q[1] - y) * (q[1] - y) < need * need {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    };
+    let (x0, y0) = (w as f32 * (0.4 + 0.2 * rng.unit()), h as f32 * (0.4 + 0.2 * rng.unit()));
+    pts.push([x0, y0]);
+    rad.push(spacing(x0, y0).clamp(r_min, r_max));
+    grid[(y0 / cell) as usize * gw + (x0 / cell) as usize] = 0;
+    active.push(0);
+    while !active.is_empty() {
+        let ai = ((rng.unit() * active.len() as f32) as usize).min(active.len() - 1);
+        let pi = active[ai];
+        let [px, py] = pts[pi];
+        let rp = rad[pi];
+        let mut found = false;
+        for _ in 0..24 {
+            let (dx, dy) = loop {
+                let (dx, dy) = ((rng.unit() * 4.0 - 2.0) * rp, (rng.unit() * 4.0 - 2.0) * rp);
+                let d2 = dx * dx + dy * dy;
+                if d2 >= rp * rp && d2 <= 4.0 * rp * rp {
+                    break (dx, dy);
+                }
+            };
+            let (x, y) = (px + dx, py + dy);
+            if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+                continue;
+            }
+            let r = spacing(x, y).clamp(r_min, r_max);
+            if fits(x, y, r, &pts, &rad, &grid) {
+                let id = pts.len();
+                pts.push([x, y]);
+                rad.push(r);
+                grid[(y / cell) as usize * gw + (x / cell) as usize] = id as u32;
+                active.push(id);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            active.swap_remove(ai);
+        }
+    }
+    pts
+}
+
+/// The projection onto the simplex (the weights non-negative, summing to one): the largest weights kept, shifted
+/// down by one threshold, the rest cut to nothing.
+fn project_simplex(w: &mut [f32]) {
+    let mut u: Vec<f32> = w.to_vec();
+    u.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let (mut cum, mut theta) = (0.0f32, 0.0f32);
+    for (j, uj) in u.iter().enumerate() {
+        cum += uj;
+        let t = (cum - 1.0) / (j as f32 + 1.0);
+        if uj - t > 0.0 {
+            theta = t;
+        }
+    }
+    for v in w.iter_mut() {
+        *v = (*v - theta).max(0.0);
+    }
+}
+
+/// THE COLOUR SEPARATION (see `MediumProfile::dot_pure`): the weights, one per pigment, that make `target` (linear
+/// light) as the AREA-WEIGHTED MEAN of the pigments' masstones — the eye's partitive mix of small touches of pure
+/// colour side by side, which adds the lights the touches reflect (a subtractive mixture on the palette would
+/// multiply their absorptions and go dull). A least squares on the simplex (the weights non-negative, summing to
+/// one) by projected gradient; a weight under a 50th dropped and the rest renormalised, so no dot is a stray of a
+/// colour the passage hardly needs.
+fn dot_separation(mass: &[color::LinRgb], target: color::LinRgb) -> Vec<f32> {
+    let n = mass.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut w = vec![1.0 / n as f32; n];
+    let lip: f32 = mass.iter().map(|m| m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sum::<f32>().max(1e-3);
+    let mut prev = w.clone();
+    for _ in 0..600 {
+        let mut c = [0f32; 3];
+        for (wi, m) in w.iter().zip(mass) {
+            for ch in 0..3 {
+                c[ch] += wi * m[ch];
+            }
+        }
+        let res = [c[0] - target[0], c[1] - target[1], c[2] - target[2]];
+        for (wi, m) in w.iter_mut().zip(mass) {
+            *wi -= (res[0] * m[0] + res[1] * m[1] + res[2] * m[2]) / lip;
+        }
+        project_simplex(&mut w);
+        let moved: f32 = w.iter().zip(&prev).map(|(a, b)| (a - b).abs()).sum();
+        prev.copy_from_slice(&w);
+        if moved < 1e-6 {
+            break;
+        }
+    }
+    let mut sum = 0.0;
+    for v in w.iter_mut() {
+        if *v < 0.02 {
+            *v = 0.0;
+        }
+        sum += *v;
+    }
+    if sum > 0.0 {
+        for v in w.iter_mut() {
+            *v /= sum;
+        }
+    }
+    w
+}
+
+/// DOT TONE (see `MediumProfile::dot_tone`): the ground under the dots — the complement of the picture's mean
+/// colour in CIELAB (the hue opposite; a warm ochre direction when the mean has no hue) at a lightness of
+/// 100 − 16 × key and a chroma of 30 × key.
+pub fn dot_tone_ground(img: &RgbImage, k: f32) -> color::Srgb {
+    let k = k.clamp(0.0, 1.0);
+    let mut acc = [0f64; 3];
+    for q in img.pixels() {
+        let l = color::srgb_to_linear(q.0);
+        for c in 0..3 {
+            acc[c] += l[c] as f64;
+        }
+    }
+    let n = (img.width() as f64 * img.height() as f64).max(1.0);
+    let mean = color::linear_to_lab([(acc[0] / n) as f32, (acc[1] / n) as f32, (acc[2] / n) as f32]);
+    let ch = (mean.a * mean.a + mean.b * mean.b).sqrt();
+    let (da, db) = if ch > 1.0 { (-mean.a / ch, -mean.b / ch) } else { (8.0 / 31.05, 30.0 / 31.05) };
+    color::lab_to_srgb(color::Lab { l: 100.0 - 16.0 * k, a: 30.0 * k * da, b: 30.0 * k * db })
+}
+
+/// A dot of the field: its centre, its radius, the pixel it reads, and whether it is of the fine field.
+struct Dot {
+    x: f32,
+    y: f32,
+    r: f32,
+    i: usize,
+    fine: bool,
+}
+
+/// THE DOT PASS (see `MediumProfile::dot`; 7.15.0, `pointillism`): the picture laid as a field of hard-edged
+/// round touches of pure pigment. The sheet is sampled as a Poisson disc (`poisson_disc`) at a spacing of
+/// `dot_space` diameters opened by the key's coverage, closed in the darks (`dot_dense`) and where the picture is
+/// busy (`dot_busy`), the dot sized by the picture's detail (`dot_edge`), the gaps filled (`dot_fill`) and a
+/// second, fine field sampled at the sharp edges alone (`dot_fine`); every dot takes the picture's mean colour over
+/// its reach and, by `dot_pure`, ONE pigment from that colour's additive separation (`dot_separation`) — drawn at
+/// random, or by error diffusion along the field (`dot_diffuse`), the shadows shared among the darks
+/// (`dot_shadow`), the white given up on the flat (`dot_white`) — else the brush's subtractive mixture; each a
+/// polygon fill of the dot's disc, or of its ellipse along the contours (`dot_flow`) — a wash in the score, so the
+/// replay lays it alike — in a shuffled order so no dot's overlap on its neighbour follows the front the sampling
+/// grew by, the fillers after, the fine field last.
+fn dot_pass(canvas: &mut Canvas, score: &mut StrokeScore, pic: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (pic.width(), pic.height());
+    let (wu, hu) = (w as usize, h as usize);
+    let n = p.palette.pigments.len();
+    if wu == 0 || hu == 0 || n == 0 || p.dot <= 0.0 {
+        return;
+    }
+    let short = w.min(h) as f32;
+    let d = if p.dot_size > 0.0 { p.dot_size } else { short / 200.0 }.max(1.5);
+    let space = if p.dot_space > 0.0 { p.dot_space.clamp(0.4, 2.0) } else { 0.7 };
+    let base = (d * space / p.dot.clamp(0.05, 1.0).sqrt()).max(1.0);
+    let (edge_k, fill_k, diff_k, flow_k) = (p.dot_edge.clamp(0.0, 1.0), p.dot_fill.clamp(0.0, 1.0), p.dot_diffuse.clamp(0.0, 1.0), p.dot_flow.clamp(0.0, 1.0));
+    let (shadow_k, white_k, fine_k) = (p.dot_shadow.clamp(0.0, 1.0), p.dot_white.clamp(0.0, 1.0), p.dot_fine.clamp(0.0, 1.0));
+    let (lab_k, lap_k) = (p.dot_lab.clamp(0.0, 1.0), p.dot_lap.clamp(0.0, 1.0));
+    // The picture in linear light, each channel averaged over the dot's reach: a dot's colour is the mean of
+    // what it covers.
+    let ri = (0.5 * d).round().max(1.0) as i32;
+    let px = wu * hu;
+    let mut raw: [Vec<f32>; 3] = [vec![0.0; px], vec![0.0; px], vec![0.0; px]];
+    for (i, q) in pic.pixels().enumerate() {
+        let l = color::srgb_to_linear(q.0);
+        for c in 0..3 {
+            raw[c][i] = l[c];
+        }
+    }
+    let luma_raw: Vec<f32> = (0..px).map(|i| color::linear_luma([raw[0][i], raw[1][i], raw[2][i]])).collect();
+    let ch: [Vec<f32>; 3] = [box_blur(&raw[0], w, h, ri), box_blur(&raw[1], w, h, ri), box_blur(&raw[2], w, h, ri)];
+    // DOT FINE (see `MediumProfile::dot_fine`): the picture averaged over the fine dot's own reach.
+    let rf = (0.2 * d).round().max(1.0) as i32;
+    let chf: Option<[Vec<f32>; 3]> = (fine_k > 0.0).then(|| [box_blur(&raw[0], w, h, rf), box_blur(&raw[1], w, h, rf), box_blur(&raw[2], w, h, rf)]);
+    drop(raw);
+    let grad_xy: Option<(Vec<f32>, Vec<f32>)> = (edge_k > 0.0 || flow_k > 0.0 || fine_k > 0.0).then(|| sobel(&luma_raw, w, h));
+    // THE STRUCTURE TENSOR (see `MediumProfile::dot_edge`, `dot_flow`): the picture's gradient products smoothed
+    // over two dots' reach — its trace the detail's measure, its direction the contours'.
+    let tensor: Option<[Vec<f32>; 3]> = grad_xy.as_ref().filter(|_| edge_k > 0.0 || flow_k > 0.0).map(|(gx, gy)| {
+        let xx: Vec<f32> = gx.iter().map(|g| g * g).collect();
+        let yy: Vec<f32> = gy.iter().map(|g| g * g).collect();
+        let xy: Vec<f32> = gx.iter().zip(gy).map(|(a, b)| a * b).collect();
+        [box_blur(&xx, w, h, 2 * ri), box_blur(&yy, w, h, 2 * ri), box_blur(&xy, w, h, 2 * ri)]
+    });
+    // DOT EDGE: the size's factor — the gradient's magnitude against its 90th percentile over the sheet, the dot
+    // 1.5× on the flat and 0.4× at the sharpest edge at the full key.
+    let size_f: Option<Vec<f32>> = tensor.as_ref().filter(|_| edge_k > 0.0).map(|t| {
+        let mag: Vec<f32> = (0..px).map(|i| (t[0][i] + t[1][i]).max(0.0).sqrt()).collect();
+        let mut smp: Vec<f32> = mag.iter().step_by(37).copied().collect();
+        smp.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p90 = smp.get((0.9 * (smp.len().max(1) - 1) as f32) as usize).copied().unwrap_or(1.0).max(1e-4);
+        mag.iter().map(|m| (1.0 + edge_k * (0.5 - 1.1 * (m / p90).clamp(0.0, 1.0))).clamp(0.4, 1.5)).collect()
+    });
+    // DOT FINE: the edge zone — the raw gradient in its top tenth over the sheet, widened by the dot's radius.
+    let zone: Option<Vec<bool>> = grad_xy.as_ref().filter(|_| fine_k > 0.0).map(|(gx, gy)| {
+        let mag: Vec<f32> = gx.iter().zip(gy).map(|(a, b)| (a * a + b * b).sqrt()).collect();
+        let mut smp: Vec<f32> = mag.iter().step_by(37).copied().collect();
+        smp.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p90 = smp.get((0.9 * (smp.len().max(1) - 1) as f32) as usize).copied().unwrap_or(1.0).max(1e-4);
+        let edge_px: Vec<f32> = mag.iter().map(|m| if *m >= p90 { 1.0 } else { 0.0 }).collect();
+        box_blur(&edge_px, w, h, ri).iter().map(|v| *v > 1e-4).collect()
+    });
+    drop(grad_xy);
+    // THE COLOUR SEPARATION (see `MediumProfile::dot_pure`): the palette's masstones in linear light.
+    let mass: Vec<color::LinRgb> = p.palette.pigments.iter().map(|pg| color::srgb_to_linear(pg.masstone)).collect();
+    let lumas: Vec<f32> = mass.iter().map(|m| color::linear_luma(*m)).collect();
+    // DOT WHITE (see `MediumProfile::dot_white`): the palette's white — its lightest pigment, if light enough.
+    let white_ix: Option<usize> = (white_k > 0.0 && n > 1)
+        .then(|| (0..n).max_by(|a, b| lumas[*a].partial_cmp(&lumas[*b]).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(n - 1))
+        .filter(|ix| lumas[*ix] > 0.8);
+    // DOT DENSE / DOT BUSY (see `MediumProfile::dot_dense`, `dot_busy`): the spacing's map — closed in the darks
+    // (the value on the eye's scale) and where the picture is busy (its local deviation over two dots' reach),
+    // and scaled with the dot's size. The same deviation tells the flat passages for `dot_white`.
+    let dense = p.dot_dense.clamp(0.0, 1.0);
+    let busy_k = p.dot_busy.clamp(0.0, 1.0);
+    let sigma: Option<Vec<f32>> = (busy_k > 0.0 || white_ix.is_some()).then(|| {
+        let m = box_blur(&luma_raw, w, h, 2 * ri);
+        let sq: Vec<f32> = luma_raw.iter().zip(&m).map(|(a, b)| (a - b) * (a - b)).collect();
+        box_blur(&sq, w, h, 2 * ri).iter().map(|v| v.max(0.0).sqrt()).collect()
+    });
+    let busy: Option<Vec<f32>> = sigma.as_ref().filter(|_| busy_k > 0.0).map(|s| s.iter().map(|v| (v / 0.15).clamp(0.0, 1.0)).collect());
+    let flat: Option<Vec<f32>> = sigma.as_ref().filter(|_| white_ix.is_some()).map(|s| s.iter().map(|v| (1.0 - v / 0.06).clamp(0.0, 1.0)).collect());
+    drop(sigma);
+    let spacing_map: Vec<f32> = (0..px)
+        .map(|i| {
+            let v = color::linear_luma([ch[0][i], ch[1][i], ch[2][i]]).max(0.0).powf(1.0 / 2.2).min(1.0);
+            let b = busy.as_ref().map(|b| b[i]).unwrap_or(0.0);
+            let f = size_f.as_ref().map(|f| f[i]).unwrap_or(1.0);
+            base * f * (1.0 - 0.5 * dense * (1.0 - v)) * (1.0 - 0.5 * busy_k * b)
+        })
+        .collect();
+    let r_min = spacing_map.iter().copied().fold(f32::INFINITY, f32::min).max(1.0);
+    let r_max = spacing_map.iter().copied().fold(0.0f32, f32::max).max(r_min);
+    let at = |x: f32, y: f32| -> usize { (y.max(0.0) as usize).min(hu - 1) * wu + (x.max(0.0) as usize).min(wu - 1) };
+    let spacing = |x: f32, y: f32| -> f32 { spacing_map[at(x, y)] };
+    let mut pts = poisson_disc(wu, hu, p.seed, r_min, r_max, &spacing);
+    // The front's order undone: a dot over its neighbour is as likely either way.
+    let mut rng = DotRng(p.seed ^ 0x5147_FF1E);
+    for i in (1..pts.len()).rev() {
+        let j = ((rng.unit() * (i + 1) as f32) as usize).min(i);
+        pts.swap(i, j);
+    }
+    let size_at = |i: usize| -> f32 { d * size_f.as_ref().map(|f| f[i]).unwrap_or(1.0) };
+    // DOT FLOW (see `MediumProfile::dot_flow`): the dot's shape at a pixel — the contours' direction (its cosine
+    // and sine) and the aspect, 1 + key × the tensor's coherence; round where the picture has no direction.
+    let shape_of = |i: usize| -> (f32, f32, f32) {
+        match (&tensor, flow_k > 0.0) {
+            (Some(t), true) => {
+                let (xx, yy, xy) = (t[0][i], t[1][i], t[2][i]);
+                let tr = xx + yy;
+                let coh = if tr > 1e-9 { (((xx - yy).powi(2) + 4.0 * xy * xy).sqrt() / tr).clamp(0.0, 1.0) } else { 0.0 };
+                let th = 0.5 * (2.0 * xy).atan2(xx - yy) + std::f32::consts::FRAC_PI_2;
+                (th.cos(), th.sin(), 1.0 + flow_k * coh)
+            }
+            _ => (1.0, 0.0, 1.0),
+        }
+    };
+    let mut dots: Vec<Dot> = pts.iter().map(|q| { let i = at(q[0], q[1]); Dot { x: q[0], y: q[1], r: 0.5 * size_at(i), i, fine: false } }).collect();
+    // DOT FILL (see `MediumProfile::dot_fill`): the coverage of the field, and a smaller dot on every gap found.
+    if fill_k > 0.0 {
+        let mut cover = vec![false; px];
+        // DOT LAP (see `MediumProfile::dot_lap`): the coverage read on the dot's true ellipse, shrunk by a tenth
+        // at the full key — the 16-gon's shortfall and the ellipse's narrow axis left as gaps for the fillers.
+        let mark = |cover: &mut Vec<bool>, dt: &Dot| {
+            let (ca, sa, asp) = if lap_k > 0.0 { shape_of(dt.i) } else { (1.0, 0.0, 1.0) };
+            let shrink = 1.0 / (1.0 + 0.1 * lap_k);
+            let (ea, eb) = (dt.r * asp.sqrt() * shrink, dt.r / asp.sqrt() * shrink);
+            let rr = if lap_k > 0.0 { ea.ceil() as i64 } else { dt.r.ceil() as i64 };
+            let (cx, cy) = (dt.x as i64, dt.y as i64);
+            for yy in (cy - rr).max(0)..=(cy + rr).min(hu as i64 - 1) {
+                for xx in (cx - rr).max(0)..=(cx + rr).min(wu as i64 - 1) {
+                    let (ddx, ddy) = (xx as f32 + 0.5 - dt.x, yy as f32 + 0.5 - dt.y);
+                    let inside = if lap_k > 0.0 {
+                        let (u, v) = (ddx * ca + ddy * sa, -ddx * sa + ddy * ca);
+                        (u / ea) * (u / ea) + (v / eb) * (v / eb) <= 1.0
+                    } else {
+                        ddx * ddx + ddy * ddy <= dt.r * dt.r
+                    };
+                    if inside {
+                        cover[yy as usize * wu + xx as usize] = true;
+                    }
+                }
+            }
+        };
+        for dt in &dots {
+            mark(&mut cover, dt);
+        }
+        let step = ((d / 7.0).floor() as usize).max(1);
+        let mut gap_id = 0u64;
+        let mut y = step / 2;
+        while y < hu {
+            let mut x = step / 2;
+            while x < wu {
+                let i = y * wu + x;
+                if !cover[i] {
+                    gap_id += 1;
+                    if jitter(p.seed ^ 0x0D07_F111, gap_id) + 0.5 < fill_k {
+                        let dt = Dot { x: x as f32 + 0.5, y: y as f32 + 0.5, r: (0.3 * size_at(i)).max(1.0), i, fine: false };
+                        mark(&mut cover, &dt);
+                        dots.push(dt);
+                    }
+                }
+                x += step;
+            }
+            y += step;
+        }
+    }
+    // DOT FINE: the second field — a Poisson disc at 0.4 the spacing inside the edge zone (the sampling runs the
+    // whole sheet at the base spacing outside it, those points dropped), the dot 0.4 the size, this share of them.
+    if let Some(zone) = zone.as_ref().filter(|z| z.iter().any(|v| *v)) {
+        let rfine = (0.4 * base).max(1.0);
+        let far = base.max(rfine);
+        let sp = |x: f32, y: f32| -> f32 { if zone[at(x, y)] { rfine } else { far } };
+        let mut fid = 0u64;
+        for q in poisson_disc(wu, hu, p.seed ^ 0x0D07_F1E, rfine, far, &sp) {
+            let i = at(q[0], q[1]);
+            if !zone[i] {
+                continue;
+            }
+            fid += 1;
+            if jitter(p.seed ^ 0x0D07_F1E5, fid) + 0.5 < fine_k {
+                dots.push(Dot { x: q[0], y: q[1], r: (0.2 * d).max(0.75), i, fine: true });
+            }
+        }
+    }
+    drop(zone);
+    // The colour a dot reads: the picture at its own reach.
+    let lin_of = |dt: &Dot| -> color::LinRgb {
+        match (&chf, dt.fine) {
+            (Some(c), true) => [c[0][dt.i], c[1][dt.i], c[2][dt.i]],
+            _ => [ch[0][dt.i], ch[1][dt.i], ch[2][dt.i]],
+        }
+    };
+    // The separation's weights per colour, cached at 6 bits a channel — and, for the dots that give up the white
+    // (`dot_white`: on the flat, by the share), the separation among the chromatic pigments alone.
+    let mut sep: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let mut sep_nw: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let mut mix_cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let pure = p.dot_pure.clamp(0.0, 1.0);
+    let nd = dots.len();
+    let srgb_of: Vec<color::Srgb> = dots.iter().map(|dt| color::linear_to_srgb(lin_of(dt))).collect();
+    let is_pure: Vec<bool> = (0..nd).map(|id| pure > 0.0 && jitter(p.seed ^ 0x0D07_C0, id as u64) + 0.5 <= pure).collect();
+    let no_white: Vec<bool> = (0..nd)
+        .map(|id| {
+            is_pure[id]
+                && white_ix.is_some()
+                && flat.as_ref().map(|f| f[dots[id].i]).map(|f| f > 0.0 && jitter(p.seed ^ 0x0D07_B1, id as u64) + 0.5 < white_k * f).unwrap_or(false)
+        })
+        .collect();
+    let key_of = |c: color::Srgb| -> u32 { ((c[0] as u32 >> 2) << 12) | ((c[1] as u32 >> 2) << 6) | (c[2] as u32 >> 2) };
+    let keys: Vec<u32> = srgb_of.iter().map(|c| key_of(*c)).collect();
+    let colour_of = |kk: u32| -> color::LinRgb { color::srgb_to_linear([(((kk >> 12) & 63) * 4 + 2) as u8, (((kk >> 6) & 63) * 4 + 2) as u8, ((kk & 63) * 4 + 2) as u8]) };
+    for (id, kk) in keys.iter().enumerate() {
+        if !is_pure[id] {
+            continue;
+        }
+        match (no_white[id], white_ix) {
+            (true, Some(wix)) => {
+                sep_nw.entry(*kk).or_insert_with(|| {
+                    let sub: Vec<color::LinRgb> = mass.iter().enumerate().filter(|(ix, _)| *ix != wix).map(|(_, m)| *m).collect();
+                    let ws = dot_separation(&sub, colour_of(*kk));
+                    let mut full = vec![0f32; n];
+                    let mut j = 0;
+                    for (ix, slot) in full.iter_mut().enumerate() {
+                        if ix != wix {
+                            *slot = ws[j];
+                            j += 1;
+                        }
+                    }
+                    full
+                });
+            }
+            _ => {
+                sep.entry(*kk).or_insert_with(|| dot_separation(&mass, colour_of(*kk)));
+            }
+        }
+    }
+    let wts_of = |id: usize| -> &Vec<f32> { if no_white[id] { &sep_nw[&keys[id]] } else { &sep[&keys[id]] } };
+    // DOT SHADOW (see `MediumProfile::dot_shadow`): the palette's darks — a luma under 0.15, the darkest always —
+    // and the shadow's weight on a dot: full at a luma of 0.05 (sRGB ~63), none from 0.1 (sRGB ~89) up.
+    let lo = lumas.iter().copied().fold(f32::INFINITY, f32::min);
+    let is_dark: Vec<bool> = lumas.iter().map(|l| *l <= 0.15f32.max(lo)).collect();
+    let shadow_of = |lin: color::LinRgb| -> f32 { if shadow_k > 0.0 { shadow_k * ((0.1 - color::linear_luma(lin)) / 0.05).clamp(0.0, 1.0) } else { 0.0 } };
+    let dist2 = |a: color::LinRgb, b: color::LinRgb| -> f32 { (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2) };
+    // DOT LAB (see `MediumProfile::dot_lab`): the distance from a pigment to the colour owed — linear RGB blended
+    // by the key × the shadow's weight with CIELAB, the lightness at full weight and the chroma at a quarter (ΔE²
+    // over 10 000): the eye's distance in the darks, the additive one in the lights, where it keeps the colours.
+    let labs: Vec<color::Lab> = mass.iter().map(|m| color::linear_to_lab(*m)).collect();
+    // (the colour owed is clamped to the gamut first: an error over-shot into the negative would swing its hue)
+    let lab_of = |t: color::LinRgb| -> color::Lab { if lab_k > 0.0 { color::linear_to_lab([t[0].clamp(0.0, 1.0), t[1].clamp(0.0, 1.0), t[2].clamp(0.0, 1.0)]) } else { color::Lab { l: 0.0, a: 0.0, b: 0.0 } } };
+    let dist_of = |ix: usize, t: color::LinRgb, tl: &color::Lab, sh: f32| -> f32 {
+        let r = dist2(mass[ix], t);
+        let lw = lab_k * sh;
+        if lw > 0.0 {
+            let (m, dl) = (&labs[ix], labs[ix].l - tl.l);
+            let dc = (m.a - tl.a).powi(2) + (m.b - tl.b).powi(2);
+            (1.0 - lw) * r + lw * (dl * dl + 0.25 * dc) / 10_000.0
+        } else {
+            r
+        }
+    };
+    let mut pig: Vec<Option<usize>> = vec![None; nd];
+    // DOT DIFFUSE (see `MediumProfile::dot_diffuse`): the pure dots chosen in turn along serpentine bands of the
+    // spacing, each the nearest of its separation's pigments to the colour it owes, the miss passed on to the
+    // unchosen dots within two spacings (closer ones taking more). In the shadow (`dot_shadow`) the darks are
+    // candidates too, each charged by its share among the neighbours already laid.
+    if diff_k > 0.0 && nd > 0 {
+        let band = base.max(1.0);
+        let mut order: Vec<usize> = (0..nd).collect();
+        order.sort_by(|&a, &b| {
+            let (ba, bb) = ((dots[a].y / band) as i64, (dots[b].y / band) as i64);
+            ba.cmp(&bb).then_with(|| {
+                let (xa, xb) = if ba % 2 == 0 { (dots[a].x, dots[b].x) } else { (-dots[a].x, -dots[b].x) };
+                xa.partial_cmp(&xb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+        let reach = 2.0 * base;
+        let cell = reach.max(1.0);
+        let (gw, gh) = ((wu as f32 / cell).ceil() as usize + 1, (hu as f32 / cell).ceil() as usize + 1);
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); gw * gh];
+        for (id, dt) in dots.iter().enumerate() {
+            buckets[(dt.y / cell) as usize * gw + (dt.x / cell) as usize].push(id);
+        }
+        let mut err: Vec<[f32; 3]> = vec![[0.0; 3]; nd];
+        let mut done = vec![false; nd];
+        for &di in &order {
+            done[di] = true;
+            if !is_pure[di] {
+                continue;
+            }
+            let wts = wts_of(di);
+            let dt = &dots[di];
+            let lin = lin_of(dt);
+            let t = [lin[0] + err[di][0], lin[1] + err[di][1], lin[2] + err[di][2]];
+            let (gx, gy) = ((dt.x / cell) as i64, (dt.y / cell) as i64);
+            let sh = shadow_of(lin);
+            let tl = if lab_k * sh > 0.0 { lab_of(t) } else { color::Lab { l: 0.0, a: 0.0, b: 0.0 } };
+            // The repetition's charge: each pigment's share among the laid pure neighbours within reach.
+            let rep: Option<Vec<f32>> = (sh > 0.0).then(|| {
+                let mut cnt = vec![0f32; n];
+                let mut tot = 0f32;
+                for yy in (gy - 1).max(0)..=(gy + 1).min(gh as i64 - 1) {
+                    for xx in (gx - 1).max(0)..=(gx + 1).min(gw as i64 - 1) {
+                        for &j in &buckets[yy as usize * gw + xx as usize] {
+                            if j != di && done[j] {
+                                if let Some(pj) = pig[j] {
+                                    if (dots[j].x - dt.x).powi(2) + (dots[j].y - dt.y).powi(2) < reach * reach {
+                                        cnt[pj] += 1.0;
+                                        tot += 1.0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if tot > 0.0 {
+                    for c in cnt.iter_mut() {
+                        *c /= tot;
+                    }
+                }
+                cnt
+            });
+            let mut best: Option<(usize, f32)> = None;
+            for ix in 0..n {
+                if wts[ix] > 0.0 || (sh > 0.0 && is_dark[ix]) {
+                    let mut dd = dist_of(ix, t, &tl, sh);
+                    if let Some(r) = &rep {
+                        dd += 0.1 * sh * r[ix];
+                    }
+                    if best.map(|b| dd < b.1).unwrap_or(true) {
+                        best = Some((ix, dd));
+                    }
+                }
+            }
+            let which = best.map(|b| b.0).unwrap_or(n - 1);
+            pig[di] = Some(which);
+            let e = [((t[0] - mass[which][0]) * diff_k).clamp(-0.3, 0.3), ((t[1] - mass[which][1]) * diff_k).clamp(-0.3, 0.3), ((t[2] - mass[which][2]) * diff_k).clamp(-0.3, 0.3)];
+            let mut nb: Vec<(usize, f32)> = Vec::new();
+            for yy in (gy - 1).max(0)..=(gy + 1).min(gh as i64 - 1) {
+                for xx in (gx - 1).max(0)..=(gx + 1).min(gw as i64 - 1) {
+                    for &j in &buckets[yy as usize * gw + xx as usize] {
+                        if !done[j] && is_pure[j] {
+                            let dist = ((dots[j].x - dt.x).powi(2) + (dots[j].y - dt.y).powi(2)).sqrt();
+                            if dist < reach {
+                                nb.push((j, 1.0 - dist / reach));
+                            }
+                        }
+                    }
+                }
+            }
+            let tot: f32 = nb.iter().map(|q| q.1).sum();
+            if tot > 1e-6 {
+                for (j, wj) in nb {
+                    for c in 0..3 {
+                        err[j][c] += e[c] * wj / tot;
+                    }
+                }
+            }
+        }
+    }
+    // The dots laid: the Poisson field in its shuffled order, the fillers after, the fine field last.
+    let poly: Vec<[f32; 2]> = (0..16)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 16.0;
+            [a.cos(), a.sin()]
+        })
+        .collect();
+    for (id, dt) in dots.iter().enumerate() {
+        let srgb = srgb_of[id];
+        let load: Vec<f32> = if is_pure[id] {
+            let which = match pig[id] {
+                Some(wh) => wh,
+                None => {
+                    let pick = jitter(p.seed ^ 0x0D07_C1, id as u64) + 0.5;
+                    let lin = lin_of(dt);
+                    let sh = shadow_of(lin);
+                    let mut wh = n - 1;
+                    if sh > 0.0 && jitter(p.seed ^ 0x0D07_5D, id as u64) + 0.5 < sh {
+                        // The shadow's draw among the darks, the nearer the likelier.
+                        let ll = lab_of(lin);
+                        let ws: Vec<f32> = (0..n).map(|ix| if is_dark[ix] { 1.0 / (dist_of(ix, lin, &ll, sh) + 0.02) } else { 0.0 }).collect();
+                        let tot: f32 = ws.iter().sum();
+                        let mut acc = 0.0;
+                        for (ix, wv) in ws.iter().enumerate() {
+                            acc += wv / tot.max(1e-6);
+                            if pick < acc {
+                                wh = ix;
+                                break;
+                            }
+                        }
+                    } else {
+                        let mut acc = 0.0;
+                        for (ix, wv) in wts_of(id).iter().enumerate() {
+                            acc += wv;
+                            if pick < acc {
+                                wh = ix;
+                                break;
+                            }
+                        }
+                    }
+                    wh
+                }
+            };
+            let mut v = vec![0f32; n];
+            v[which] = p.charge;
+            v
+        } else {
+            mixture_cached(&mut mix_cache, srgb, &p.palette, p.charge, n)
+        };
+        if load.iter().all(|v| *v <= 0.0) {
+            continue;
+        }
+        // The disc drawn out along the contours by the dot's shape (`dot_flow`), its area kept.
+        let (ca, sa, asp) = shape_of(dt.i);
+        let (ea, eb) = (dt.r * asp.sqrt(), dt.r / asp.sqrt());
+        let ring: Vec<[f32; 2]> = poly.iter().map(|v| { let (ex, ey) = (v[0] * ea, v[1] * eb); [dt.x + ex * ca - ey * sa, dt.y + ex * sa + ey * ca] }).collect();
+        canvas.fill_rings(&ring, &load, DOT_WET, 0.0);
+        let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(ix, v)| (p.palette.pigments[ix].name.to_string(), *v)).collect();
+        *placed += 1;
+        *k += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "dot".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: DOT_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(srgb), mix2: None, smudge: None, stop: None, edge: None, prof: None });
+    }
+}
+
 #[cfg(test)]
 mod blade_tests {
     use super::*;
@@ -14372,5 +15043,390 @@ mod blade_tests {
             let p = out.get_pixel(x, 0).0;
             assert!(p[2] > 0 && p[0] == 0 && p[1] == 0, "blue stays blue: {p:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dot_tests {
+    use super::*;
+
+    #[test]
+    fn the_separation_builds_an_orange_from_red_and_yellow_dots() {
+        let pal = crate::paint::palette::DIVISIONIST;
+        let mass: Vec<color::LinRgb> = pal.pigments.iter().map(|pg| color::srgb_to_linear(pg.masstone)).collect();
+        let red = color::srgb_to_linear(crate::paint::palette::CADMIUM_RED.masstone);
+        let yel = color::srgb_to_linear(crate::paint::palette::CADMIUM_YELLOW.masstone);
+        let target = [0.5 * (red[0] + yel[0]), 0.5 * (red[1] + yel[1]), 0.5 * (red[2] + yel[2])];
+        let w = dot_separation(&mass, target);
+        assert_eq!(w.len(), pal.pigments.len());
+        assert!((w.iter().sum::<f32>() - 1.0).abs() < 1e-3, "the weights sum to one: {w:?}");
+        let share = |names: &[&str]| -> f32 { w.iter().enumerate().filter(|(i, _)| names.contains(&pal.pigments[*i].name)).map(|(_, v)| v).sum() };
+        let warm = share(&["cadmium-red", "cadmium-yellow", "cadmium-orange", "lemon-yellow"]);
+        let cool = share(&["ultramarine-blue", "cerulean-blue", "dioxazine-purple", "viridian", "sap-green"]);
+        assert!(warm > 0.9, "an orange from the warm pigments: {w:?}");
+        assert!(cool < 0.05, "no blue in an orange: {w:?}");
+        let mut c = [0f32; 3];
+        for (wi, m) in w.iter().zip(&mass) {
+            for ch in 0..3 {
+                c[ch] += wi * m[ch];
+            }
+        }
+        for ch in 0..3 {
+            assert!((c[ch] - target[ch]).abs() < 0.03, "the mix lands on the target: {c:?} vs {target:?}");
+        }
+    }
+
+    #[test]
+    fn the_poisson_disc_keeps_its_spacing_and_fills_the_sheet() {
+        let pts = poisson_disc(200, 200, 7, 8.0, 8.0, &|_, _| 8.0);
+        assert!(pts.len() > 250 && pts.len() < 800, "a packing between the loosest and the tightest: {}", pts.len());
+        for i in 0..pts.len() {
+            for j in 0..i {
+                let d2 = (pts[i][0] - pts[j][0]).powi(2) + (pts[i][1] - pts[j][1]).powi(2);
+                assert!(d2 >= 64.0 * 0.999, "no two closer than the spacing: {:?} {:?}", pts[i], pts[j]);
+            }
+        }
+        let mut cells = vec![false; 100];
+        for q in &pts {
+            cells[(q[1] / 20.0) as usize * 10 + (q[0] / 20.0) as usize] = true;
+        }
+        assert!(cells.iter().all(|c| *c), "every 20 px cell holds a sample");
+        assert_eq!(pts, poisson_disc(200, 200, 7, 8.0, 8.0, &|_, _| 8.0), "the sampling is a function of the seed");
+        assert_ne!(pts, poisson_disc(200, 200, 8, 8.0, 8.0, &|_, _| 8.0));
+        // A field: the spacing doubled on the right half gives fewer samples there.
+        let pts = poisson_disc(200, 200, 7, 6.0, 12.0, &|x, _| if x < 100.0 { 6.0 } else { 12.0 });
+        let (l, r) = pts.iter().fold((0usize, 0usize), |(l, r), q| if q[0] < 100.0 { (l + 1, r) } else { (l, r + 1) });
+        assert!(l > 2 * r, "the dense half holds more: {l} vs {r}");
+    }
+
+    #[test]
+    fn the_dot_pass_lays_single_pigments_that_average_to_the_picture() {
+        let pal = crate::paint::palette::DIVISIONIST;
+        let (w, h) = (160u32, 120u32);
+        let tgt = [225u8, 120, 40];
+        let img = RgbImage::from_pixel(w, h, image::Rgb(tgt));
+        let mut p = PaintParams::new(pal, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.seed = 3;
+        let header = ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let mut canvas = Canvas::white(w, h, pal, 0.85);
+        let mut score = StrokeScore { header, strokes: Vec::new() };
+        let (mut placed, mut k) = (0usize, 0u64);
+        dot_pass(&mut canvas, &mut score, &img, &p, &mut placed, &mut k);
+        assert!(placed > 200, "a field of dots: {placed}");
+        assert!(score.strokes.iter().all(|s| s.wash && s.stage == "dot" && s.mix.len() == 1), "every dot one pure pigment");
+        let names: std::collections::HashSet<&str> = score.strokes.iter().map(|s| s.mix[0].0.as_str()).collect();
+        assert!(names.len() >= 2, "a separation, not one pigment: {names:?}");
+        assert!(names.iter().all(|nm| !nm.contains("blue") && !nm.contains("purple")), "no blue in an orange: {names:?}");
+        let out = canvas.to_image();
+        let want = color::srgb_to_linear(tgt);
+        let (mut acc, mut cnt) = ([0f32; 3], 0usize);
+        for y in 16..h - 16 {
+            for x in 16..w - 16 {
+                let l = color::srgb_to_linear(out.get_pixel(x, y).0);
+                for c in 0..3 {
+                    acc[c] += l[c];
+                }
+                cnt += 1;
+            }
+        }
+        for c in 0..3 {
+            let got = acc[c] / cnt as f32;
+            assert!((got - want[c]).abs() < 0.08, "the dots average to the picture in linear light: channel {c} {got:.3} vs {:.3}", want[c]);
+        }
+        // Without the key nothing is laid.
+        let mut canvas2 = Canvas::white(w, h, pal, 0.85);
+        let mut score2 = StrokeScore { header: score.header.clone(), strokes: Vec::new() };
+        let (mut placed2, mut k2) = (0usize, 0u64);
+        let mut p2 = p.clone();
+        p2.dot = 0.0;
+        dot_pass(&mut canvas2, &mut score2, &img, &p2, &mut placed2, &mut k2);
+        assert_eq!(placed2, 0);
+    }
+
+    fn dot_header(w: u32, h: u32) -> ScoreHeader {
+        ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None }
+    }
+
+    fn run_dots(img: &RgbImage, p: &PaintParams) -> (Canvas, StrokeScore) {
+        let pal = crate::paint::palette::DIVISIONIST;
+        let mut canvas = Canvas::white(img.width(), img.height(), pal, 0.85);
+        let mut score = StrokeScore { header: dot_header(img.width(), img.height()), strokes: Vec::new() };
+        let (mut placed, mut k) = (0usize, 0u64);
+        dot_pass(&mut canvas, &mut score, img, p, &mut placed, &mut k);
+        (canvas, score)
+    }
+
+    fn ring_extent(s: &StrokeRecord) -> (f32, f32) {
+        let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for q in &s.spline {
+            x0 = x0.min(q[0]);
+            x1 = x1.max(q[0]);
+            y0 = y0.min(q[1]);
+            y1 = y1.max(q[1]);
+        }
+        (x1 - x0, y1 - y0)
+    }
+
+    #[test]
+    fn the_edge_key_sizes_the_dots_small_at_the_detail_and_large_on_the_flat() {
+        // The left half a flat grey, the right a fine checker: the dots small on the right, large on the left.
+        let (w, h) = (240u32, 120u32);
+        let img = RgbImage::from_fn(w, h, |x, y| if x < 120 { image::Rgb([128, 128, 128]) } else if (x / 3 + y / 3) % 2 == 0 { image::Rgb([40, 40, 40]) } else { image::Rgb([215, 215, 215]) });
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_pure = 1.0;
+        p.seed = 5;
+        let mean_w = |score: &StrokeScore, left: bool| -> f32 {
+            let v: Vec<f32> = score.strokes.iter().filter(|s| { let x = s.spline[0][0]; if left { x > 10.0 && x < 110.0 } else { x > 130.0 && x < 230.0 } }).map(|s| ring_extent(s).0).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        let (_, plain) = run_dots(&img, &p);
+        let (pl, pr) = (mean_w(&plain, true), mean_w(&plain, false));
+        assert!((pl - pr).abs() < 0.5, "without the key one size: {pl} vs {pr}");
+        p.dot_edge = 1.0;
+        let (_, edged) = run_dots(&img, &p);
+        let (el, er) = (mean_w(&edged, true), mean_w(&edged, false));
+        assert!(el > 1.3 * pl && er < 0.6 * pr, "large on the flat, small at the detail: {el} / {er} against {pl}");
+    }
+
+    #[test]
+    fn the_fill_covers_the_ground_between_the_dots() {
+        let (w, h) = (160u32, 120u32);
+        let img = RgbImage::from_pixel(w, h, image::Rgb([60, 70, 120]));
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 10.0;
+        p.dot_space = 0.9;
+        p.dot_pure = 1.0;
+        p.seed = 7;
+        let white_share = |c: &Canvas| -> f32 {
+            let out = c.to_image();
+            let mut n = 0usize;
+            for y in 16..h - 16 {
+                for x in 16..w - 16 {
+                    if out.get_pixel(x, y).0.iter().all(|v| *v > 245) {
+                        n += 1;
+                    }
+                }
+            }
+            n as f32 / ((w - 32) * (h - 32)) as f32
+        };
+        let (open, _) = run_dots(&img, &p);
+        let gaps = white_share(&open);
+        assert!(gaps > 0.03, "a loose field shows the ground: {gaps}");
+        p.dot_fill = 1.0;
+        let (filled, score) = run_dots(&img, &p);
+        let left = white_share(&filled);
+        assert!(left < 0.01, "the fill covers the ground: {left}");
+        assert!(score.strokes.iter().any(|s| ring_extent(s).0 < 7.0), "the fillers are the smaller dots");
+    }
+
+    #[test]
+    fn the_diffusion_alternates_the_colours_instead_of_clumping_them() {
+        // An orange field: with diffusion every block of the sheet holds the red share evenly.
+        let (w, h) = (200u32, 200u32);
+        let img = RgbImage::from_pixel(w, h, image::Rgb([225, 120, 40]));
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.seed = 11;
+        let spread = |score: &StrokeScore| -> f32 {
+            let mut cnt = vec![(0usize, 0usize); 25];
+            for s in &score.strokes {
+                let b = ((s.spline[0][1] / 40.0) as usize).min(4) * 5 + ((s.spline[0][0] / 40.0) as usize).min(4);
+                cnt[b].1 += 1;
+                if s.mix[0].0 == "cadmium-red" {
+                    cnt[b].0 += 1;
+                }
+            }
+            let shares: Vec<f32> = cnt.iter().map(|(r, t)| *r as f32 / (*t).max(1) as f32).collect();
+            let m = shares.iter().sum::<f32>() / 25.0;
+            (shares.iter().map(|s| (s - m) * (s - m)).sum::<f32>() / 25.0).sqrt()
+        };
+        let (_, random) = run_dots(&img, &p);
+        p.dot_diffuse = 1.0;
+        let (_, diffused) = run_dots(&img, &p);
+        let (sr, sd) = (spread(&random), spread(&diffused));
+        assert!(sd < 0.6 * sr, "the red share even across the blocks: {sd} vs {sr} at random");
+        let names: std::collections::HashSet<&str> = diffused.strokes.iter().map(|s| s.mix[0].0.as_str()).collect();
+        assert!(names.len() >= 2 && names.iter().all(|nm| !nm.contains("blue")), "still a separation of the warm pigments: {names:?}");
+    }
+
+    #[test]
+    fn the_flow_draws_the_dots_out_along_the_contours() {
+        // Horizontal stripes: the contours run along x, so the dots stretch along x.
+        let (w, h) = (160u32, 160u32);
+        let img = RgbImage::from_fn(w, h, |_, y| if (y / 12) % 2 == 0 { image::Rgb([60, 60, 60]) } else { image::Rgb([200, 200, 200]) });
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_pure = 1.0;
+        p.seed = 13;
+        let aspect = |score: &StrokeScore| -> f32 {
+            let v: Vec<f32> = score.strokes.iter().map(|s| { let (a, b) = ring_extent(s); a / b.max(1e-3) }).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        let (_, round) = run_dots(&img, &p);
+        assert!((aspect(&round) - 1.0).abs() < 0.02, "round without the key: {}", aspect(&round));
+        p.dot_flow = 1.0;
+        let (_, flowed) = run_dots(&img, &p);
+        assert!(aspect(&flowed) > 1.4, "drawn out along the stripes: {}", aspect(&flowed));
+    }
+    #[test]
+    fn the_shadow_key_shares_the_dark_among_the_palettes_darks() {
+        // A near-black field: alone, the separation lays the violet nearly everywhere; by the key the darks share.
+        let (w, h) = (200u32, 200u32);
+        let img = RgbImage::from_pixel(w, h, image::Rgb([30, 25, 35]));
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.dot_diffuse = 1.0;
+        p.seed = 5;
+        let share = |score: &StrokeScore, name: &str| -> f32 { score.strokes.iter().filter(|s| s.mix[0].0 == name).count() as f32 / score.strokes.len().max(1) as f32 };
+        let (_, plain) = run_dots(&img, &p);
+        let dio_plain = share(&plain, "dioxazine-purple");
+        assert!(dio_plain > 0.9, "the violet alone without the key: {dio_plain}");
+        p.dot_shadow = 1.0;
+        let (_, shared) = run_dots(&img, &p);
+        let dio = share(&shared, "dioxazine-purple");
+        assert!(dio < dio_plain - 0.1 && dio > 0.2, "the violet shared with the other darks: {dio} vs {dio_plain}");
+        let names: std::collections::HashSet<&str> = shared.strokes.iter().map(|s| s.mix[0].0.as_str()).collect();
+        assert!(names.len() >= 2 && names.iter().all(|nm| !nm.contains("white") && !nm.contains("yellow") && !nm.contains("orange")), "the darks only: {names:?}");
+        p.dot_diffuse = 0.0;
+        let (_, drawn) = run_dots(&img, &p);
+        let dio_drawn = share(&drawn, "dioxazine-purple");
+        assert!(dio_drawn < 0.9 && dio_drawn > 0.2, "the draw among the darks without diffusion: {dio_drawn}");
+    }
+
+    #[test]
+    fn the_white_key_keeps_the_pure_white_off_the_flat_and_leaves_it_in_the_busy() {
+        // The left half a flat pale sky, the right a strong pale checker: the key takes the white off the left.
+        let (w, h) = (240u32, 120u32);
+        let img = RgbImage::from_fn(w, h, |x, y| if x < 120 { image::Rgb([200, 215, 240]) } else if (x / 3 + y / 3) % 2 == 0 { image::Rgb([150, 170, 210]) } else { image::Rgb([235, 240, 250]) });
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.dot_diffuse = 1.0;
+        p.seed = 7;
+        let white = |score: &StrokeScore, left: bool| -> f32 {
+            let side: Vec<&StrokeRecord> = score.strokes.iter().filter(|s| if left { s.spline[0][0] < 96.0 } else { s.spline[0][0] > 144.0 }).collect();
+            side.iter().filter(|s| s.mix[0].0 == "titanium-white").count() as f32 / side.len().max(1) as f32
+        };
+        let (_, plain) = run_dots(&img, &p);
+        assert!(white(&plain, true) > 0.3, "the sky takes white without the key: {}", white(&plain, true));
+        p.dot_white = 1.0;
+        let (_, keyed) = run_dots(&img, &p);
+        assert!(white(&keyed, true) == 0.0, "no white on the flat sky: {}", white(&keyed, true));
+        assert!(white(&keyed, false) > 0.15, "the white kept where the picture is busy: {}", white(&keyed, false));
+        let names: std::collections::HashSet<&str> = keyed.strokes.iter().filter(|s| s.spline[0][0] < 96.0).map(|s| s.mix[0].0.as_str()).collect();
+        assert!(names.len() >= 2 && (names.contains("cerulean-blue") || names.contains("lemon-yellow")), "the light in the lightest colours: {names:?}");
+    }
+
+    #[test]
+    fn the_fine_key_lays_a_second_field_of_small_dots_at_the_edges_only() {
+        // One vertical edge: the fine dots lie along it and nowhere else; without the key no dot is small.
+        let (w, h) = (200u32, 120u32);
+        let img = RgbImage::from_fn(w, h, |x, _| if x < 100 { image::Rgb([60, 60, 60]) } else { image::Rgb([200, 200, 200]) });
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.seed = 9;
+        let (_, plain) = run_dots(&img, &p);
+        assert!(plain.strokes.iter().all(|s| ring_extent(s).0 > 5.0), "no small dot without the key");
+        p.dot_fine = 1.0;
+        let (_, keyed) = run_dots(&img, &p);
+        let fine: Vec<&StrokeRecord> = keyed.strokes.iter().filter(|s| ring_extent(s).0 < 5.0).collect();
+        assert!(fine.len() > 30, "a fine field along the edge: {}", fine.len());
+        assert!(fine.iter().all(|s| (s.spline[0][0] - 100.0).abs() < 14.0), "the fine dots at the edge only");
+        assert!(keyed.strokes.len() - fine.len() == plain.strokes.len(), "the main field as it was");
+        let last_main = keyed.strokes.iter().rposition(|s| ring_extent(s).0 >= 5.0).unwrap();
+        let first_fine = keyed.strokes.iter().position(|s| ring_extent(s).0 < 5.0).unwrap();
+        assert!(first_fine > last_main, "the fine field laid last");
+    }
+    #[test]
+    fn the_lab_key_lets_the_ultramarine_into_the_cool_shadow() {
+        // A near-black field with the shadow shared: in linear RGB the ultramarine never comes; by the eye's
+        // distance (lightness first) it stands beside the violet.
+        let (w, h) = (200u32, 200u32);
+        let img = RgbImage::from_pixel(w, h, image::Rgb([30, 25, 35]));
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 8.0;
+        p.dot_space = 0.6;
+        p.dot_pure = 1.0;
+        p.dot_diffuse = 1.0;
+        p.dot_shadow = 1.0;
+        p.seed = 5;
+        let share = |score: &StrokeScore, name: &str| -> f32 { score.strokes.iter().filter(|s| s.mix[0].0 == name).count() as f32 / score.strokes.len().max(1) as f32 };
+        let (_, rgb) = run_dots(&img, &p);
+        assert!(share(&rgb, "ultramarine-blue") < 0.03, "no ultramarine by the linear distance: {}", share(&rgb, "ultramarine-blue"));
+        p.dot_lab = 1.0;
+        let (_, lab) = run_dots(&img, &p);
+        let ultra = share(&lab, "ultramarine-blue");
+        assert!(ultra > 0.08, "the ultramarine in the shadow by the eye's distance: {ultra}");
+        assert!(share(&lab, "dioxazine-purple") > 0.3, "the violet still the shadow's body: {}", share(&lab, "dioxazine-purple"));
+        let names: std::collections::HashSet<&str> = lab.strokes.iter().map(|s| s.mix[0].0.as_str()).collect();
+        assert!(names.iter().all(|nm| !nm.contains("white") && !nm.contains("yellow")), "the darks only: {names:?}");
+    }
+
+    #[test]
+    fn the_lap_key_closes_the_specks_the_ellipses_leave() {
+        // Stripes draw the dots out; the circle's coverage over-claims across them and specks remain; the true
+        // ellipse shrunk leaves none.
+        let (w, h) = (160u32, 160u32);
+        let img = RgbImage::from_fn(w, h, |_, y| if (y / 12) % 2 == 0 { image::Rgb([50, 60, 110]) } else { image::Rgb([90, 100, 150]) });
+        let mut p = PaintParams::new(crate::paint::palette::DIVISIONIST, 100_000);
+        p.dot = 1.0;
+        p.dot_size = 10.0;
+        p.dot_space = 0.9;
+        p.dot_pure = 0.0; // the mixture: a dark blue dot is never white, so white is the ground alone
+        p.dot_flow = 1.0;
+        p.dot_fill = 1.0;
+        p.seed = 7;
+        let white_share = |c: &Canvas| -> f32 {
+            let out = c.to_image();
+            let mut n = 0usize;
+            for y in 16..h - 16 {
+                for x in 16..w - 16 {
+                    if out.get_pixel(x, y).0.iter().all(|v| *v > 245) {
+                        n += 1;
+                    }
+                }
+            }
+            n as f32 / ((w - 32) * (h - 32)) as f32
+        };
+        let (circle, _) = run_dots(&img, &p);
+        let specks = white_share(&circle);
+        p.dot_lap = 1.0;
+        let (ellipse, _) = run_dots(&img, &p);
+        let left = white_share(&ellipse);
+        assert!(left < 0.5 * specks.max(1e-4) && left < 0.003, "the specks closed: {left} vs {specks}");
+    }
+
+    #[test]
+    fn the_tone_ground_is_the_complement_of_the_pictures_mean() {
+        let blue = RgbImage::from_pixel(40, 40, image::Rgb([100, 140, 220]));
+        let t = dot_tone_ground(&blue, 1.0);
+        assert!(t[0] > t[2] + 30 && t[0] > 180, "a warm light ground under a blue picture: {t:?}");
+        let warm = RgbImage::from_pixel(40, 40, image::Rgb([220, 160, 90]));
+        let c = dot_tone_ground(&warm, 1.0);
+        assert!(c[2] > c[0] && c[2] > 170, "a cool light ground under a warm picture: {c:?}");
+        let faint = dot_tone_ground(&blue, 0.0);
+        assert!(faint.iter().all(|v| *v >= 250), "no key, a white ground: {faint:?}");
+        let half = dot_tone_ground(&blue, 0.5);
+        assert!(half[0] > half[2] && half[0] >= t[0] && half[2] > t[2], "half the tone lighter and fainter: {half:?} vs {t:?}");
     }
 }

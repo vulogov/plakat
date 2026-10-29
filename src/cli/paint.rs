@@ -1853,6 +1853,23 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.brush.heel = plan.medium.blade_heel;
     params.brush.dirty = plan.medium.blade_dirty;
     params.brush.tear = plan.medium.blade_tear;
+    params.dot = plan.medium.dot;
+    params.dot_size = plan.medium.dot_size;
+    params.dot_space = plan.medium.dot_space;
+    params.dot_dense = plan.medium.dot_dense;
+    params.dot_busy = plan.medium.dot_busy;
+    params.dot_pure = plan.medium.dot_pure;
+    params.dot_ground = plan.medium.dot_ground;
+    params.dot_edge = plan.medium.dot_edge;
+    params.dot_fill = plan.medium.dot_fill;
+    params.dot_diffuse = plan.medium.dot_diffuse;
+    params.dot_flow = plan.medium.dot_flow;
+    params.dot_shadow = plan.medium.dot_shadow;
+    params.dot_white = plan.medium.dot_white;
+    params.dot_fine = plan.medium.dot_fine;
+    params.dot_lab = plan.medium.dot_lab;
+    params.dot_lap = plan.medium.dot_lap;
+    params.dot_tone = plan.medium.dot_tone;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2801,6 +2818,23 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.brush.heel = m.blade_heel;
         params.brush.dirty = m.blade_dirty;
         params.brush.tear = m.blade_tear;
+        params.dot = m.dot;
+        params.dot_size = m.dot_size;
+        params.dot_space = m.dot_space;
+        params.dot_dense = m.dot_dense;
+        params.dot_busy = m.dot_busy;
+        params.dot_pure = m.dot_pure;
+        params.dot_ground = m.dot_ground;
+        params.dot_edge = m.dot_edge;
+        params.dot_fill = m.dot_fill;
+        params.dot_diffuse = m.dot_diffuse;
+        params.dot_flow = m.dot_flow;
+        params.dot_shadow = m.dot_shadow;
+        params.dot_white = m.dot_white;
+        params.dot_fine = m.dot_fine;
+        params.dot_lab = m.dot_lab;
+        params.dot_lap = m.dot_lap;
+        params.dot_tone = m.dot_tone;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3026,6 +3060,35 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.blade_heel { params.brush.heel = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_dirty { params.brush.dirty = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.blade_tear { params.brush.tear = v.clamp(0.0, 1.0); }
+        // THE DOTS (see `PlanMedium::dot`): the pointillism keys.
+        if let Some(v) = pl.dot { params.dot = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_size { params.dot_size = v.clamp(0.0, 400.0); }
+        if let Some(v) = pl.dot_space { params.dot_space = v.clamp(0.0, 2.0); }
+        if let Some(v) = pl.dot_dense { params.dot_dense = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_busy { params.dot_busy = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_pure { params.dot_pure = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_ground { params.dot_ground = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_edge { params.dot_edge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_fill { params.dot_fill = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_diffuse { params.dot_diffuse = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_flow { params.dot_flow = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_shadow { params.dot_shadow = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_white { params.dot_white = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_fine { params.dot_fine = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_lab { params.dot_lab = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_lap { params.dot_lap = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dot_tone { params.dot_tone = v.clamp(0.0, 1.0); }
+        // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
+        // toned gap between dots is a stain, the white between them the divisionists' light.
+        if params.dot > 0.0 {
+            params.ground = None;
+            // DOT TONE (see `MediumProfile::dot_tone`): or the ground toned to the complement of the picture's mean.
+            if params.dot_tone > 0.0 {
+                let tone = painter::dot_tone_ground(&img, params.dot_tone);
+                params.ground = Some(tone);
+                found!(style("·").dim(), "pointillism: the ground toned rgb({}, {}, {}) — the complement of the picture's mean", tone[0], tone[1], tone[2]);
+            }
+        }
         if let Some(v) = pl.blade_bed { params.brush.bed = v.clamp(0.0, 1.0); }
         // BLADE KNIVES (see `PlanMedium::blade_knives`): the plan's own ladder of knife widths.
         if let Some(k) = pl.blade_knives.as_ref().filter(|v| !v.is_empty()) { brush_sizes = k.iter().map(|v| v.max(1.0)).collect(); }
@@ -3838,7 +3901,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         // IMPRIMATURA: an opaque painting begun from nothing is begun on a TONED ground — the picture's own
         // mean colour (in linear light) — so where a broad mark leaves a gap, the gap is the picture's tone,
         // not a fleck of white priming. A transparent medium keeps its paper: the paper is its light.
-        if params.ground.is_some() {
+        if params.ground.is_some() && params.dot <= 0.0 {
             let lin = |v: u8| { let c = v as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
             let mut acc = [0.0f64; 3];
             for px in img.pixels() {
