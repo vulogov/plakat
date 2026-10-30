@@ -1870,6 +1870,23 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.dot_lab = plan.medium.dot_lab;
     params.dot_lap = plan.medium.dot_lap;
     params.dot_tone = plan.medium.dot_tone;
+    params.aqua = plan.medium.aqua;
+    params.aqua_planes = plan.medium.aqua_planes;
+    params.aqua_reserve = plan.medium.aqua_reserve;
+    params.aqua_wet = plan.medium.aqua_wet;
+    params.aqua_grade = plan.medium.aqua_grade;
+    params.aqua_detail = plan.medium.aqua_detail;
+    params.aqua_soft = plan.medium.aqua_soft;
+    params.aqua_rim = plan.medium.aqua_rim;
+    params.aqua_bloom = plan.medium.aqua_bloom;
+    params.aqua_grain = plan.medium.aqua_grain;
+    params.aqua_mark = plan.medium.aqua_mark;
+    params.aqua_grain_mid = plan.medium.aqua_grain_mid;
+    params.aqua_grain_wet = plan.medium.aqua_grain_wet;
+    params.aqua_lip = plan.medium.aqua_lip;
+    params.aqua_mass = plan.medium.aqua_mass;
+    params.aqua_barrier = plan.medium.aqua_barrier;
+    params.aqua_body = plan.medium.aqua_body;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2441,6 +2458,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
+        if a.diffuse.is_none() {
+            a.diffuse = plan.diffuse;
+        }
         if a.leak.is_none() {
             a.leak = plan.leak;
         }
@@ -2835,6 +2855,23 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.dot_lab = m.dot_lab;
         params.dot_lap = m.dot_lap;
         params.dot_tone = m.dot_tone;
+        params.aqua = m.aqua;
+        params.aqua_planes = m.aqua_planes;
+        params.aqua_reserve = m.aqua_reserve;
+        params.aqua_wet = m.aqua_wet;
+        params.aqua_grade = m.aqua_grade;
+        params.aqua_detail = m.aqua_detail;
+        params.aqua_soft = m.aqua_soft;
+        params.aqua_rim = m.aqua_rim;
+        params.aqua_bloom = m.aqua_bloom;
+        params.aqua_grain = m.aqua_grain;
+        params.aqua_mark = m.aqua_mark;
+        params.aqua_grain_mid = m.aqua_grain_mid;
+        params.aqua_grain_wet = m.aqua_grain_wet;
+        params.aqua_lip = m.aqua_lip;
+        params.aqua_mass = m.aqua_mass;
+        params.aqua_barrier = m.aqua_barrier;
+        params.aqua_body = m.aqua_body;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3078,6 +3115,23 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.dot_lab { params.dot_lab = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dot_lap { params.dot_lap = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dot_tone { params.dot_tone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua { params.aqua = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_planes { params.aqua_planes = v.clamp(0.0, 12.0); }
+        if let Some(v) = pl.aqua_reserve { params.aqua_reserve = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_wet { params.aqua_wet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grade { params.aqua_grade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_detail { params.aqua_detail = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_soft { params.aqua_soft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_rim { params.aqua_rim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_bloom { params.aqua_bloom = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain { params.aqua_grain = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_mark { params.aqua_mark = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain_mid { params.aqua_grain_mid = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain_wet { params.aqua_grain_wet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_lip { params.aqua_lip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_mass { params.aqua_mass = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_barrier { params.aqua_barrier = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_body { params.aqua_body = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {

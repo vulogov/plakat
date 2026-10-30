@@ -91,6 +91,14 @@ pub struct Canvas {
     /// The cloth's seed for the knife's DRAG (see `BrushConfig::drag`, `linen_uv`): the same linen the finish's
     /// `weave` shows. 0 until set (`with_cloth_seed`).
     pub cloth_seed: u64,
+    /// The paper tooth's scale for the water's granulation (see `set_grain_scale`); 1 = pixel scale.
+    grain_scale: f32,
+    /// The water's granulation as a BELL of the sheet's lightness (see `set_grain_water`); 0 = flat.
+    grain_bell: f32,
+    /// The water's granulation BLURRED where the sheet is wet (see `set_grain_water`); 0 = off.
+    grain_wet: f32,
+    /// The tide line's WETNESS BARRIER (0 = off; see `set_rim_barrier`, `flow`).
+    rim_barrier: f32,
     /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
     /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
     /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
@@ -172,7 +180,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -521,6 +529,30 @@ impl Canvas {
     }
 
     /// Remember the film as it is now (see `BrushConfig::film_cap`): the start of a wash pass.
+    /// THE TOOTH'S SCALE for the granulation in the water (see `flow`): the paper's grain read at `scale` pixels
+    /// per unit — 1 (the default) is the engine's pixel-scale tooth; the aqua schedule sets a 512th of the short
+    /// side, so a cold-pressed sheet's mottle is the same size on a 2048 sheet as on a 512 one.
+    pub fn set_grain_scale(&mut self, scale: f32) {
+        self.grain_scale = scale.max(1.0);
+    }
+
+    /// THE WATER'S GRANULATION (see `flow`; the aqua schedule's `aqua_grain_mid` and `aqua_grain_wet`): the
+    /// grain's amplitude a BELL of the sheet's LIGHTNESS there — sin(πL)^(2·bell) — full in the midtones and
+    /// dying in the deep darks (binder and pigment cover the tooth) and in the lights (nearly clear water); and
+    /// the grain BLURRED where the sheet is WET by `wet` (0..1; the water's depth 0.6..0.95 read as 0..1, so a
+    /// dry brush's 0.45 is not wet, a wash on dry paper half, a wetted sheet fully): the water diffuses the fine
+    /// speckle and leaves the coarse mottle. 0 and 0 (the default) = the engine's flat, pixel-sharp grain.
+    pub fn set_grain_water(&mut self, bell: f32, wet: f32) {
+        self.grain_bell = bell.clamp(0.0, 1.0);
+        self.grain_wet = wet.clamp(0.0, 1.0);
+    }
+
+    /// THE TIDE LINE'S WETNESS BARRIER (see `flow`; the aqua schedule's `aqua_barrier`): the rim scaled by the
+    /// step of wetness across the boundary, by `k` (0..1; 0 = the load's contrast alone, the old rule).
+    pub fn set_rim_barrier(&mut self, k: f32) {
+        self.rim_barrier = k.clamp(0.0, 1.0);
+    }
+
     pub fn mark_film(&mut self) {
         self.film_mark = self.film.clone();
         if self.transmittance || self.seep {
@@ -754,6 +786,134 @@ impl Canvas {
         }
     }
 
+    /// BACKRUNS (the aqua pass's `aqua_bloom`; see `MediumProfile::aqua_bloom`): water run back into a drying
+    /// wash pushes the pigment still in the water outward and leaves it in a ragged ring with a lighter heart —
+    /// the cauliflower. Seeds on a jittered grid of three reaches over the wet layer (the pass's own deposit
+    /// since `mark_film`), each by `strength`'s chance where the layer is wet enough; within a seed's reach
+    /// (`radius`, varied ±40%) the fresh pigment moves out to a ring at the reach — ragged with a noise round
+    /// it, laid as a narrow band — more from the heart than from the rim; mass-conserving. Deterministic by
+    /// `seed`; a no-op at 0 or on a non-transmittance canvas. `lip` (0..1): the ring's profile from a symmetric
+    /// band (0) to a cauliflower's own — a HARD outer edge where the surface tension stopped the water and a slow
+    /// fade inward toward the heart (1).
+    pub fn bloom(&mut self, strength: f32, radius: f32, seed: u64, lip: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        let lip = lip.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 2.0 || !self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        let film_mark = |p: usize| self.film_mark.get(p).copied().unwrap_or(0.0);
+        let fresh_film: Vec<f32> = (0..px).map(|p| (self.film[p] - film_mark(p)).max(0.0)).collect();
+        let (mut sum, mut cnt) = (0f32, 0usize);
+        for p in 0..px {
+            if fresh_film[p] > 1e-5 {
+                sum += fresh_film[p];
+                cnt += 1;
+            }
+        }
+        if cnt == 0 {
+            return;
+        }
+        let floor = sum / cnt as f32 * 0.3;
+        let hash01 = |k: u64| -> f32 {
+            let mut z = seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            (z >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let cell = (radius * 3.0).max(4.0);
+        let (gw, gh) = ((w as f32 / cell).ceil() as usize, (h as f32 / cell).ceil() as usize);
+        let mut add_conc = vec![0f32; px * n];
+        let mut add_film = vec![0f32; px];
+        for gy in 0..gh {
+            for gx in 0..gw {
+                let id = (gy * gw + gx) as u64;
+                if hash01(id * 4) > s * 0.6 {
+                    continue;
+                }
+                let cx = (gx as f32 + hash01(id * 4 + 1)) * cell;
+                let cy = (gy as f32 + hash01(id * 4 + 2)) * cell;
+                let (ix, iy) = (cx as usize, cy as usize);
+                if ix >= w || iy >= h || fresh_film[iy * w + ix] < floor {
+                    continue;
+                }
+                let rb = radius * (0.6 + 0.8 * hash01(id * 4 + 3));
+                let rr = rb.ceil() as i64;
+                let (x0, y0) = ((ix as i64 - rr).max(0), (iy as i64 - rr).max(0));
+                let (x1, y1) = ((ix as i64 + rr).min(w as i64 - 1), (iy as i64 + rr).min(h as i64 - 1));
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                        let d = (dx * dx + dy * dy).sqrt();
+                        if d >= rb {
+                            continue;
+                        }
+                        let p = y as usize * w + x as usize;
+                        if fresh_film[p] <= 1e-6 {
+                            continue;
+                        }
+                        let f = s * 0.8 * (1.0 - d / rb).powf(1.5);
+                        let th = dy.atan2(dx);
+                        // The ring's radius ragged round the heart at two scales; its band a Gaussian of an eighth of
+                        // the reach either side (a cauliflower's soft, irregular lip, not a drawn circle).
+                        let rag = (value_noise(th.cos() * 2.0 + 3.0, th.sin() * 2.0 + 3.0, seed ^ (id + 7)) - 0.5) * 0.3 + (value_noise(th.cos() * 5.0 + 9.0, th.sin() * 5.0 + 9.0, seed ^ (id + 11)) - 0.5) * 0.14;
+                        let rho = rb * (0.95 + rag);
+                        let sigma = (rb * 0.12).max(1.0);
+                        let i = p * n;
+                        let mut moved = vec![0f32; n];
+                        for c in 0..n {
+                            let fresh_c = (self.conc[i + c] - self.conc_mark.get(i + c).copied().unwrap_or(0.0)).max(0.0);
+                            moved[c] = fresh_c * f;
+                            self.conc[i + c] -= moved[c];
+                        }
+                        let mf = fresh_film[p] * f;
+                        self.film[p] -= mf;
+                        let (ct, st) = (th.cos(), th.sin());
+                        // THE LIP (`lip`): a cauliflower's outer edge is HARD — the surface tension stops the water
+                        // and the pigment piles at the line — and its inside fades slowly toward the heart; the band
+                        // blends from the symmetric Gaussian (0) to that profile (1): a Gaussian of a third of the
+                        // band outside the line, an exponential fade over 3.5 bands inside it.
+                        let tau = sigma * (1.0 + 2.5 * lip);
+                        let steps_out = (sigma * 2.0).ceil() as i64;
+                        let steps_in = ((tau * 3.0).ceil() as i64).max(steps_out);
+                        let mut wsum = 0f32;
+                        let mut targets: Vec<(usize, f32)> = Vec::with_capacity((steps_in + steps_out + 1) as usize);
+                        for k in -steps_in..=steps_out {
+                            let rk = rho + k as f32;
+                            let kf = k as f32;
+                            let gauss = (-(kf * kf) / (2.0 * sigma * sigma)).exp();
+                            let asym = if k >= 0 { (-(kf * kf) / (2.0 * (0.35 * sigma) * (0.35 * sigma))).exp() } else { (kf / tau).exp() };
+                            let wgt = gauss * (1.0 - lip) + asym * lip;
+                            let tx = ((cx + ct * rk) as i64).clamp(0, w as i64 - 1);
+                            let ty = ((cy + st * rk) as i64).clamp(0, h as i64 - 1);
+                            targets.push((ty as usize * w + tx as usize, wgt));
+                            wsum += wgt;
+                        }
+                        for (q, wgt) in targets {
+                            let k = wgt / wsum;
+                            for c in 0..n {
+                                add_conc[q * n + c] += moved[c] * k;
+                            }
+                            add_film[q] += mf * k;
+                        }
+                    }
+                }
+            }
+        }
+        // The ring laid.
+        for p in 0..px {
+            if add_film[p] <= 0.0 {
+                continue;
+            }
+            for c in 0..n {
+                self.conc[p * n + c] += add_conc[p * n + c];
+            }
+            self.film[p] += add_film[p];
+        }
+    }
+
     /// THE FLUID STAGE of a watercolour (`flow`): water on paper is a continuous FILM, not the brush's
     /// footprint, and only the pigment still IN the water moves — what dried in the earlier passes stays
     /// where it was laid. The pass's own deposit (since `mark_film`; the transmittance film adds, so the
@@ -837,7 +997,8 @@ impl Canvas {
         //    washes of the same weight laid together (they blend). So the band is weighted by the LOAD
         //    CONTRAST across the edge, varies along it with the paper (a tide line is ragged, never a
         //    uniform stroke), and pools heavier along a wash's LOWER edge — the water runs down.
-        let k = rim.clamp(0.0, 1.0);
+        // (To 2: the aqua pass's `aqua_rim` asks for a bolder line than the technique's; every older caller is ≤ 1.)
+        let k = rim.clamp(0.0, 2.0);
         let load_b = Self::box_blur_f(&fresh_film, w, h, r);
         //    The backrun is ONE-SIDED: the wetter wash pushes its pigment into the drier one, and the line
         //    forms on the DRIER side of the boundary — where the load is below the local mean of the two
@@ -894,6 +1055,31 @@ impl Canvas {
                 k * contrast[p].powf(1.5) * ragged * run
             })
             .collect();
+        // THE WETNESS BARRIER (`set_rim_barrier`; the aqua schedule's `aqua_barrier`): a tide line is a fact of
+        // the WATER's edge — the pigment piles where a wet wash meets a drier sheet — not of the load's contrast
+        // alone: two washes laid wet into wet (the sheet flooded first) have no edge of water between them and
+        // the pigment diffuses across without a line (the rim read the load's step there and, with the tooth's
+        // speckle on the "drier" — still wet — side, printed a chain of beads along every plane). So the rim is
+        // scaled by the STEP OF WETNESS across the boundary: the gradient of the wetness smoothed over r, read
+        // as the step over the band (a step of 0.3 or more is a full edge of water; none, no line), by the key.
+        let edge: Vec<f32> = if self.rim_barrier > 0.0 && k > 0.0 {
+            let kb = self.rim_barrier.clamp(0.0, 1.0);
+            let wb = Self::box_blur_f(&self.wetness, w, h, r);
+            let span = (2 * r + 1) as f32 * 0.5;
+            (0..px)
+                .map(|p| {
+                    if edge[p] <= 0.0 { return 0.0; }
+                    let (x, y) = (p % w, p / w);
+                    if x == 0 || y == 0 || x + 1 >= w || y + 1 >= h { return edge[p]; }
+                    let gx = (wb[p + 1] - wb[p - 1]) * span;
+                    let gy = (wb[p + w] - wb[p - w]) * span;
+                    let step = ((gx * gx + gy * gy).sqrt() / 0.3).clamp(0.0, 1.0);
+                    edge[p] * (1.0 - kb * (1.0 - step))
+                })
+                .collect()
+        } else {
+            edge
+        };
         // Where the water POOLED: the local load against the pass's mean wet load (0..2).
         let gq = grain.clamp(0.0, 1.0);
         let pool: Vec<f32> = if gq > 0.0 {
@@ -909,7 +1095,9 @@ impl Canvas {
         // masses keeps its full step), then the value RANGE over r/2: a crisp boundary spans ≥ 0.2, a wash's
         // fade far less. The band reaches r/2 either side, so the water stops short of the edge.
         let sel = selective.clamp(0.0, 1.0);
-        let hold: Vec<f32> = if sel > 0.0 {
+        // The luma of what the sheet shows now: the hard edges' reading, and the midtone bell's (`set_grain_water`).
+        let bell = if gq > 0.0 { self.grain_bell.clamp(0.0, 1.0) } else { 0.0 };
+        let lum: Vec<f32> = if sel > 0.0 || bell > 0.0 {
             let mut lum = vec![0f32; px];
             for p in 0..px {
                 let mut out = self.ground_lin;
@@ -919,6 +1107,11 @@ impl Canvas {
                 }
                 lum[p] = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
             }
+            lum
+        } else {
+            Vec::new()
+        };
+        let hold: Vec<f32> = if sel > 0.0 {
             let rd = (r / 2).max(1);
             let lb = Self::box_blur_f(&lum, w, h, rd);
             let (mut mx, mut mn) = (lb.clone(), lb.clone());
@@ -936,6 +1129,21 @@ impl Canvas {
             Vec::new()
         };
         let held = |p: usize| -> f32 { if hold.is_empty() { 1.0 } else { 1.0 - hold[p] } };
+        // THE TOOTH the pigment settles into (see `set_grain_scale`, `set_grain_water`): the paper's grain at the
+        // sheet's scale; where the sheet is WET (the water's depth there, 0.6..0.95 as 0..1, by `grain_wet`) it is
+        // blurred over two tooth scales — the fine speckle diffused, the coarse mottle kept — and its amplitude is
+        // the midtone BELL of the sheet's lightness by `grain_bell`.
+        let (gmap, gwet): (Vec<f32>, Vec<f32>) = if gq > 0.0 {
+            let g: Vec<f32> = (0..px).map(|p| paper_grain_at((p % w) as f32 / self.grain_scale, (p / w) as f32 / self.grain_scale, 0x6_1A1_0000) - 0.5).collect();
+            let gw = if self.grain_wet > 0.0 { Self::box_blur_f(&g, w, h, (self.grain_scale * 2.0).round().max(1.0) as usize) } else { Vec::new() };
+            (g, gw)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let grain_at = |p: usize| -> f32 {
+            let g = if gwet.is_empty() { gmap[p] } else { let t = ((self.wetness[p] - 0.6) / 0.35).clamp(0.0, 1.0) * self.grain_wet; gmap[p] * (1.0 - t) + gwet[p] * t };
+            if bell > 0.0 { g * (std::f32::consts::PI * lum[p].max(0.0).powf(1.0 / 2.2)).sin().max(0.0).powf(2.0 * bell) } else { g }
+        };
         let mut mask = vec![0f32; px];
         let mut masked = vec![0f32; px];
         let mut out_film = fresh_film.clone();
@@ -970,8 +1178,7 @@ impl Canvas {
                     let i = p * n + cc;
                     let mut v = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
                     if settle > 0.0 {
-                        let g = paper_grain(p % w, p / w, 0x6_1A1_0000) - 0.5;
-                        v *= (1.0 + settle * pool[p] * g * 2.4).max(0.0);
+                        v *= (1.0 + settle * pool[p] * grain_at(p) * 2.4).max(0.0);
                     }
                     out[i] = v;
                 }
@@ -2005,8 +2212,13 @@ pub fn paper_relief(x: usize, y: usize) -> f32 {
 }
 
 fn paper_grain(x: usize, y: usize, seed: u64) -> f32 {
-    let coarse = value_noise(x as f32 / 5.0, y as f32 / 5.0, seed);
-    let fine = value_noise(x as f32 / 2.2, y as f32 / 2.2, seed ^ 0x9E37_79B9);
+    paper_grain_at(x as f32, y as f32, seed)
+}
+
+/// `paper_grain` at a real position — the tooth read at a scale (see `Canvas::set_grain_scale`).
+fn paper_grain_at(x: f32, y: f32, seed: u64) -> f32 {
+    let coarse = value_noise(x / 5.0, y / 5.0, seed);
+    let fine = value_noise(x / 2.2, y / 2.2, seed ^ 0x9E37_79B9);
     (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
 }
 

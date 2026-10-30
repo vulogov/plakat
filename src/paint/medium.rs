@@ -667,6 +667,102 @@ pub struct MediumProfile {
     /// a lightness of 100 − 16 × key and a chroma of 30 × key in CIELAB: the white and the pale dots ring against
     /// it (Chevreul's simultaneous contrast) and a gap between dots is the ground's warmth, not a void.
     pub dot_tone: f32,
+    /// AQUA (0..1, 0 = off; `watercolour`, 7.16.0): THE WASH AS THE MEDIUM'S OWN TOOL — the picture laid as
+    /// WASHES: area fills of transparent colour on the paper, the picture's value planes from the lightest down,
+    /// each plane glazed over everything darker than it so the darks are the STACK of the glazes (Beer–Lambert on
+    /// the transmittance film: a glaze's densities are solved for the colour it owes over what is already there);
+    /// a plane is cut into its hue families and each mass is one wash, largest first; the brush ladder's broad
+    /// passes are not laid (the recipe of 7.1.0 is off) and the drawing comes after the washes (`aqua_detail`).
+    /// Every wash is a record and every plane a stage, so the replay lays and crosses the same water.
+    pub aqua: f32,
+    /// AQUA PLANES (a count, 0 = 5; `watercolour`): the value planes the washes are cut into, over the picture's
+    /// own range (its 2nd..98th percentiles — a nocturne gets as many washes as a daylight picture); more planes
+    /// a fuller modelling, fewer the poster's economy.
+    pub aqua_planes: f32,
+    /// AQUA RESERVE (0..1, 0 = none; `watercolour`): THE PAPER AS SHAPES — this share of the lightest plane's band
+    /// is left bare (1 = the whole plane): the candidate opened (flecks and spurs off), never the face, and only
+    /// regions a sixty-fourth of the sheet across kept, so the lights are the few large simple areas of paper a
+    /// watercolourist reserves — a sail, a cloud, a shirt — not a rash of white specks.
+    pub aqua_reserve: f32,
+    /// AQUA WET (0..1, 0 = dry; `watercolour`): THE WATER — after every wash plane the fluid stage runs (the
+    /// pigment diffusing within each wash, settling to a tide line at its edge, granulating where it pooled;
+    /// see `Canvas::flow`) at this strength, and every wash blooms past its boundary by a wet edge of this reach;
+    /// BY THE TECHNIQUE: `wet-on-wet` wets the whole sheet first (a clear-water wash) and floods wide and soft,
+    /// `wet-on-dry` lets each plane set before the next so the edges stay (the classic), `dry-on-dry` has no
+    /// water to flow and no wet edge.
+    pub aqua_wet: f32,
+    /// AQUA GRADE (0..1, 0 = flat; `watercolour`): GRADED WASHES — a mass is not one flat tone: its pixels at the
+    /// plane are split into 1 + 2 × key bands of value (lightest first, each glazed over the darker ones) and laid
+    /// wet in the same stage, so the water fuses them into the gradation of a sky or a wall.
+    pub aqua_grade: f32,
+    /// AQUA DETAIL (0..1, 0 = none; `watercolour`): THE DRAWING AFTER THE WASHES — once the planes are laid and
+    /// dry, the fine brushes (≤ ~14 px) of the ladder model within them wet-on-dry at this share of their budget:
+    /// the eyes, the rigging, the texture the washes cannot carry.
+    pub aqua_detail: f32,
+    /// AQUA SOFT (0..1, 0 = off; `watercolour`): THE EDGE BY THE PICTURE — every wash's wet edge is set point by
+    /// point from the picture's own gradient there: where the picture is soft (a sea's gradation, a sky, a cheek)
+    /// the wash blooms up to a fiftieth of the sheet past its boundary into the next plane, a graded passage not a
+    /// step; where the picture has an edge (a sail against the sky) it stays the technique's hard rim. The
+    /// painter's choice of where to soften a wash with the brush and where to let it dry sharp.
+    pub aqua_soft: f32,
+    /// AQUA RIM (0..1, 0 = the technique's own; `watercolour`): THE TIDE LINE — how deep the pigment the water
+    /// carried settles at a wash's edge as it dries (see `Canvas::flow`): the capillary rim of a drying pool,
+    /// one-sided on the drier wash, ragged with the paper, heavier along the lower edge. The key sets it to twice
+    /// its value (0.4 = the classic technique's 0.8; 1 = a bold cauliflower edge), halved under `wet-on-wet`
+    /// (the wetter sheet blends), none under `dry-on-dry`.
+    pub aqua_rim: f32,
+    /// AQUA BLOOM (0..1, 0 = off; `watercolour`): BACKRUNS — water run back into a drying wash pushes the pigment
+    /// still in the water outward and leaves it in a ragged ring with a lighter heart, the cauliflower (see
+    /// `Canvas::bloom`): seeds on a jittered grid of three reaches over each plane's wet layer by this chance,
+    /// the pigment within a reach (a 60th of the sheet, varied) moved out to the ring, mass kept; before the
+    /// water's own diffusion, so the ring softens into the wash. Deterministic, in the score.
+    pub aqua_bloom: f32,
+    /// AQUA GRAIN (0..1, 0 = the medium's `granulate`; `watercolour`): GRANULATION IN THE WATER — the heavy
+    /// pigments (the earths; a staining dye travels) settle into the paper's tooth where the wash pooled, by this
+    /// strength (see `Canvas::flow`): the mottle of a cold-pressed sheet, a fact of each wash, not a screen over
+    /// the picture (the finish keeps a trace of uniform grain).
+    pub aqua_grain: f32,
+    /// AQUA MARK (0..1, 0 = the brush engine's mark; `watercolour`): THE DRAWING'S MARK AS A WATERCOLOUR BRUSH —
+    /// the fine strokes after the washes lose the bristle streaks and the pickup of the oil brush by this share
+    /// (an even wet mark that lays its glaze once and smears nothing), and off the faces and the subject they
+    /// are laid only where the picture has STRUCTURE at the brush's scale (a value range of 0.1 × key over 1.5
+    /// radii; 0.4 of that on a faceless subject): the drawing states edges and textures, never the tone the
+    /// washes already carry — the economy of the medium.
+    pub aqua_mark: f32,
+    /// AQUA GRAIN MID (0..1, 0 = off; `watercolour`): THE GRANULATION'S MIDTONE BELL — the grain's amplitude a
+    /// bell of the sheet's lightness where the pigment settles, sin(πL)^(2·key): full in the midtones, dying in
+    /// the deep darks (the binder and the pigment cover the tooth) and the lights (nearly clear water); a flat
+    /// grain read as sand over every shadow (see `Canvas::set_grain_water`).
+    pub aqua_grain_mid: f32,
+    /// AQUA GRAIN WET (0..1, 0 = off; `watercolour`): THE WET GATE on the granulation — where the sheet is wet
+    /// (the water's depth there: a wash on a wetted sheet fully, a wash on dry paper half, a dry brush not at all)
+    /// the paper's grain is blurred over two tooth scales before the pigment settles, by the key: the water
+    /// diffuses the fine speckle and leaves the coarse mottle of a wet sky (see `Canvas::set_grain_water`).
+    pub aqua_grain_wet: f32,
+    /// AQUA LIP (0..1, 0 = a symmetric band; `watercolour`): THE BACKRUN'S LIP — a cauliflower's outer edge is
+    /// HARD, where the surface tension stopped the water and the pigment piled at the line, and its inside a
+    /// slow fade toward the heart; the ring's profile blends to that by the key (see `Canvas::bloom`).
+    pub aqua_lip: f32,
+    /// AQUA MASS (0..1, 0 = off; `watercolour`): THE DEEP SHADOWS AS MASSES — the wash planes in the lowest 0.3
+    /// of the picture's own value range are read as single polygons: each is CLOSED (dilated then eroded by a
+    /// hundredth of the sheet × key) so the lighter specks inside a shadow fall into it, and it is washed FLAT
+    /// at the plane's value in its mean chroma (a face keeps its own planes); the drawing after the washes holds
+    /// back within it (the structure gate's bar raised by 0.3 × key) — decisive dark masses, not a shadow
+    /// modelled into mush.
+    pub aqua_mass: f32,
+    /// AQUA BARRIER (0..1, 0 = off; `watercolour`): THE TIDE LINE AS A FACT OF THE WATER — the line is scaled by
+    /// the STEP OF WETNESS across the boundary (none between two washes laid wet into wet, full against a drier
+    /// sheet), by the key: on a flooded sheet the pigment diffuses across a plane's edge without a line (the
+    /// load's contrast alone drew one on every plane of a wet-on-wet sheet, and with the tooth's speckle on the
+    /// still-wet "drier" side printed a chain of beads along it) (see `Canvas::set_rim_barrier`).
+    pub aqua_barrier: f32,
+    /// AQUA BODY (0..1, 0 = a flat fill; `watercolour`): THE DEEP MASSES AS GRADED WASHES — within a mass of
+    /// `aqua_mass` the tone is not one constant: the water runs down and the pigment pools toward the lower edge
+    /// (heavier there by 0.3 × key across the mass), and the picture's broad form (blurred over a sixteenth of
+    /// the sheet) shows through by a fifth × key, rescaled to the plane's value so the mass keeps its value and
+    /// its unity; laid as 1 + 3 × key bands of the graded tone, lightest first, each glazing the darker — a
+    /// shadow with a body, not a poster's flat.
+    pub aqua_body: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1629,6 +1725,23 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -1889,6 +2002,23 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2149,6 +2279,23 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2450,6 +2597,23 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2719,6 +2883,23 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2983,6 +3164,23 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3243,6 +3441,23 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3506,6 +3721,23 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3769,6 +4001,23 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4032,6 +4281,23 @@ pub const DURER: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4298,6 +4564,23 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -4561,6 +4844,23 @@ pub const PENCIL: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4826,6 +5126,23 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5086,6 +5403,23 @@ pub const PASTEL: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5346,6 +5680,23 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5612,6 +5963,23 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5879,6 +6247,23 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6144,6 +6529,23 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     dot_lab: 0.0,
     dot_lap: 0.0,
     dot_tone: 0.0,
+    aqua: 0.0,
+    aqua_planes: 0.0,
+    aqua_reserve: 0.0,
+    aqua_wet: 0.0,
+    aqua_grade: 0.0,
+    aqua_detail: 0.0,
+    aqua_soft: 0.0,
+    aqua_rim: 0.0,
+    aqua_bloom: 0.0,
+    aqua_grain: 0.0,
+    aqua_mark: 0.0,
+    aqua_grain_mid: 0.0,
+    aqua_grain_wet: 0.0,
+    aqua_lip: 0.0,
+    aqua_mass: 0.0,
+    aqua_barrier: 0.0,
+    aqua_body: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6293,7 +6695,10 @@ pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "wate
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).
     pub fn by_name(name: &str) -> Option<MediumProfile> {
-        ALL.iter().find(|m| m.name.eq_ignore_ascii_case(name.trim())).copied()
+        let n = name.trim();
+        // The American spelling names the same medium.
+        let n = if n.eq_ignore_ascii_case("watercolor") { "watercolour" } else { n };
+        ALL.iter().find(|m| m.name.eq_ignore_ascii_case(n)).copied()
     }
     /// Whether P1 can render this medium.
     pub fn is_p1_executable(&self) -> bool {
