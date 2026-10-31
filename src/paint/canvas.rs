@@ -1335,6 +1335,359 @@ impl Canvas {
         }
     }
 
+    /// THE FLUID SOLVER (see `MediumProfile::aqua_fluid`; 7.16.0): the pass's water and its suspended pigment
+    /// SIMULATED on a grid instead of blurred and outlined. The wash as the brush left it — the wetness map for
+    /// the water, the pigment laid since the last `mark_film` in suspension in it — is coarsened to cells a sixth
+    /// of the water's reach (`radius` px) and stepped: the water flows to its lower neighbours by the step of its
+    /// level (its surface flat over the tooth: the film is thicker than the relief), wicks
+    /// into a dry cell at a third of the rate (the fibres filtering the pigment), and evaporates — faster at the puddle's thin edge, by `evap` (0 =
+    /// evenly, 1 = five times the interior's), so the interior keeps feeding the pinned edge and the pigment the water
+    /// carries there has nowhere to go but down: the tide line, from the physics and not from a contour; the
+    /// pigment is ADVECTED with the water's flow (a dye also diffusing against its own gradient) and SETTLES out of it — faster in shallow water and, by `weight`,
+    /// faster for a heavy pigment, which drifts downhill into the hollows of the paper's relief (the tooth at the
+    /// sheet's scale, `set_grain_scale`) as it sinks: a pigment's weight is read from its masstone
+    /// (the less its chroma the heavier: an earth sits, a dye travels), so the granulation separates the pigments
+    /// without a noise; a cell dried out drops all it still holds. The dried cells are written back to the pixels
+    /// — what a cell kept scales its own pixels, what it gained lands on its wet pixels into the hollows — with the
+    /// pigment's total mass conserved to the float, and mixed in by `strength`. The water of the wetness map is
+    /// not changed (the next plane's technique is the painter's); the masking fluid's cells are walls. Fixed
+    /// steps, one thread, no randomness: a replay is byte-exact. A no-op at `strength` 0 or off the
+    /// transmittance film.
+    pub fn fluid(&mut self, strength: f32, radius: f32, evap: f32, weight: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 1.0 || !self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        if px == 0 {
+            return;
+        }
+        let film_mark = |p: usize| self.film_mark.get(p).copied().unwrap_or(0.0);
+        let fresh_film: Vec<f32> = (0..px).map(|p| (self.film[p] - film_mark(p)).max(0.0)).collect();
+        if !fresh_film.iter().any(|&f| f > 1e-5) {
+            return;
+        }
+        // The lanes in suspension: the pigments, and the film's amount as one more (it travels with the mean).
+        let lanes = n + 1;
+        let mut fresh = vec![0f32; px * lanes];
+        for p in 0..px {
+            for c in 0..n {
+                fresh[p * lanes + c] = (self.conc[p * n + c] - self.conc_mark.get(p * n + c).copied().unwrap_or(0.0)).max(0.0);
+            }
+            fresh[p * lanes + n] = fresh_film[p];
+        }
+        // The grid: a cell a sixth of the water's reach, so the reach spans the same six cells on any sheet.
+        let cs = ((radius / 6.0).floor() as usize).max(1);
+        let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
+        let cells = cw * ch;
+        let rc = radius / cs as f32;
+        let gs = self.grain_scale.max(1.0);
+        let mut water = vec![0f32; cells];
+        let mut wall_acc = vec![0f32; cells];
+        let mut count = vec![0f32; cells];
+        let mut mass = vec![0f32; cells * lanes];
+        for p in 0..px {
+            let (x, y) = (p % w, p / w);
+            let q = (y / cs) * cw + x / cs;
+            let r = self.resist_at(p);
+            water[q] += self.wetness[p].clamp(0.0, 1.0) * (1.0 - r);
+            wall_acc[q] += r;
+            count[q] += 1.0;
+            for c in 0..lanes {
+                mass[q * lanes + c] += fresh[p * lanes + c];
+            }
+        }
+        let mut wall = vec![false; cells];
+        let mut relief = vec![0f32; cells];
+        for q in 0..cells {
+            let cnt = count[q].max(1.0);
+            water[q] /= cnt;
+            wall[q] = wall_acc[q] / cnt >= 0.999;
+            let (cx, cy) = (((q % cw) * cs) as f32 + cs as f32 * 0.5, ((q / cw) * cs) as f32 + cs as f32 * 0.5);
+            relief[q] = paper_grain_at(cx / gs, cy / gs, 0x6_1A1_0000);
+        }
+        // Where the sheet is wet the fine speckle of the tooth is diffused and the coarse mottle kept (the rule of
+        // `set_grain_water`'s `wet`): the relief smoothed over two tooth scales by that key — at least a cell, so
+        // the sinking pigment reads the relief's slopes and not the noise's lattice of pits.
+        let gw = self.grain_wet.clamp(0.0, 1.0);
+        let relief = Self::box_blur_f(&relief, cw, ch, ((2.0 * gs / cs as f32) * gw).round().max(1.0) as usize);
+        // The relief's typical slope (the mean drop to the lower neighbours), so the drift reads a slope as steep
+        // or gentle against the sheet's own relief whatever the blur left of it.
+        let slope_ref = {
+            let (mut sum, mut k) = (0f32, 0usize);
+            for q in 0..cells {
+                let (x, y) = (q % cw, q / cw);
+                let mut d = 0f32;
+                for (nb, ok) in [(q.wrapping_sub(1), x > 0), (q + 1, x + 1 < cw), (q.wrapping_sub(cw), y > 0), (q + cw, y + 1 < ch)] {
+                    if ok { d += (relief[q] - relief[nb]).max(0.0); }
+                }
+                sum += d;
+                k += 1;
+            }
+            (sum / k.max(1) as f32).max(1e-6)
+        };
+        let mass0 = mass.clone();
+        // The pigments' WEIGHT from the masstone's chroma (an earth heavy, a dye light), by the key; the film none.
+        let wk = weight.clamp(0.0, 1.0);
+        let wt: Vec<f32> = (0..lanes)
+            .map(|c| {
+                if c >= n {
+                    return 0.0;
+                }
+                let m = self.palette.pigments.get(c).map(|pg| pg.masstone).unwrap_or([128, 128, 128]);
+                let (mx, mn) = (m[0].max(m[1]).max(m[2]) as f32, m[0].min(m[1]).min(m[2]) as f32);
+                let chroma = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+                wk * (1.0 - chroma)
+            })
+            .collect();
+        // The steps: the water's diffusion crosses the reach (3·r² steps at the permeability below), 12..240; the
+        // interior's evaporation empties a full puddle in 1/1.6 of them, so the sheet is dry by the end.
+        let steps = ((3.0 * rc * rc).round() as usize).clamp(12, 240);
+        let perm = 0.2f32;
+        let e0 = 1.6 / steps as f32;
+        let ek = evap.clamp(0.0, 1.0);
+        let mut settled = vec![0f32; cells * lanes];
+        let mut dw = vec![0f32; cells];
+        let mut dm = vec![0f32; cells * lanes];
+        for _ in 0..steps {
+            if !water.iter().any(|&v| v > 1e-4) {
+                break;
+            }
+            dw.fill(0.0);
+            dm.fill(0.0);
+            // The flow across every pair of neighbours (right and down: each pair once), from the step's water.
+            for q in 0..cells {
+                if wall[q] {
+                    continue;
+                }
+                let (x, y) = (q % cw, q / cw);
+                for (nb, ok) in [(q + 1, x + 1 < cw), (q + cw, y + 1 < ch)] {
+                    if !ok || wall[nb] {
+                        continue;
+                    }
+                    let (wi, wj) = (water[q], water[nb]);
+                    if wi <= 1e-6 && wj <= 1e-6 {
+                        continue;
+                    }
+                    // The DYE's diffusion: between two wet cells a light pigment evens its concentration (a dye
+                    // dissolves and spreads against its gradient; a heavy particle does not), by 1 − weight.
+                    if wi > 0.3 && wj > 0.3 {
+                        let wm = wi.min(wj);
+                        for c in 0..lanes {
+                            let dk = 0.1 * (1.0 - wt[c]);
+                            if dk <= 0.0 {
+                                continue;
+                            }
+                            let (ci, cj) = (mass[q * lanes + c] / wi, mass[nb * lanes + c] / wj);
+                            let mv = dk * (ci - cj) * wm;
+                            let mv = mv.clamp(-mass[nb * lanes + c] * 0.2, mass[q * lanes + c] * 0.2);
+                            dm[q * lanes + c] -= mv;
+                            dm[nb * lanes + c] += mv;
+                        }
+                    }
+                    // (The water's surface is flat over the tooth — the film is thicker than the relief — so the
+                    // relief steers the sinking pigment, below, not the water.)
+                    let f = perm * (wi - wj);
+                    let (src, dst, amt) = if f >= 0.0 { (q, nb, f.min(wi * 0.2)) } else { (nb, q, (-f).min(wj * 0.2)) };
+                    if amt <= 1e-9 {
+                        continue;
+                    }
+                    // Into a dry cell the water WICKS at a third of the rate (the contact line is pinned; the
+                    // fibres take the water up), and the fibres filter the pigment: a third of its share goes
+                    // along — the soft damp feather beyond a wash's edge, not a line of pigment outside it.
+                    let dry_dst = water[dst] < 0.3;
+                    let amt = if dry_dst { amt * 0.3 } else { amt };
+                    dw[src] -= amt;
+                    dw[dst] += amt;
+                    let share = amt / water[src].max(1e-6) * if dry_dst { 0.3 } else { 1.0 };
+                    for c in 0..lanes {
+                        let mv = mass[src * lanes + c] * share * (1.0 - 0.6 * wt[c]);
+                        dm[src * lanes + c] -= mv;
+                        dm[dst * lanes + c] += mv;
+                    }
+                }
+            }
+            for q in 0..cells {
+                if wall[q] {
+                    continue;
+                }
+                let (x, y) = (q % cw, q / cw);
+                for c in 0..lanes {
+                    mass[q * lanes + c] = (mass[q * lanes + c] + dm[q * lanes + c]).max(0.0);
+                }
+                let mut wv = water[q] + dw[q];
+                if wv > 1e-6 {
+                    // The evaporation: the thin edge — the cell with dry neighbours (a damp halo is none) — dries
+                    // first, by the key.
+                    let (mut wet_nb, mut nbs) = (0f32, 0f32);
+                    for (nb, ok) in [(q.wrapping_sub(1), x > 0), (q + 1, x + 1 < cw), (q.wrapping_sub(cw), y > 0), (q + cw, y + 1 < ch)] {
+                        if ok {
+                            nbs += 1.0;
+                            if water[nb] > 0.3 {
+                                wet_nb += 1.0;
+                            }
+                        }
+                    }
+                    let edge = 1.0 - wet_nb / nbs.max(1.0);
+                    wv -= e0 * (1.0 + 4.0 * ek * edge);
+                }
+                if wv <= 1e-6 {
+                    // Dried out: all it holds lands.
+                    water[q] = 0.0;
+                    for c in 0..lanes {
+                        settled[q * lanes + c] += mass[q * lanes + c];
+                        mass[q * lanes + c] = 0.0;
+                    }
+                    continue;
+                }
+                water[q] = wv;
+                // The settling: the share that lands this step — a light pigment stays in suspension until the
+                // water is nearly gone (faster in shallow water), a heavy pigment lands early and faster still
+                // into a hollow of the relief — and as a heavy pigment sinks it DRIFTS DOWNHILL: the share of the
+                // landing that is the drop to the lowest neighbour × the weight lands there instead (the
+                // granulation: the earths gather in the tooth's hollows, a dye lies flat) — up to 0.6 × weight of
+                // the landing on a slope of the sheet's typical steepness or more, shared among every lower
+                // neighbour by its drop, so the pattern is the relief's slopes and not its pits.
+                let hollow = 1.0 - relief[q];
+                let mut downs: [(usize, f32); 4] = [(q, 0.0); 4];
+                let mut drop_sum = 0f32;
+                for (k, (nb, ok)) in [(q.wrapping_sub(1), x > 0), (q + 1, x + 1 < cw), (q.wrapping_sub(cw), y > 0), (q + cw, y + 1 < ch)].into_iter().enumerate() {
+                    if ok && !wall[nb] && relief[q] > relief[nb] {
+                        downs[k] = (nb, relief[q] - relief[nb]);
+                        drop_sum += relief[q] - relief[nb];
+                    }
+                }
+                for c in 0..lanes {
+                    let rate = ((0.006 + 0.06 * wt[c] * (0.25 + hollow)) / (wv + 0.1)).min(1.0);
+                    let d = mass[q * lanes + c] * rate;
+                    let slide = if drop_sum > 0.0 { d * 0.6 * wt[c] * (drop_sum / slope_ref).min(1.0) } else { 0.0 };
+                    settled[q * lanes + c] += d - slide;
+                    if slide > 0.0 {
+                        for (nb, dr) in downs {
+                            if dr > 0.0 {
+                                settled[nb * lanes + c] += slide * dr / drop_sum;
+                            }
+                        }
+                    }
+                    mass[q * lanes + c] -= d;
+                }
+            }
+        }
+        for i in 0..cells * lanes {
+            settled[i] += mass[i];
+        }
+        // Back to the pixels: what a cell KEPT of its own scales its pixels (read among the cells that had any,
+        // bilinear), what it GAINED lands as a density over its pixels — on the wet ones, into the hollows by the
+        // pigment's weight, not on the fluid — then each lane's total restored to the cells' sum.
+        let mut keep = vec![1f32; cells * lanes];
+        let mut had = vec![false; cells * lanes];
+        let mut gain = vec![0f32; cells * lanes];
+        for i in 0..cells * lanes {
+            if mass0[i] > 1e-9 {
+                had[i] = true;
+                keep[i] = (settled[i] / mass0[i]).min(1.0);
+            }
+            gain[i] = (settled[i] - mass0[i].min(settled[i])).max(0.0) / (cs * cs) as f32;
+        }
+        // The weight a gained pigment lands with at a pixel — the wet pixels, into the hollows by the pigment's
+        // weight, none on the fluid — normalized by its own mean over a cell (a normalized convolution), so a cell
+        // half on the wash delivers its whole gain to its wet half instead of losing it to the sheet's total.
+        let hollow_px: Vec<f32> = {
+            let raw: Vec<f32> = (0..px).map(|p| 1.0 - paper_grain_at((p % w) as f32 / gs, (p / w) as f32 / gs, 0x6_1A1_0000)).collect();
+            if gw > 0.0 {
+                // (The same rule at the pixel: the field blurred over two tooth scales where the sheet is wet.)
+                let soft = Self::box_blur_f(&raw, w, h, (2.0 * gs).round().max(1.0) as usize);
+                (0..px).map(|p| { let t = ((self.wetness[p] - 0.6) / 0.35).clamp(0.0, 1.0) * gw; raw[p] * (1.0 - t) + soft[p] * t }).collect()
+            } else {
+                raw
+            }
+        };
+        let gate: Vec<f32> = (0..px).map(|p| { let rp = self.resist_at(p); if rp >= 1.0 { 0.0 } else { self.wetness[p].clamp(0.0, 1.0).max(0.1) * (1.0 - rp) } }).collect();
+        // (The hollow's depth against the sheet's own: two standard deviations below or above the mean is the
+        // full weight either way, so the blur's softening of the field does not soften the granulation.)
+        let (h_mean, h_dev) = {
+            let m = hollow_px.iter().sum::<f32>() / px as f32;
+            let v = hollow_px.iter().map(|h| (h - m) * (h - m)).sum::<f32>() / px as f32;
+            (m, v.sqrt().max(1e-6))
+        };
+        let wgt_of = |c: usize| -> Vec<f32> { (0..px).map(|p| gate[p] * (1.0 + wt[c] * ((hollow_px[p] - h_mean) / (2.0 * h_dev)).clamp(-1.0, 1.0)).max(0.0)).collect() };
+        let mut wgt: Vec<Vec<f32>> = Vec::with_capacity(lanes);
+        let mut wgt_mean: Vec<Vec<f32>> = Vec::with_capacity(lanes);
+        for c in 0..lanes {
+            // The lanes of one weight share one field.
+            if let Some(prev) = (0..c).find(|&k| (wt[k] - wt[c]).abs() < 1e-6) {
+                let (a, b) = (wgt[prev].clone(), wgt_mean[prev].clone());
+                wgt.push(a);
+                wgt_mean.push(b);
+                continue;
+            }
+            let f = wgt_of(c);
+            let m = Self::box_blur_f(&f, w, h, cs);
+            wgt.push(f);
+            wgt_mean.push(m);
+        }
+        let mut out_k = vec![0f32; px * lanes];
+        let mut out_g = vec![0f32; px * lanes];
+        let (mut want_k, mut want_g) = (vec![0f32; lanes], vec![0f32; lanes]);
+        let (mut got_k, mut got_g) = (vec![0f32; lanes], vec![0f32; lanes]);
+        for q in 0..cells {
+            for c in 0..lanes {
+                let i = q * lanes + c;
+                want_k[c] += settled[i].min(mass0[i]);
+                want_g[c] += (settled[i] - mass0[i]).max(0.0);
+            }
+        }
+        for p in 0..px {
+            let (x, y) = (p % w, p / w);
+            if gate[p] <= 0.0 {
+                continue;
+            }
+            // The cell corners round the pixel, for the bilinear read.
+            let fx = ((x as f32 + 0.5) / cs as f32 - 0.5).clamp(0.0, (cw - 1) as f32);
+            let fy = ((y as f32 + 0.5) / cs as f32 - 0.5).clamp(0.0, (ch - 1) as f32);
+            let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+            let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let corners = [(y0 * cw + x0, (1.0 - tx) * (1.0 - ty)), (y0 * cw + x1, tx * (1.0 - ty)), (y1 * cw + x0, (1.0 - tx) * ty), (y1 * cw + x1, tx * ty)];
+            for c in 0..lanes {
+                let (mut kp, mut kw, mut g) = (0f32, 0f32, 0f32);
+                for (q, wq) in corners {
+                    let i = q * lanes + c;
+                    if had[i] {
+                        kp += keep[i] * wq;
+                        kw += wq;
+                    }
+                    g += gain[i] * wq;
+                }
+                let kept = if kw > 0.0 { kp / kw } else { 1.0 };
+                let kv = fresh[p * lanes + c] * kept;
+                let gv = g * wgt[c][p] / wgt_mean[c][p].max(1e-6);
+                out_k[p * lanes + c] = kv;
+                out_g[p * lanes + c] = gv;
+                got_k[c] += kv;
+                got_g[c] += gv;
+            }
+        }
+        // Each lane's kept and gained totals restored to the cells' sums (the interpolation's drift), the whole
+        // mixed in by the key.
+        let mut out = vec![0f32; px * lanes];
+        for c in 0..lanes {
+            let sk = if got_k[c] > 1e-9 { want_k[c] / got_k[c] } else { 1.0 };
+            let sg = if got_g[c] > 1e-9 { want_g[c] / got_g[c] } else { 1.0 };
+            for p in 0..px {
+                let i = p * lanes + c;
+                out[i] = fresh[i] * (1.0 - s) + (out_k[i] * sk + out_g[i] * sg) * s;
+            }
+        }
+        for p in 0..px {
+            self.film[p] = film_mark(p) + out[p * lanes + n];
+            for c in 0..n {
+                self.conc[p * n + c] = self.conc_mark.get(p * n + c).copied().unwrap_or(0.0) + out[p * lanes + c];
+            }
+        }
+    }
+
     /// WET COLLISION (`collide`, an oil's stage): when a loaded wet stroke lands beside or over another, the
     /// paint MOVES — the colours drag into each other along the stroke's direction (marbling), the new
     /// stroke's bead plows the old paint's height sideways, and nothing of it is a blur. Run after a broad
@@ -2744,6 +3097,105 @@ mod tests {
 mod flow_tests {
     use super::*;
     use crate::paint::palette;
+
+    /// A wet disc of one pigment at the centre of a transmittance sheet (the deposit and the water both laid).
+    fn wet_disc(c: &mut Canvas, r: f32, lanes: &[(usize, f32)], wet: f32) {
+        let n = c.n_pigments();
+        let mut d = vec![0f32; n];
+        for &(l, v) in lanes { d[l] = v; }
+        let (cx, cy) = (c.w as f32 * 0.5, c.h as f32 * 0.5);
+        for y in 0..c.h {
+            for x in 0..c.w {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                if dx * dx + dy * dy <= r * r {
+                    c.deposit(x, y, &d, 0.0);
+                    c.wetness[(y * c.w + x) as usize] = wet;
+                }
+            }
+        }
+    }
+
+    fn radial_mean(c: &Canvas, lane: usize, r0: f32, r1: f32) -> f32 {
+        let (cx, cy) = (c.w as f32 * 0.5, c.h as f32 * 0.5);
+        let (mut s, mut k) = (0f32, 0usize);
+        for y in 0..c.h { for x in 0..c.w { let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy); let d = (dx * dx + dy * dy).sqrt(); if d >= r0 && d < r1 { s += c.conc_at(x, y)[lane]; k += 1; } } }
+        if k > 0 { s / k as f32 } else { 0.0 }
+    }
+
+
+    #[test]
+    fn the_fluid_keeps_the_pigment_s_mass_and_dries_to_a_tide_line() {
+        // A wet disc of raw umber on a dry sheet: the solver conserves the pigment to the float, the dried disc is
+        // deeper along its edge than at its core (the coffee ring: the water fed the drying edge and the pigment
+        // stayed), nothing lands far beyond the water, and the run is deterministic; at strength 0 nothing moves.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        wet_disc(&mut c, 24.0, &[(0, 1.0)], 0.9);
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let before = total(&c);
+        let mut off = c.clone();
+        off.fluid(0.0, 12.0, 1.0, 0.0);
+        assert_eq!(off.to_image().into_raw(), c.to_image().into_raw(), "strength 0 is a no-op");
+        let mut twin = c.clone();
+        c.fluid(1.0, 12.0, 1.0, 0.0);
+        twin.fluid(1.0, 12.0, 1.0, 0.0);
+        assert_eq!(twin.to_image().into_raw(), c.to_image().into_raw(), "deterministic");
+        let after = total(&c);
+        assert!((after - before).abs() < 1e-3 * before, "the mass is kept: {before} -> {after}");
+        // The tide line is one cell wide (the reach's sixth, 2 px here): the deepest 2-px ring along the edge against
+        // the core, and the ring just inside it thinner than the core (the interior fed the edge).
+        let core = radial_mean(&c, 0, 0.0, 12.0);
+        let (peak_r, peak) = (18..28).map(|r| (r, radial_mean(&c, 0, r as f32, r as f32 + 2.0))).fold((0, 0f32), |a, b| if b.1 > a.1 { b } else { a });
+        assert!(peak > core * 1.2, "the tide line: the ring at {peak_r} is {peak} vs the core {core}");
+        assert!(radial_mean(&c, 0, peak_r as f32 - 3.0, peak_r as f32) < core, "the interior fed the edge: {} vs {core}", radial_mean(&c, 0, peak_r as f32 - 3.0, peak_r as f32));
+        assert!(radial_mean(&c, 0, 40.0, 48.0) < 1e-6, "nothing lands far beyond the water: {}", radial_mean(&c, 0, 40.0, 48.0));
+    }
+
+    #[test]
+    fn the_heavy_pigment_settles_into_the_hollows_and_the_light_one_travels() {
+        // Ivory black (no chroma: heavy) and burnt sienna (a warm dye: light) laid together in one wet disc: by the
+        // weight key the black's dried density follows the relief's hollows more than the sienna's does, and the
+        // sienna carries a larger share of itself out past the disc's edge than the black.
+        let pal = palette::EARTH;
+        let (black, sienna) = (3usize, 1usize);
+        let mut c = Canvas::white(128, 128, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        wet_disc(&mut c, 30.0, &[(black, 0.6), (sienna, 0.6)], 0.9);
+        c.fluid(1.0, 12.0, 0.5, 1.0);
+        // The granulation's CONTRAST: the dried density regressed on the hollow's depth over the core, the slope
+        // against the mean density (a pattern alone — a flat lane's float noise — does not count).
+        let contrast = |lane: usize| -> f32 {
+            let (cx, cy) = (64.0f32, 64.0f32);
+            let (mut sx, mut sy, mut sxx, mut sxy, mut k) = (0f32, 0f32, 0f32, 0f32, 0f32);
+            for y in 0..128u32 { for x in 0..128u32 { let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy); if dx * dx + dy * dy < 20.0 * 20.0 { let a = 1.0 - paper_grain_at(x as f32, y as f32, 0x6_1A1_0000); let b = c.conc_at(x, y)[lane]; sx += a; sy += b; sxx += a * a; sxy += a * b; k += 1.0; } } }
+            let slope = (sxy / k - sx / k * sy / k) / (sxx / k - (sx / k).powi(2) + 1e-9);
+            slope / (sy / k).max(1e-9)
+        };
+        let (cb, cs) = (contrast(black), contrast(sienna));
+        assert!(cb > 0.1 && cb > cs * 1.5, "the black gathers in the hollows: {cb} vs the sienna's {cs}");
+        let out_share = |lane: usize| -> f32 {
+            let (mut inside, mut outside) = (0f32, 0f32);
+            for y in 0..128u32 { for x in 0..128u32 { let (dx, dy) = (x as f32 + 0.5 - 64.0, y as f32 + 0.5 - 64.0); let v = c.conc_at(x, y)[lane]; if dx * dx + dy * dy <= 30.0 * 30.0 { inside += v; } else { outside += v; } } }
+            outside / (inside + outside).max(1e-9)
+        };
+        let (ob, os) = (out_share(black), out_share(sienna));
+        assert!(os > ob * 1.3, "the sienna travels further: {os} vs the black's {ob}");
+    }
+
+    #[test]
+    fn the_fluid_stops_at_the_masking_fluid() {
+        // The disc with a square of masking fluid inside it: the solver's water never crosses the fluid, so its
+        // core stays the bare sheet to the pixel, and the pigment's mass is still kept.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        c.set_resist_rings(&[[40.0, 40.0], [56.0, 40.0], [56.0, 56.0], [40.0, 56.0]], 1.0, 0.0);
+        wet_disc(&mut c, 30.0, &[(0, 1.0)], 0.9);
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let before = total(&c);
+        c.fluid(1.0, 12.0, 1.0, 0.0);
+        assert!((total(&c) - before).abs() < 1e-3 * before, "the mass is kept");
+        for y in 42..54u32 { for x in 42..54u32 { assert!(c.conc_at(x, y)[0] <= 0.0 && c.saturation_at(x, y) <= 0.0, "bare under the fluid at {x},{y}"); } }
+        assert!(radial_mean(&c, 0, 20.0, 29.0) > 0.0, "the wash around it dried");
+    }
 
     #[test]
     fn the_box_blur_matches_a_naive_mean() {
