@@ -99,6 +99,13 @@ pub struct Canvas {
     grain_wet: f32,
     /// The tide line's WETNESS BARRIER (0 = off; see `set_rim_barrier`, `flow`).
     rim_barrier: f32,
+    /// THE DRY-BRUSH EDGE (0 = off; see `set_dry_edge`, `fill_rings_edge`): a wash's edge on a dry sheet skips the tooth's peaks.
+    dry_edge: f32,
+    /// THE SURFACE TENSION (0 = off; see `set_rim_tension`, `flow`): the colour step across a boundary restores the barrier.
+    rim_tension: f32,
+    /// THE MASKING FLUID (empty = none; see `set_resist_rings`): per pixel the share (0..1) of every deposit and
+    /// of the water refused there — the lights reserved before the first wash (the aqua schedule's `aqua_resist`).
+    resist: Vec<f32>,
     /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
     /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
     /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
@@ -180,7 +187,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -200,7 +207,62 @@ impl Canvas {
     /// Set the clip to the inside of `rings` (NaN-separated polygons, even-odd, pixel centres); fewer than
     /// three points clears it.
     pub fn set_clip_rings(&mut self, rings: &[[f32; 2]]) {
+        self.clip = Self::rings_mask(self.w as usize, self.h as usize, rings);
+    }
+
+    /// THE MASKING FLUID (the aqua schedule's `aqua_resist`; an `A` record with `resist` in the score): the inside
+    /// of `rings` (NaN-separated polygons, even-odd, pixel centres) refuses `k` (0..1) of every deposit laid there
+    /// after — a stroke's, a wash's, its wet edge's — and of the water (its wetness, so the bleed and the drift
+    /// leave it dry), and what the flow and the backruns carry onto it is lifted with the fluid; at 1 the sheet
+    /// stays bare there whatever spills. The fluid's EDGE is brushed, not cut: over `feather` px inside the
+    /// boundary its share ramps from nothing up to `k` (a hard edge at 0), so a wash meeting it fades into the
+    /// light instead of stopping at a stair of pixels with a tide line along it. Fewer than three points, or
+    /// `k` ≤ 0, clears it.
+    pub fn set_resist_rings(&mut self, rings: &[[f32; 2]], k: f32, feather: f32) {
+        let k = k.clamp(0.0, 1.0);
         let (w, h) = (self.w as usize, self.h as usize);
+        let Some(mask) = Self::rings_mask(w, h, rings).filter(|_| k > 0.0) else {
+            self.resist = Vec::new();
+            return;
+        };
+        let f = feather.max(0.0).round().min(250.0) as usize;
+        if f == 0 {
+            self.resist = mask.into_iter().map(|inside| if inside { k } else { 0.0 }).collect();
+            return;
+        }
+        // The depth inside the boundary by successive erosion (1 at the boundary, `f` and beyond the core).
+        let mut depth = vec![0u16; w * h];
+        let mut cur = mask;
+        for d in 1..=f {
+            let mut next = cur.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let i = y * w + x;
+                    if !cur[i] {
+                        continue;
+                    }
+                    let open = x == 0 || y == 0 || x + 1 >= w || y + 1 >= h || !cur[i - 1] || !cur[i + 1] || !cur[i - w] || !cur[i + w];
+                    if open {
+                        depth[i] = d as u16;
+                        next[i] = false;
+                    }
+                }
+            }
+            cur = next;
+        }
+        self.resist = (0..w * h)
+            .map(|i| if cur[i] { k } else if depth[i] > 0 { k * depth[i] as f32 / (f as f32 + 1.0) } else { 0.0 })
+            .collect();
+    }
+
+    /// The masking fluid's share at row-major pixel `p` (0 where none).
+    #[inline]
+    pub fn resist_at(&self, p: usize) -> f32 {
+        if self.resist.is_empty() { 0.0 } else { self.resist[p] }
+    }
+
+    /// The inside of `rings` as a pixel mask (scanline, even-odd, pixel centres); `None` for fewer than three points.
+    fn rings_mask(w: usize, h: usize, rings: &[[f32; 2]]) -> Option<Vec<bool>> {
         let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
         let mut ring: Vec<[f32; 2]> = Vec::new();
         let flush = |ring: &mut Vec<[f32; 2]>, edges: &mut Vec<([f32; 2], [f32; 2])>| {
@@ -220,8 +282,7 @@ impl Canvas {
         }
         flush(&mut ring, &mut edges);
         if edges.is_empty() {
-            self.clip = None;
-            return;
+            return None;
         }
         let mut mask = vec![false; w * h];
         let mut xs: Vec<f32> = Vec::new();
@@ -250,7 +311,7 @@ impl Canvas {
                 }
             }
         }
-        self.clip = Some(mask);
+        Some(mask)
     }
 
     /// Whether row-major pixel `p` is outside the current clip (never, when no clip is set).
@@ -447,6 +508,19 @@ impl Canvas {
     /// the film into the layer beneath first (the new paint covers it). The paint amount and the height grow as
     /// for any deposit. Buffers are allotted on first use, so a canvas that never takes a film carries none.
     pub fn deposit_over(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
+        // (THE MASKING FLUID — see `set_resist_rings`: its share of the deposit refused.)
+        let r = self.resist_at(y as usize * self.w as usize + x as usize);
+        if r > 0.0 {
+            if r >= 1.0 {
+                return;
+            }
+            let d: Vec<f32> = delta.iter().map(|v| v * (1.0 - r)).collect();
+            return self.deposit_over_raw(x, y, &d, height * (1.0 - r));
+        }
+        self.deposit_over_raw(x, y, delta, height)
+    }
+
+    fn deposit_over_raw(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
         let px = (self.w * self.h) as usize;
         if self.over_film.is_empty() {
             self.over_conc = vec![0.0; px * self.n];
@@ -501,6 +575,19 @@ impl Canvas {
     /// light block-in could only nudge the average, leaving every shadow mass with a light core and a dark rim.
     /// The paint amount (`film`) keeps accumulating, so covering never thins the film or re-exposes the ground.
     pub fn deposit(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
+        // THE MASKING FLUID (see `set_resist_rings`): its share of the deposit refused — all of it at 1.
+        let r = self.resist_at(y as usize * self.w as usize + x as usize);
+        if r > 0.0 {
+            if r >= 1.0 {
+                return;
+            }
+            let d: Vec<f32> = delta.iter().map(|v| v * (1.0 - r)).collect();
+            return self.deposit_raw(x, y, &d, height * (1.0 - r));
+        }
+        self.deposit_raw(x, y, delta, height)
+    }
+
+    fn deposit_raw(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
         let i = self.idx(x, y);
         let amount: f32 = delta.iter().take(self.n).map(|d| d.max(0.0)).sum();
         if self.transmittance {
@@ -551,6 +638,28 @@ impl Canvas {
     /// step of wetness across the boundary, by `k` (0..1; 0 = the load's contrast alone, the old rule).
     pub fn set_rim_barrier(&mut self, k: f32) {
         self.rim_barrier = k.clamp(0.0, 1.0);
+    }
+
+    /// THE SURFACE TENSION (see `flow`; the aqua schedule's `aqua_tension`): where the barrier finds no step of
+    /// water across a boundary, the step of COLOUR of the fresh deposit across it (two pigments laid wet beside
+    /// each other) restores the tide line, by `k` (0..1; 0 = the water's step alone).
+    pub fn set_rim_tension(&mut self, k: f32) {
+        self.rim_tension = k.clamp(0.0, 1.0);
+    }
+
+    /// THE DRY-BRUSH EDGE (see `fill_rings_edge`; the aqua schedule's `aqua_ragged`): at a wash's edge on a DRY
+    /// BARE sheet — no film, no water there yet; the band two pixels plus half the wet edge inside the boundary,
+    /// and the bloom outside it — the paper's tooth above `1 − 0.45 × k` takes no paint (the brush catches the
+    /// hollows and skips the peaks), the share falling inward; a wetted sheet or a dried wash takes the edge
+    /// whole. 0 = off.
+    pub fn set_dry_edge(&mut self, k: f32) {
+        self.dry_edge = k.clamp(0.0, 1.0);
+    }
+
+    /// `set_dry_edge` as a builder.
+    pub fn with_dry_edge(mut self, k: f32) -> Self {
+        self.set_dry_edge(k);
+        self
     }
 
     pub fn mark_film(&mut self) {
@@ -902,15 +1011,16 @@ impl Canvas {
                 }
             }
         }
-        // The ring laid.
+        // The ring laid (what lands on the masking fluid is lifted with it — `set_resist_rings`).
         for p in 0..px {
             if add_film[p] <= 0.0 {
                 continue;
             }
+            let keep = 1.0 - if self.resist.is_empty() { 0.0 } else { self.resist[p] };
             for c in 0..n {
-                self.conc[p * n + c] += add_conc[p * n + c];
+                self.conc[p * n + c] += add_conc[p * n + c] * keep;
             }
-            self.film[p] += add_film[p];
+            self.film[p] += add_film[p] * keep;
         }
     }
 
@@ -1066,6 +1176,25 @@ impl Canvas {
             let kb = self.rim_barrier.clamp(0.0, 1.0);
             let wb = Self::box_blur_f(&self.wetness, w, h, r);
             let span = (2 * r + 1) as f32 * 0.5;
+            // THE SURFACE TENSION (`set_rim_tension`; the aqua schedule's `aqua_tension`): within one stage two
+            // planes of different pigments are both wet — no step of water between them — yet two loads of
+            // different pigments laid wet beside each other do hold a line (the tension of their surfaces); so
+            // the step is also the step of COLOUR of the fresh deposit across the band — the masstone of the
+            // pigment leading each pixel's wash (the paper where none), smoothed over r, a step of 0.25 a full
+            // edge — by the key.
+            let kt = self.rim_tension.clamp(0.0, 1.0);
+            let cb: Vec<Vec<f32>> = if kt > 0.0 {
+                (0..3)
+                    .map(|ch| {
+                        let col: Vec<f32> = (0..px)
+                            .map(|p| if lead[p] >= 0 { self.palette.pigments.get(lead[p] as usize).map(|pg| pg.masstone[ch] as f32 / 255.0).unwrap_or(self.ground_lin[ch]) } else { self.ground_lin[ch] })
+                            .collect();
+                        Self::box_blur_f(&col, w, h, r)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             (0..px)
                 .map(|p| {
                     if edge[p] <= 0.0 { return 0.0; }
@@ -1074,6 +1203,17 @@ impl Canvas {
                     let gx = (wb[p + 1] - wb[p - 1]) * span;
                     let gy = (wb[p + w] - wb[p - w]) * span;
                     let step = ((gx * gx + gy * gy).sqrt() / 0.3).clamp(0.0, 1.0);
+                    let step = if kt > 0.0 {
+                        let mut g2 = 0f32;
+                        for c in &cb {
+                            let cx = (c[p + 1] - c[p - 1]) * span;
+                            let cy = (c[p + w] - c[p - w]) * span;
+                            g2 += cx * cx + cy * cy;
+                        }
+                        step.max(kt * (g2.sqrt() / 0.25).clamp(0.0, 1.0))
+                    } else {
+                        step
+                    };
                     edge[p] * (1.0 - kb * (1.0 - step))
                 })
                 .collect()
@@ -1184,11 +1324,13 @@ impl Canvas {
                 }
             }
         }
+        // (THE MASKING FLUID — `set_resist_rings`: what the water carried onto it is lifted with the fluid, by its share.)
         for p in 0..px {
-            self.film[p] = film_mark(p) + out_film[p];
+            let r = if self.resist.is_empty() { 0.0 } else { self.resist[p] };
+            self.film[p] = film_mark(p) + out_film[p] * (1.0 - r) + fresh_film[p] * r;
             for c in 0..n {
                 let i = p * n + c;
-                self.conc[i] = self.conc_mark.get(i).copied().unwrap_or(0.0) + out[i];
+                self.conc[i] = self.conc_mark.get(i).copied().unwrap_or(0.0) + out[i] * (1.0 - r) + fresh[i] * r;
             }
         }
     }
@@ -1566,6 +1708,38 @@ impl Canvas {
                 cur = next;
             }
         }
+        // THE DRY-BRUSH EDGE (`set_dry_edge`): the band inside the boundary — two pixels plus half the wet edge —
+        // by successive erosion, 1 at the boundary.
+        let nb = (feather.max(0.0).round() as usize / 2).max(2);
+        let inner: Vec<u8> = if self.dry_edge > 0.0 {
+            let mut inn = vec![0u8; bw * bh];
+            let mut cur = mask.clone();
+            for d in 1..=nb {
+                let mut next = cur.clone();
+                for y in 0..bh {
+                    for x in 0..bw {
+                        let i = y * bw + x;
+                        if !cur[i] {
+                            continue;
+                        }
+                        let open = x == 0 || y == 0 || x + 1 >= bw || y + 1 >= bh || !cur[i - 1] || !cur[i + 1] || !cur[i - bw] || !cur[i + bw];
+                        if open {
+                            inn[i] = d.min(250) as u8;
+                            next[i] = false;
+                        }
+                    }
+                }
+                cur = next;
+            }
+            inn
+        } else {
+            Vec::new()
+        };
+        // The tooth at half the sheet's scale (`set_grain_scale`'s rule): a dry brush's skip is the paper's own
+        // fine texture, not the mottle the water reads.
+        let gs = (self.w.min(self.h) as f32 / 1024.0).max(0.5);
+        // (Clear water — a load of nothing — wets the whole shape: there is no paint for the peaks to refuse.)
+        let dry_skip = self.dry_edge > 0.0 && load.iter().any(|v| *v > 0.0);
         // 3. Deposit: full inside; outside, a bloom falling with the distance (a bleed is thinner than the wash).
         let mut scaled = vec![0f32; load.len()];
         for y in 0..bh {
@@ -1584,10 +1758,26 @@ impl Canvas {
                     scaled[c] = v * k;
                 }
                 let (px, py) = ((x as i64 + x0) as u32, (y as i64 + y0) as u32);
+                // THE DRY-BRUSH EDGE: where the wash's edge lands on the BARE, dry sheet — no film there yet, no
+                // water — the tooth's peaks along it take no paint, the share falling inward over the band (the
+                // bloom outside at the boundary's full share). Over a dried wash the edge is whole: a glaze's
+                // edge over paint is not a dry brush's, and the planes' edges coincide along a mass (every plane
+                // skipping the same peaks left holes of paper in the deepest dark).
+                if dry_skip && (!mask[i] || inner[i] > 0) {
+                    let j = py as usize * self.w as usize + px as usize;
+                    if self.wetness[j] <= 1e-3 && self.film[j] <= 1e-6 {
+                        let t = if mask[i] { 1.0 - (inner[i] as f32 - 1.0) / nb as f32 } else { 1.0 };
+                        let g = paper_grain_at(px as f32 / gs, py as f32 / gs, 0xD27B_0A5E);
+                        if g > 1.0 - 0.45 * self.dry_edge * t {
+                            continue;
+                        }
+                    }
+                }
                 self.deposit(px, py, &scaled, 0.0);
                 if mask[i] {
                     let j = self.idx(px, py) / self.n;
-                    self.wetness[j] = self.wetness[j].max(wet.clamp(0.0, 1.0));
+                    // (THE MASKING FLUID refuses the water too: the sheet under it stays dry.)
+                    self.wetness[j] = self.wetness[j].max(wet.clamp(0.0, 1.0) * (1.0 - self.resist_at(j)));
                 }
             }
         }

@@ -763,6 +763,63 @@ pub struct MediumProfile {
     /// its unity; laid as 1 + 3 × key bands of the graded tone, lightest first, each glazing the darker — a
     /// shadow with a body, not a poster's flat.
     pub aqua_body: f32,
+    /// AQUA CUT (0..1, 0 = off; `watercolour`): A FACE CUTS A HOLE IN THE MASS — a deep mass (`aqua_mass`) that
+    /// holds a face is not dropped whole (the tunnel's one dark, the two figures' faces in it, was never a mass
+    /// and never graded): the mass is split at the face's edge, the ground graded and washed as a mass with the
+    /// face's pixels left to their own planes (the likeness).
+    pub aqua_cut: f32,
+    /// AQUA RAGGED (0..1, 0 = off; `watercolour`): THE DRY-BRUSH EDGE — where a wash's edge lands on the BARE,
+    /// dry sheet the paper's tooth above `1 − 0.45 × key` takes no paint (the brush catches the hollows and skips
+    /// the peaks), over two pixels plus half the wet edge inward and the bloom outside: the sparkle of paper
+    /// along a wash's border with the sheet. The edge over a wetted sheet or a dried wash is whole (the water
+    /// carries the paint into the hollows; a glaze's edge over paint is no dry brush's — and along a mass every
+    /// plane's edge coincides, so skipping there left holes of paper in the deepest dark) (see
+    /// `Canvas::set_dry_edge`).
+    pub aqua_ragged: f32,
+    /// AQUA TENSION (0..1, 0 = off; `watercolour`): THE SURFACE TENSION — within one stage two planes of
+    /// different pigments are both wet, so the barrier (`aqua_barrier`) finds no step of water between them and
+    /// takes their line down; by this key the step of COLOUR of the fresh deposit across the boundary (the
+    /// masstone of the pigment leading each side, a step of 0.25 a full edge) restores it — two loads laid wet
+    /// beside each other hold a line (see `Canvas::set_rim_tension`).
+    pub aqua_tension: f32,
+    /// AQUA PAPER (0..1, 0 = off; `watercolour`): THE ABSOLUTE PAPER GATE — the picture's LINEAR luma above the
+    /// key (0.7 is about 0.85 in sRGB), read at wash scale, is never in any plane and takes no mark of the
+    /// drawing: the sun through the cloud, the glint on the water, the white of a shirt are the bare sheet
+    /// (the reserve `aqua_reserve` keeps SHAPES of the lightest plane; this is a hard floor under every plane
+    /// and every stroke).
+    pub aqua_paper: f32,
+    /// AQUA FOCUS (0..1, 0 = off; `watercolour`): THE HIERARCHY OF THE PICTURE — off the FOCUS (the detected
+    /// subject and the faces; the most salient third of the sheet when nothing is detected) the planes are
+    /// merged `1 + round(2 × key)` at a time (the ground laid in two or three great washes, its local
+    /// contrasts ignored) and the drawing after the washes is withheld by the key's share; on the focus the
+    /// planes and the drawing are the picture's own.
+    pub aqua_focus: f32,
+    /// AQUA RESIST (0..1, 0 = off; `watercolour`): THE MASKING FLUID — the lights above the paper gate
+    /// (`aqua_paper`) are reserved on the sheet itself before the first wash (`Canvas::set_resist_rings`, a
+    /// record in the score): they refuse the key's share of every deposit and of the water laid after — a
+    /// wash's wet edge, the flow's spill, a backrun's ring, a stroke — so at 1 the white of the sheet stays
+    /// absolute there, not a film of the sky's wash spread over it (the gate alone kept the lights out of the
+    /// planes and the strokes off them; the washes' water still ran over their edges). The fluid's edge is
+    /// brushed, not cut: its share ramps up over twice the wash's wet edge inside the boundary (hard under the
+    /// dry brush), so a wash fades into the light instead of stopping at a stair of pixels with a tide line.
+    pub aqua_resist: f32,
+    /// AQUA LINE (0..1, 0 = off; `watercolour`): LINE AND WASH — the drawing's skeleton laid DRY on the bare
+    /// sheet before the washes, its own `line` stage at the head of the schedule: the picture's STRUCTURAL
+    /// edges — a step of the value of at least `0.25 − 0.15 × key` of the picture's range across a 700th of
+    /// the sheet (the jaw, the eye, a mast; not the skin's pores or a wall's grain), on the FOCUS only when
+    /// there is one (the subject and the faces, else the salient third — the key objects; the ground is left
+    /// to the washes), each traced along its edge for up to a 25th of the sheet (and dropped under a 120th) by
+    /// one stiff point an 800th of the sheet wide, no pickup, no water (a pencil does not run: the bleed and
+    /// the flow leave it), its tone the palette's neutral dark at a transmittance from 0.7 on a faint edge down
+    /// to 0.35 on a black one × key — a graphite grey under the glazes, never the ink's black; one line per
+    /// edge (a seed on a drawn pixel is skipped); a tenth of the budget × key.
+    pub aqua_line: f32,
+    /// AQUA LOOSE (0..1, 0 = off; `watercolour`): THE HAND LOOSENED OFF THE FOCUS — the washes' wet edge is
+    /// `1 + 2 × key` times wider at the ring points off the focus (the subject and the faces, else the salient
+    /// third) and `1 − key / 2` of itself on it: the ground laid in wide free soft-edged pools, the subject
+    /// crisp (the focus key `aqua_focus` merges the planes and withholds the drawing; this one changes the
+    /// water's edge).
+    pub aqua_loose: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1742,6 +1799,14 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2019,6 +2084,14 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2296,6 +2369,14 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2614,6 +2695,14 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2900,6 +2989,14 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3181,6 +3278,14 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3458,6 +3563,14 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3738,6 +3851,14 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4018,6 +4139,14 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4298,6 +4427,14 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4581,6 +4718,14 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -4861,6 +5006,14 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5143,6 +5296,14 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5420,6 +5581,14 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5697,6 +5866,14 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5980,6 +6157,14 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6264,6 +6449,14 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6546,6 +6739,14 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_mass: 0.0,
     aqua_barrier: 0.0,
     aqua_body: 0.0,
+    aqua_cut: 0.0,
+    aqua_ragged: 0.0,
+    aqua_tension: 0.0,
+    aqua_paper: 0.0,
+    aqua_focus: 0.0,
+    aqua_resist: 0.0,
+    aqua_line: 0.0,
+    aqua_loose: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

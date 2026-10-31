@@ -1887,6 +1887,14 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_mass = plan.medium.aqua_mass;
     params.aqua_barrier = plan.medium.aqua_barrier;
     params.aqua_body = plan.medium.aqua_body;
+    params.aqua_cut = plan.medium.aqua_cut;
+    params.aqua_ragged = plan.medium.aqua_ragged;
+    params.aqua_tension = plan.medium.aqua_tension;
+    params.aqua_paper = plan.medium.aqua_paper;
+    params.aqua_focus = plan.medium.aqua_focus;
+    params.aqua_resist = plan.medium.aqua_resist;
+    params.aqua_line = plan.medium.aqua_line;
+    params.aqua_loose = plan.medium.aqua_loose;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2872,6 +2880,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_mass = m.aqua_mass;
         params.aqua_barrier = m.aqua_barrier;
         params.aqua_body = m.aqua_body;
+        params.aqua_cut = m.aqua_cut;
+        params.aqua_ragged = m.aqua_ragged;
+        params.aqua_tension = m.aqua_tension;
+        params.aqua_paper = m.aqua_paper;
+        params.aqua_focus = m.aqua_focus;
+        params.aqua_resist = m.aqua_resist;
+        params.aqua_line = m.aqua_line;
+        params.aqua_loose = m.aqua_loose;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3132,6 +3148,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_mass { params.aqua_mass = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_barrier { params.aqua_barrier = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_body { params.aqua_body = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_cut { params.aqua_cut = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_ragged { params.aqua_ragged = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tension { params.aqua_tension = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_paper { params.aqua_paper = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_focus { params.aqua_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_resist { params.aqua_resist = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line { params.aqua_line = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_loose { params.aqua_loose = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
