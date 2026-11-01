@@ -1352,8 +1352,11 @@ impl Canvas {
     /// pigment's total mass conserved to the float, and mixed in by `strength`. The water of the wetness map is
     /// not changed (the next plane's technique is the painter's); the masking fluid's cells are walls. Fixed
     /// steps, one thread, no randomness: a replay is byte-exact. A no-op at `strength` 0 or off the
-    /// transmittance film.
-    pub fn fluid(&mut self, strength: f32, radius: f32, evap: f32, weight: f32) {
+    /// transmittance film. `pool` (see `MediumProfile::aqua_pool`): in a FLOODED pool — two neighbouring cells
+    /// both above 0.6 of water — every pigment mingles across the cells by the key (the water's own currents
+    /// carry the particles, not only the dye's dissolution), the heavy ones at half the rate, so two washes laid
+    /// wet into wet in one stage run into each other with no seam.
+    pub fn fluid(&mut self, strength: f32, radius: f32, evap: f32, weight: f32, pool: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 || radius < 1.0 || !self.transmittance {
             return;
@@ -1447,6 +1450,7 @@ impl Canvas {
         let perm = 0.2f32;
         let e0 = 1.6 / steps as f32;
         let ek = evap.clamp(0.0, 1.0);
+        let pool_k = pool.clamp(0.0, 1.0);
         let mut settled = vec![0f32; cells * lanes];
         let mut dw = vec![0f32; cells];
         let mut dm = vec![0f32; cells * lanes];
@@ -1474,8 +1478,11 @@ impl Canvas {
                     // dissolves and spreads against its gradient; a heavy particle does not), by 1 − weight.
                     if wi > 0.3 && wj > 0.3 {
                         let wm = wi.min(wj);
+                        // (AQUA POOL: in a flooded pool every pigment mingles — the water's currents carry the
+                        // particles too — by the key, the heavy ones at half the rate.)
+                        let pk = pool_k * ((wm - 0.6) / 0.35).clamp(0.0, 1.0);
                         for c in 0..lanes {
-                            let dk = 0.1 * (1.0 - wt[c]);
+                            let dk = 0.1 * (1.0 - wt[c]) + 0.3 * pk * (1.0 - 0.5 * wt[c]);
                             if dk <= 0.0 {
                                 continue;
                             }
@@ -1935,6 +1942,18 @@ impl Canvas {
     /// the other's; `feather` is then the reach nowhere — the bloom at a pixel outside the mass goes as far as
     /// the edge it blooms from allows, falling over that reach. `None` = `feather` all round (`fill_rings`).
     pub fn fill_rings_edge(&mut self, rings: &[[f32; 2]], load: &[f32], wet: f32, feather: f32, edge: Option<&[f32]>) {
+        self.fill_rings_charged(rings, load, wet, feather, edge, 0.0)
+    }
+
+    /// `fill_rings_edge` with THE BRUSH'S CHARGE (see `MediumProfile::aqua_charge`; 7.16.0): at `charge` > 0 the
+    /// pigment is laid UNEVENLY over the shape — the loaded brush touches down at the shape's body, the point
+    /// farthest from its boundary (a chamfer distance transform of the mask), and the charge falls off from there
+    /// as exp(−d/L), d the distance to that point and L the farthest the shape reaches from it, the profile
+    /// normalised to the shape's mean so the wash's total pigment is the even fill's (at the full key the body
+    /// about 1.7× the mean, the far corners 0.6×); the brush's water lands with the pigment (the wetness raised
+    /// above the wash's where the charge is above the mean, to 1 at the point), so the solver carries the pigment
+    /// outward from the charge. `charge` 0 is `fill_rings_edge` to the byte.
+    pub fn fill_rings_charged(&mut self, rings: &[[f32; 2]], load: &[f32], wet: f32, feather: f32, edge: Option<&[f32]>, charge: f32) {
         let (w, h) = (self.w as i64, self.h as i64);
         let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
         let mut reach: Vec<(f32, f32)> = Vec::new();
@@ -2061,6 +2080,99 @@ impl Canvas {
                 cur = next;
             }
         }
+        // THE BRUSH'S CHARGE (`charge` > 0; see above): the density profile over the box and the water's lift,
+        // after the wet edge so the bloom's share weighs in the profile's mean.
+        let ch = charge.clamp(0.0, 1.0);
+        let profile: Option<(Vec<f32>, Vec<f32>)> = (ch > 0.0 && load.iter().any(|v| *v > 0.0)).then(|| {
+            // The chamfer 3-4 distance to the boundary inside the mask (the sheet's own edge is no boundary).
+            let inf = 1u32 << 30;
+            let mut dt: Vec<u32> = mask.iter().map(|&m| if m { inf } else { 0 }).collect();
+            for y in 0..bh {
+                for x in 0..bw {
+                    let i = y * bw + x;
+                    if !mask[i] {
+                        continue;
+                    }
+                    let mut d = dt[i];
+                    if x > 0 {
+                        d = d.min(dt[i - 1] + 3);
+                    }
+                    if y > 0 {
+                        d = d.min(dt[i - bw] + 3);
+                        if x > 0 {
+                            d = d.min(dt[i - bw - 1] + 4);
+                        }
+                        if x + 1 < bw {
+                            d = d.min(dt[i - bw + 1] + 4);
+                        }
+                    }
+                    dt[i] = d;
+                }
+            }
+            for y in (0..bh).rev() {
+                for x in (0..bw).rev() {
+                    let i = y * bw + x;
+                    if !mask[i] {
+                        continue;
+                    }
+                    let mut d = dt[i];
+                    if x + 1 < bw {
+                        d = d.min(dt[i + 1] + 3);
+                    }
+                    if y + 1 < bh {
+                        d = d.min(dt[i + bw] + 3);
+                        if x > 0 {
+                            d = d.min(dt[i + bw - 1] + 4);
+                        }
+                        if x + 1 < bw {
+                            d = d.min(dt[i + bw + 1] + 4);
+                        }
+                    }
+                    dt[i] = d;
+                }
+            }
+            let (mut best, mut bi) = (0u32, 0usize);
+            for i in 0..bw * bh {
+                if mask[i] && dt[i] > best {
+                    best = dt[i];
+                    bi = i;
+                }
+            }
+            // (A shape with no boundary in the box — the whole sheet — is charged at its centre.)
+            let (px0, py0) = if best >= inf { ((bw / 2) as f32, (bh / 2) as f32) } else { ((bi % bw) as f32, (bi / bw) as f32) };
+            let mut g = vec![0f32; bw * bh];
+            let mut far = 1f32;
+            for y in 0..bh {
+                for x in 0..bw {
+                    let i = y * bw + x;
+                    g[i] = ((x as f32 - px0).powi(2) + (y as f32 - py0).powi(2)).sqrt();
+                    if mask[i] {
+                        far = far.max(g[i]);
+                    }
+                }
+            }
+            // The profile's mean over the deposit's own weights — the shape at 1, the bloom at its falling share —
+            // so the wash's total pigment is the even fill's to the float.
+            let (mut sum, mut cnt) = (0f64, 0f64);
+            for i in 0..bw * bh {
+                g[i] = (-g[i] / far).exp();
+                let wgt = if mask[i] {
+                    1.0
+                } else if dist[i] > 0 {
+                    let reach = match &lim { Some(l) => l[i] as f32, None => f as f32 };
+                    let t = 1.0 - dist[i] as f32 / (reach + 1.0);
+                    0.6 * t * t
+                } else {
+                    0.0
+                };
+                sum += (g[i] * wgt) as f64;
+                cnt += wgt as f64;
+            }
+            let mean = if cnt > 0.0 { (sum / cnt) as f32 } else { 1.0 };
+            let dens: Vec<f32> = g.iter().map(|v| (1.0 - ch) + ch * v / mean.max(1e-6)).collect();
+            let lift: Vec<f32> = g.iter().map(|v| ch * ((v - mean) / (1.0 - mean).max(1e-3)).clamp(0.0, 1.0)).collect();
+            (dens, lift)
+        });
         // THE DRY-BRUSH EDGE (`set_dry_edge`): the band inside the boundary — two pixels plus half the wet edge —
         // by successive erosion, 1 at the boundary.
         let nb = (feather.max(0.0).round() as usize / 2).max(2);
@@ -2107,6 +2219,11 @@ impl Canvas {
                 } else {
                     continue;
                 };
+                // (THE BRUSH'S CHARGE: the share by the profile; the bloom outside takes its point's.)
+                let k = match &profile {
+                    Some((d, _)) => k * d[i],
+                    None => k,
+                };
                 for (c, v) in load.iter().enumerate() {
                     scaled[c] = v * k;
                 }
@@ -2129,8 +2246,13 @@ impl Canvas {
                 self.deposit(px, py, &scaled, 0.0);
                 if mask[i] {
                     let j = self.idx(px, py) / self.n;
-                    // (THE MASKING FLUID refuses the water too: the sheet under it stays dry.)
-                    self.wetness[j] = self.wetness[j].max(wet.clamp(0.0, 1.0) * (1.0 - self.resist_at(j)));
+                    // (THE MASKING FLUID refuses the water too: the sheet under it stays dry. THE BRUSH'S CHARGE
+                    // brings its water: the wetness lifted toward 1 where the charge is above the mean.)
+                    let wv = match &profile {
+                        Some((_, l)) => wet.clamp(0.0, 1.0) + (1.0 - wet.clamp(0.0, 1.0)) * l[i],
+                        None => wet.clamp(0.0, 1.0),
+                    };
+                    self.wetness[j] = self.wetness[j].max(wv * (1.0 - self.resist_at(j)));
                 }
             }
         }
@@ -3124,6 +3246,57 @@ mod flow_tests {
 
 
     #[test]
+    fn the_charged_wash_lays_its_pigment_at_the_body_and_keeps_its_mass() {
+        // A square washed even and washed charged: the same pigment in all, the charged one denser at its body
+        // than near its edge and wetter there, and charge 0 is the even fill to the byte.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let rings: Vec<[f32; 2]> = vec![[16.0, 16.0], [80.0, 16.0], [80.0, 80.0], [16.0, 80.0]];
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let mut even = fresh();
+        even.fill_rings_edge(&rings, &load, 0.75, 4.0, None);
+        let mut zero = fresh();
+        zero.fill_rings_charged(&rings, &load, 0.75, 4.0, None, 0.0);
+        assert_eq!(zero.to_image().into_raw(), even.to_image().into_raw(), "charge 0 is the even fill");
+        let mut charged = fresh();
+        charged.fill_rings_charged(&rings, &load, 0.75, 4.0, None, 1.0);
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        assert!((total(&charged) - total(&even)).abs() < 1e-2 * total(&even), "the mass kept: {} vs {}", total(&charged), total(&even));
+        let core = charged.conc_at(48, 48)[0];
+        let edge = charged.conc_at(20, 48)[0];
+        let flat = even.conc_at(48, 48)[0];
+        assert!(core > 1.5 * edge, "denser at the body: core {core} edge {edge}");
+        assert!(core > flat && edge < flat, "about the even fill's {flat}: {core} {edge}");
+        assert!(charged.wetness[48 * 96 + 48] > 0.95 && (charged.wetness[48 * 96 + 20] - 0.75).abs() < 1e-3, "the brush's water at the charge: {} {}", charged.wetness[48 * 96 + 48], charged.wetness[48 * 96 + 20]);
+    }
+
+    #[test]
+    fn the_pool_mingles_two_washes_laid_wet_into_wet() {
+        // Two pigments side by side on a flooded sheet (0.95): with the pool key the first crosses the seam far
+        // more than without, and its mass is kept.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(128, 64, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n_pigments();
+        for y in 0..64u32 {
+            for x in 0..128u32 {
+                let mut d = vec![0f32; n];
+                if x < 64 { d[0] = 0.8; } else { d[1] = 0.8; }
+                c.deposit(x, y, &d, 0.0);
+                c.wetness[(y * 128 + x) as usize] = 0.95;
+            }
+        }
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let crossed = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (70..128u32).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let before = total(&c);
+        let mut plain = c.clone();
+        plain.fluid(1.0, 12.0, 0.0, 0.0, 0.0);
+        c.fluid(1.0, 12.0, 0.0, 0.0, 1.0);
+        assert!((total(&c) - before).abs() < 1e-3 * before, "mass kept: {} vs {before}", total(&c));
+        assert!(crossed(&c) > 2.0 * crossed(&plain) + 1e-6, "the pigment crosses the seam in the pool: {} vs {}", crossed(&c), crossed(&plain));
+    }
+
+    #[test]
     fn the_fluid_keeps_the_pigment_s_mass_and_dries_to_a_tide_line() {
         // A wet disc of raw umber on a dry sheet: the solver conserves the pigment to the float, the dried disc is
         // deeper along its edge than at its core (the coffee ring: the water fed the drying edge and the pigment
@@ -3134,11 +3307,11 @@ mod flow_tests {
         let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
         let before = total(&c);
         let mut off = c.clone();
-        off.fluid(0.0, 12.0, 1.0, 0.0);
+        off.fluid(0.0, 12.0, 1.0, 0.0, 0.0);
         assert_eq!(off.to_image().into_raw(), c.to_image().into_raw(), "strength 0 is a no-op");
         let mut twin = c.clone();
-        c.fluid(1.0, 12.0, 1.0, 0.0);
-        twin.fluid(1.0, 12.0, 1.0, 0.0);
+        c.fluid(1.0, 12.0, 1.0, 0.0, 0.0);
+        twin.fluid(1.0, 12.0, 1.0, 0.0, 0.0);
         assert_eq!(twin.to_image().into_raw(), c.to_image().into_raw(), "deterministic");
         let after = total(&c);
         assert!((after - before).abs() < 1e-3 * before, "the mass is kept: {before} -> {after}");
@@ -3160,7 +3333,7 @@ mod flow_tests {
         let (black, sienna) = (3usize, 1usize);
         let mut c = Canvas::white(128, 128, pal, 0.85).with_opacity(0.45).with_transmittance(true);
         wet_disc(&mut c, 30.0, &[(black, 0.6), (sienna, 0.6)], 0.9);
-        c.fluid(1.0, 12.0, 0.5, 1.0);
+        c.fluid(1.0, 12.0, 0.5, 1.0, 0.0);
         // The granulation's CONTRAST: the dried density regressed on the hollow's depth over the core, the slope
         // against the mean density (a pattern alone — a flat lane's float noise — does not count).
         let contrast = |lane: usize| -> f32 {
@@ -3191,7 +3364,7 @@ mod flow_tests {
         wet_disc(&mut c, 30.0, &[(0, 1.0)], 0.9);
         let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
         let before = total(&c);
-        c.fluid(1.0, 12.0, 1.0, 0.0);
+        c.fluid(1.0, 12.0, 1.0, 0.0, 0.0);
         assert!((total(&c) - before).abs() < 1e-3 * before, "the mass is kept");
         for y in 42..54u32 { for x in 42..54u32 { assert!(c.conc_at(x, y)[0] <= 0.0 && c.saturation_at(x, y) <= 0.0, "bare under the fluid at {x},{y}"); } }
         assert!(radial_mean(&c, 0, 20.0, 29.0) > 0.0, "the wash around it dried");
