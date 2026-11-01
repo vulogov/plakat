@@ -858,6 +858,66 @@ pub struct MediumProfile {
     /// at the point) so the solver carries the pigment outward (`Canvas::fill_rings_charged`). In the score's
     /// header for the replay.
     pub aqua_charge: f32,
+    /// AQUA ENGINE (0..1, 0 = off): THE WATER ENGINE — the picture laid by A BRUSH ON WATER, not by polygons. The
+    /// parser fills no shape: it gives the brush's touches (a dab's place, radius, water and pigment; `J` records
+    /// in the score) and the water decides the shape (`Canvas::aqua_inject`, `aqua_settle`; the drying in the
+    /// score's header). `aqua_planes` wet sessions, each dried before the next: the brush halving each session
+    /// from a tenth of the long side, its water from a flooded brush to a dry one (the technique's and
+    /// `aqua_wet`'s share), the sheet wetted before the session by its wetness; one logic over the whole sheet,
+    /// the subject's silhouette (feathered, never a box) only drier, its brush smaller and its water halved.
+    /// Every touch lays the glaze that the share 0.85 → 0.15 of its footprint needs at least toward the session's
+    /// ceiling — the picture's own colour raised toward the paper, `paper^(1−a)·colour^a`, the first session the
+    /// lightest tint of the picture's hue, the last the full value — so the big brush lays its footprint's
+    /// consensus and the small brush the local dark, and nothing lightens the sheet after. The polygon washes'
+    /// keys (`aqua_grade`, `aqua_soft`, `aqua_rim`, `aqua_bloom`, `aqua_mass`, `aqua_body`, `aqua_cut`, `aqua_focus`,
+    /// `aqua_loose`, `aqua_fluid`, `aqua_under`, `aqua_pool`'s edge, `aqua_charge`) are not read: the engine is the
+    /// water; `aqua_evap`, `aqua_weight` and `aqua_pool` steer its drying, `aqua_paper`, `aqua_resist`, `aqua_line`
+    /// and `aqua_detail` stand. Replay-exact.
+    pub aqua_engine: f32,
+    /// AQUA CRISP (0..1, 0 = none; the water engine, 7.16.0 set 10): THE DRY-BRUSH GATE — this share of the
+    /// engine's sessions, from the last (rounded: 0.34 of six is the last two), laid DRY: the sheet not wetted, the
+    /// brush without water, the solver never run; the touch lands at once at the pixel through the paper's tooth
+    /// (the dry brush's broken mark: `Canvas::aqua_inject`'s dry share at 1). The sheet is bone dry at every
+    /// session's start (`aqua_settle` zeroes it) and a dry session adds no water, so nothing spreads: the fine
+    /// structure the wet sessions softened is restated crisp. In the score as touches without water.
+    pub aqua_crisp: f32,
+    /// AQUA STROKE (in brush radii, 0 = the touch of three dabs; the water engine, 7.16.0 set 10): CONNECTED FLOW —
+    /// where the picture runs one way (the structure tensor's coherence ≥ 0.5 at the picture's own energy: a mast,
+    /// a rope, a roof's edge, a hull's line — never a smooth sky) the touch is A STROKE ALONG IT: the brush aimed
+    /// across the ridge at its darkest coherent point (the debt × the coherence over ±1 radius along the normal),
+    /// centred on the ridge and narrowed to its half-width (at least a pixel, at most the brush), walked both ways
+    /// along the tensor's direction in steps of 0.6 of its radius while the structure runs — coherent, the debt at
+    /// least half the touch's, no paper, the direction turning under 45° — up to this many radii each way; the grid
+    /// point's pigment (its load over its grid cell) spread over the stroke's dabs, so the mass laid per session is
+    /// unchanged and only its shape is the structure's: the water and the pigment injected along the whole line at
+    /// once, the edge evaporation pinning an elongated rim along it, a dry session laying a line. Off a structure,
+    /// the three dabs along the flow. In the score as the stroke's dabs (`J`).
+    pub aqua_stroke: f32,
+    /// AQUA VISC (0..1, 0 = off; the water engine, 7.16.0 set 10): PIGMENT-INDUCED VISCOSITY — in the engine's
+    /// solver a cell's water flows and its dyes mingle by 1/(1 + 4·visc·c), c the pigment's concentration in its
+    /// water (the suspended density over the water's depth), the thicker of two cells deciding: a dense charge laid
+    /// with little water (the dark accents of the late sessions) thickens the water it sits in and holds its edge
+    /// on a wet sheet; a tint in a pool runs as before (`Canvas::aqua_settle`). In the score's header (the engine's
+    /// fifth value) for the replay.
+    pub aqua_visc: f32,
+    /// AQUA PRESS (0..0.95, 0 = none; the water engine, 7.16.0 set 11): PRESSURE-BASED GRAIN — a dry brush does not
+    /// only catch the tooth's peaks: where its pressure is full it fills the hollows too and catches the texture
+    /// only at its edges where the pressure falls. Within this share of every touch's radius the tooth's gate is
+    /// off (the pigment laid solid, hollows and peaks), and from there to the rim the gate's threshold rises to the
+    /// dry brush's full one, so a dry stroke along a mast is solid down its axis and ragged at its sides. Recorded
+    /// as every touch's pressure (`press`) for the replay (`Canvas::aqua_inject`).
+    pub aqua_press: f32,
+    /// AQUA DRY BOOST (0..1, 0 = none; the water engine, 7.16.0 set 11): THE DRY-BRUSH PIGMENT BOOST — the dry
+    /// share of a touch that the tooth's gate rejects (the hollows the brush skims) is not lost but laid, by this
+    /// share, on the touch's pixels that passed, in proportion to what they took — the touch's dry mass kept, the
+    /// density at most tripled — so the dry sessions' accents are as dark as the brush carried and the sheet does
+    /// not lighten for want of a session to make the tone up. In the score's header (the engine's sixth value).
+    pub aqua_dry_boost: f32,
+    /// AQUA TIP (px, 0 = a pixel; the water engine, 7.16.0 set 11): THE LINER'S TIP — a stroke along a structure
+    /// (`aqua_stroke`) is never narrower than this radius (within the brush's), the thin line written by the tip
+    /// of a round brush with a soft edge instead of a one-pixel hard scratch; the sail's seams and the rigging
+    /// soften from a pencil's line to a brush's.
+    pub aqua_tip: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1851,6 +1911,13 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2142,6 +2209,13 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2433,6 +2507,13 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2765,6 +2846,13 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3065,6 +3153,13 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3360,6 +3455,13 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3651,6 +3753,13 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3945,6 +4054,13 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4239,6 +4355,13 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4533,6 +4656,13 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4830,6 +4960,13 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -5124,6 +5261,13 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5420,6 +5564,13 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5711,6 +5862,13 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6002,6 +6160,13 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6299,6 +6464,13 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6597,6 +6769,13 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6893,6 +7072,13 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_under: 0.0,
     aqua_pool: 0.0,
     aqua_charge: 0.0,
+    aqua_engine: 0.0,
+    aqua_crisp: 0.0,
+    aqua_stroke: 0.0,
+    aqua_visc: 0.0,
+    aqua_press: 0.0,
+    aqua_dry_boost: 0.0,
+    aqua_tip: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

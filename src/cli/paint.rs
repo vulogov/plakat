@@ -1901,6 +1901,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_under = plan.medium.aqua_under;
     params.aqua_pool = plan.medium.aqua_pool;
     params.aqua_charge = plan.medium.aqua_charge;
+    params.aqua_engine = plan.medium.aqua_engine;
+    params.aqua_crisp = plan.medium.aqua_crisp;
+    params.aqua_stroke = plan.medium.aqua_stroke;
+    params.aqua_visc = plan.medium.aqua_visc;
+    params.aqua_press = plan.medium.aqua_press;
+    params.aqua_dry_boost = plan.medium.aqua_dry_boost;
+    params.aqua_tip = plan.medium.aqua_tip;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2900,6 +2907,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_under = m.aqua_under;
         params.aqua_pool = m.aqua_pool;
         params.aqua_charge = m.aqua_charge;
+        params.aqua_engine = m.aqua_engine;
+        params.aqua_crisp = m.aqua_crisp;
+        params.aqua_stroke = m.aqua_stroke;
+        params.aqua_visc = m.aqua_visc;
+        params.aqua_press = m.aqua_press;
+        params.aqua_dry_boost = m.aqua_dry_boost;
+        params.aqua_tip = m.aqua_tip;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3174,6 +3188,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_under { params.aqua_under = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_pool { params.aqua_pool = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_charge { params.aqua_charge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_engine { params.aqua_engine = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_crisp { params.aqua_crisp = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_stroke { params.aqua_stroke = v.clamp(0.0, 16.0); }
+        if let Some(v) = pl.aqua_visc { params.aqua_visc = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_press { params.aqua_press = v.clamp(0.0, 0.95); }
+        if let Some(v) = pl.aqua_dry_boost { params.aqua_dry_boost = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tip { params.aqua_tip = v.clamp(0.0, 64.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
