@@ -1774,12 +1774,22 @@ impl Canvas {
     /// (0 = the gate over the whole dab). THE DRY-BRUSH BOOST (`boost`; see `MediumProfile::aqua_dry_boost`): the dry
     /// share the tooth rejects is not lost but laid on the dab's pixels that passed, in proportion (the dab's dry
     /// mass kept by this share, the density at most tripled), so the dry accent is as dark as the brush carried.
-    pub fn aqua_inject(&mut self, path: &[[f32; 2]], radius: f32, water: f32, load: &[f32], press: f32, boost: f32) {
+    /// THE STROKE'S TAPER (`end_radius`, 7.16.0 set 12; see `MediumProfile::aqua_taper`): along a path of several
+    /// dabs the radius runs from `end_radius` at the ends to `radius` at the middle by sin(πt) — the brush lifting
+    /// off at the ends, pressing in the middle; 0 (or a single dab) = `radius` throughout. THE EDGE'S BIAS (`bias`;
+    /// see `MediumProfile::aqua_bias`): the pressure's solid share grows toward one side of the stroke (the left of
+    /// its travel) by bias × (1 − press) and shrinks by as much toward the other, so one edge is cut sharp and the
+    /// other is left to the tooth.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aqua_inject(&mut self, path: &[[f32; 2]], radius: f32, end_radius: f32, water: f32, load: &[f32], press: f32, boost: f32, bias: f32) {
         if !self.transmittance || path.is_empty() {
             return;
         }
         let (w, h, n) = (self.w as usize, self.h as usize, self.n);
-        let r = radius.max(0.5);
+        let r0 = radius.max(0.5);
+        let r_end = if end_radius > 0.0 { end_radius.max(0.5) } else { r0 };
+        let bias_k = bias.clamp(0.0, 1.0);
+        let m = path.len();
         let wat = water.clamp(0.0, 2.0);
         let dry = (1.0 - wat / 0.35).clamp(0.0, 1.0);
         let gs = self.grain_scale.max(1.0);
@@ -1793,8 +1803,23 @@ impl Canvas {
         let thr_rim = 0.65 * dry - 0.15;
         let mut gates: Vec<f32> = Vec::new();
         let mut d = vec![0f32; n];
-        for pt in path {
+        for (pi, pt) in path.iter().enumerate() {
             let (px, py) = (pt[0], pt[1]);
+            // The dab's radius along the stroke and the stroke's left-hand normal for the edge's bias.
+            let r = if m > 1 {
+                let t = pi as f32 / (m - 1) as f32;
+                r_end + (r0 - r_end) * (std::f32::consts::PI * t).sin()
+            } else {
+                r0
+            };
+            let (nx_, ny_) = if m > 1 && bias_k > 0.0 {
+                let (a, b) = (&path[pi.saturating_sub(1)], &path[(pi + 1).min(m - 1)]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let l = (dx * dx + dy * dy).sqrt();
+                if l > 1e-6 { (-dy / l, dx / l) } else { (0.0, 0.0) }
+            } else {
+                (0.0, 0.0)
+            };
             if !(px.is_finite() && py.is_finite()) || px + r < 0.0 || py + r < 0.0 || px - r > w as f32 || py - r > h as f32 {
                 continue;
             }
@@ -1824,7 +1849,9 @@ impl Canvas {
                             1.0
                         } else {
                             let g = paper_grain_at(x as f32 / gs, y as f32 / gs, 0x6_1A1_0000);
-                            let thr = if pk <= 0.0 { thr_rim } else { -0.3 + (thr_rim + 0.3) * ((d2.sqrt() - pk) / (1.0 - pk)).clamp(0.0, 1.0) };
+                            let rho = d2.sqrt();
+                            let pe = if bias_k > 0.0 && rho > 1e-6 { (pk + bias_k * (1.0 - pk) * ((dx * nx_ + dy * ny_) / (rho * r))).clamp(0.0, 0.95) } else { pk };
+                            let thr = if pe <= 0.0 { thr_rim } else { -0.3 + (thr_rim + 0.3) * ((rho - pe) / (1.0 - pe)).clamp(0.0, 1.0) };
                             ((g - thr) / 0.3).clamp(0.0, 1.0)
                         };
                         gates[(y - y0) * bw + (x - x0)] = gate;
@@ -3734,7 +3761,7 @@ mod flow_tests {
         };
         let expect = 0.8 * std::f32::consts::PI * 144.0 * 0.5;
         let mut wet = fresh();
-        wet.aqua_inject(&[[48.0, 48.0]], 12.0, 1.0, &load, 0.0, 0.0);
+        wet.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
         assert!(wet.aqua_wet() && wet.wetness[48 * 96 + 48] > 0.9, "the brush's water on the sheet");
         assert!(total(&wet) < 1e-6, "a wet dab's pigment is afloat, not laid: {}", total(&wet));
         wet.aqua_settle(12.0, 1.0, 0.8, 1.0, 0.0);
@@ -3743,13 +3770,13 @@ mod flow_tests {
         // On a sheet wetted first the water carries a light pigment (weight 0: a dye) far beyond the brush; on the
         // dry sheet it stays near the touch (a wash on dry paper holds its edge).
         let mut pool = fresh();
-        pool.aqua_inject(&[[48.0, 48.0]], 30.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0);
-        pool.aqua_inject(&[[48.0, 48.0]], 12.0, 1.0, &load, 0.0, 0.0);
+        pool.aqua_inject(&[[48.0, 48.0]], 30.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+        pool.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
         pool.aqua_settle(12.0, 1.0, 0.0, 1.0, 0.0);
         assert!((total(&pool) - expect).abs() < 1e-2 * expect, "the mass kept in the pool: {} vs {}", total(&pool), expect);
         assert!(outside(&pool) > 0.1 * total(&pool) && outside(&pool) > 4.0 * outside(&wet), "the wet sheet carries it beyond the footprint: {} of {} (dry sheet {})", outside(&pool), total(&pool), outside(&wet));
         let mut dry = fresh();
-        dry.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, &load, 0.0, 0.0);
+        dry.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 0.0, &load, 0.0, 0.0, 0.0);
         let at_once = total(&dry);
         assert!(at_once > 0.2 * expect && at_once < 0.9 * expect, "a dry dab lands at once, through the tooth: {at_once} vs {expect}");
         dry.aqua_settle(12.0, 1.0, 0.8, 1.0, 0.0);
@@ -3757,7 +3784,7 @@ mod flow_tests {
         assert!(outside(&dry) < 1e-3 * at_once, "and none beyond the footprint: {}", outside(&dry));
         // The same touches twice give the same sheet: the engine is deterministic.
         let mut again = fresh();
-        again.aqua_inject(&[[48.0, 48.0]], 12.0, 1.0, &load, 0.0, 0.0);
+        again.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
         again.aqua_settle(12.0, 1.0, 0.8, 1.0, 0.0);
         assert_eq!(again.to_image().into_raw(), wet.to_image().into_raw(), "deterministic");
     }
@@ -3776,7 +3803,7 @@ mod flow_tests {
         let expect = 0.8 * std::f32::consts::PI * 144.0 * 0.5;
         let run = |press: f32, boost: f32| -> Canvas {
             let mut c = fresh();
-            c.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, &load, press, boost);
+            c.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 0.0, &load, press, boost, 0.0);
             c
         };
         let plain = run(0.0, 0.0);
@@ -3792,6 +3819,39 @@ mod flow_tests {
         let full = run(0.95, 1.0);
         let full_plain = run(0.95, 0.0);
         assert!((total(&full) - total(&full_plain)).abs() < 0.02 * total(&full_plain), "next to nothing to boost under a full pressure: {} vs {}", total(&full), total(&full_plain));
+    }
+
+    #[test]
+    fn the_stroke_tapers_to_its_ends_and_keeps_one_edge_sharper() {
+        // A straight dry stroke of nine dabs under full pressure: with an end radius the sheet 5 px off the axis
+        // is painted at the middle and bare at the ends, and no end radius is the brush's radius to the byte. With
+        // the bias at full and a low pressure the side left of the travel takes more pigment than the right; with
+        // no bias the two sides take alike.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let path: Vec<[f32; 2]> = (0..9).map(|i| [16.0 + 8.0 * i as f32, 48.0]).collect();
+        let mut tap = fresh();
+        tap.aqua_inject(&path, 8.0, 2.4, 0.0, &load, 0.95, 0.0, 0.0);
+        assert!(tap.conc_at(48, 42)[0] > 0.0 && tap.conc_at(16, 42)[0] <= 0.0, "the middle wide, the ends thin: {} / {}", tap.conc_at(48, 42)[0], tap.conc_at(16, 42)[0]);
+        let mut even = fresh();
+        even.aqua_inject(&path, 8.0, 8.0, 0.0, &load, 0.95, 0.0, 0.0);
+        let mut same = fresh();
+        same.aqua_inject(&path, 8.0, 0.0, 0.0, &load, 0.95, 0.0, 0.0);
+        assert_eq!(even.to_image().into_raw(), same.to_image().into_raw(), "no end radius is the brush's radius");
+        let side = |c: &Canvas, below: bool| -> f32 {
+            (30..66u32).flat_map(|x| (0..8u32).map(move |k| (x, if below { 49 + k } else { 47 - k }))).map(|(x, y)| c.conc_at(x, y)[0]).sum()
+        };
+        let mut biased = fresh();
+        biased.aqua_inject(&path, 8.0, 0.0, 0.0, &load, 0.3, 0.0, 1.0);
+        let (lb, rb) = (side(&biased, true), side(&biased, false));
+        assert!(lb > 1.2 * rb, "the left of the travel sharp, the right to the tooth: {lb} vs {rb}");
+        let mut plain = fresh();
+        plain.aqua_inject(&path, 8.0, 0.0, 0.0, &load, 0.3, 0.0, 0.0);
+        let (lp, rp) = (side(&plain, true), side(&plain, false));
+        // (The tooth is not symmetric about the axis: alike within the grain's own unevenness.)
+        assert!((lp - rp).abs() < 0.3 * lp.max(rp), "no bias, both sides alike: {lp} vs {rp}");
     }
 
     #[test]
@@ -3817,8 +3877,8 @@ mod flow_tests {
             let mut c = fresh();
             let mut load = vec![0f32; pal.pigments.len()];
             load[0] = load0;
-            c.aqua_inject(&[[48.0, 48.0]], 30.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0);
-            c.aqua_inject(&[[48.0, 48.0]], 12.0, water, &load, 0.0, 0.0);
+            c.aqua_inject(&[[48.0, 48.0]], 30.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+            c.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, water, &load, 0.0, 0.0, 0.0);
             c.aqua_settle(12.0, 1.0, 0.0, 1.0, visc);
             (total(&c), outside(&c))
         };

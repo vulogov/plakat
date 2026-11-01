@@ -100,9 +100,10 @@ pub struct ScoreHeader {
     pub charge: f32,
     /// THE WATER ENGINE (see `Canvas::aqua_settle`; `MediumProfile::aqua_engine`): the session's drying run at the end
     /// of every aqua stage: (the water's reach px, edge evaporation 0..1, pigment weight 0..1, pool mingling 0..1,
-    /// the pigment's viscosity 0..1 — `MediumProfile::aqua_visc`, the dry-brush boost 0..1 — `aqua_dry_boost`; read
-    /// with four to six values). None = off (the polygon washes and `fluid`).
-    pub engine: Option<(f32, f32, f32, f32, f32, f32)>,
+    /// the pigment's viscosity 0..1 — `MediumProfile::aqua_visc`, the dry-brush boost 0..1 — `aqua_dry_boost`, the
+    /// edge's bias 0..1 — `aqua_bias`; read with four to seven values, the trailing zeros not written). None = off
+    /// (the polygon washes and `fluid`).
+    pub engine: Option<(f32, f32, f32, f32, f32, f32, f32)>,
     /// CANVAS WEAVE (see `Finish::weave`). 0 = none.
     pub weave: f32,
     /// CANVAS SAG (see `Finish::sag`). 0 = none.
@@ -339,7 +340,18 @@ impl StrokeScore {
         let ground = if h.tension > 0.0 { format!("{ground} tension={}", fmt_f(h.tension)) } else { ground };
         let ground = match h.fluid { Some((s, r, e, w, pl)) => format!("{ground} fluid={},{},{},{},{}", fmt_f(s), fmt_f(r), fmt_f(e), fmt_f(w), fmt_f(pl)), None => ground };
         let ground = if h.charge > 0.0 { format!("{ground} charge={}", fmt_f(h.charge)) } else { ground };
-        let ground = match h.engine { Some((r, e, w, pl, v, b)) => format!("{ground} engine={},{},{},{}{}{}", fmt_f(r), fmt_f(e), fmt_f(w), fmt_f(pl), if v > 0.0 || b > 0.0 { format!(",{}", fmt_f(v)) } else { String::new() }, if b > 0.0 { format!(",{}", fmt_f(b)) } else { String::new() }), None => ground };
+        let ground = match h.engine {
+            Some((r, e, w, pl, v, b, x)) => {
+                let tail = [v, b, x];
+                let last = tail.iter().rposition(|t| *t > 0.0).map(|i| i + 1).unwrap_or(0);
+                let mut s = format!("{ground} engine={},{},{},{}", fmt_f(r), fmt_f(e), fmt_f(w), fmt_f(pl));
+                for t in &tail[..last] {
+                    s.push_str(&format!(",{}", fmt_f(*t)));
+                }
+                s
+            }
+            None => ground,
+        };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
             h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if (b.deplete - 1.0).abs() > 1e-6 { format!(" deplete={}", fmt_f(b.deplete)) } else { String::new() } + &if b.comma > 0.0 { format!(" comma={}", fmt_f(b.comma)) } else { String::new() } + &if b.chalk > 0.0 { format!(" chalk={}", fmt_f(b.chalk)) } else { String::new() } + &if b.dust > 0.0 { format!(" dust={}", fmt_f(b.dust)) } else { String::new() } + &if b.rewet > 0.0 { format!(" rewet={}", fmt_f(b.rewet)) } else { String::new() } + &if b.tsuke > 0.0 { format!(" tsuke={}", fmt_f(b.tsuke)) } else { String::new() } + &if b.kasure > 0.0 { format!(" kasure={}", fmt_f(b.kasure)) } else { String::new() } + &if b.katsu > 0.0 { format!(" katsu={}", fmt_f(b.katsu)) } else { String::new() } + &if b.bevel > 0.0 { format!(" bevel={}", fmt_f(b.bevel)) } else { String::new() } + &if b.mix > 0.0 { format!(" bmix={}", fmt_f(b.mix)) } else { String::new() } + &if b.fade > 0.0 { format!(" bfade={}", fmt_f(b.fade)) } else { String::new() } + &if b.pile > 0.0 { format!(" bpile={}", fmt_f(b.pile)) } else { String::new() } + &if b.skid > 0.0 { format!(" bskid={}", fmt_f(b.skid)) } else { String::new() } + &if b.rim > 0.0 { format!(" brim={}", fmt_f(b.rim)) } else { String::new() } + &if b.slip > 0.0 { format!(" bslip={}", fmt_f(b.slip)) } else { String::new() } + &if b.bed > 0.0 { format!(" bbed={}", fmt_f(b.bed)) } else { String::new() } + &if b.drag > 0.0 { format!(" bdrag={}", fmt_f(b.drag)) } else { String::new() } + &if b.age > 0.0 { format!(" bage={}", fmt_f(b.age)) } else { String::new() } + &if b.bridge > 0.0 { format!(" bbridge={}", fmt_f(b.bridge)) } else { String::new() } + &if b.liftoff > 0.0 { format!(" blift={}", fmt_f(b.liftoff)) } else { String::new() } + &if b.broken > 0.0 { format!(" bbroken={}", fmt_f(b.broken)) } else { String::new() } + &if b.lip > 0.0 { format!(" blip={}", fmt_f(b.lip)) } else { String::new() } + &if b.marble > 0.0 { format!(" bmarble={}", fmt_f(b.marble)) } else { String::new() } + &if b.slump > 0.0 { format!(" bslump={}", fmt_f(b.slump)) } else { String::new() } + &if b.tilt > 0.0 { format!(" btilt={}", fmt_f(b.tilt)) } else { String::new() } + &if b.stiction > 0.0 { format!(" bstict={}", fmt_f(b.stiction)) } else { String::new() } + &if b.smear > 0.0 { format!(" bsmear={}", fmt_f(b.smear)) } else { String::new() } + &if b.heel > 0.0 { format!(" bheel={}", fmt_f(b.heel)) } else { String::new() } + &if b.dirty > 0.0 { format!(" bdirty={}", fmt_f(b.dirty)) } else { String::new() } + &if b.tear > 0.0 { format!(" btear={}", fmt_f(b.tear)) } else { String::new() } + &if b.nijimi > 0.0 { format!(" nijimi={}", fmt_f(b.nijimi)) } else { String::new() } + &if b.turn > 0.0 { format!(" turn={}", fmt_f(b.turn)) } else { String::new() } + &if b.join > 0.0 { format!(" join={}", fmt_f(b.join)) } else { String::new() } + &if b.waver > 0.0 { format!(" waver={}", fmt_f(b.waver)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &if h.sag > 0.0 { format!(" sag={}", fmt_f(h.sag)) } else { String::new() } + &if h.gloss > 0.0 { format!(" gloss={}", fmt_f(h.gloss)) } else { String::new() } + &if h.hiding > 0.0 { format!(" hiding={}", fmt_f(h.hiding)) } else { String::new() } + &if h.tone > 0.0 { format!(" tone={}", fmt_f(h.tone)) } else { String::new() } + &if h.water > 0.0 { format!(" water={}", fmt_f(h.water)) } else { String::new() } + &if h.agent > 0.0 { format!(" agent={}", fmt_f(h.agent)) } else { String::new() } + &if h.light > 0.0 { format!(" light={}", fmt_f(h.light)) } else { String::new() } + &if h.phong > 0.0 { format!(" phong={}", fmt_f(h.phong)) } else { String::new() } + &if h.spread > 0.0 { format!(" spread={}", fmt_f(h.spread)) } else { String::new() } + &if h.peak > 0.0 { format!(" peak={}", fmt_f(h.peak)) } else { String::new() } + (if h.old_paper { " oldpaper=1" } else { "" }) + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
@@ -463,7 +475,7 @@ impl StrokeScore {
                         tension: get("tension").parse().unwrap_or(0.0),
                         fluid: m.get("fluid").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 4 || p.len() == 5).then(|| (p[0], p[1], p[2], p[3], p.get(4).copied().unwrap_or(0.0))) }),
                         charge: get("charge").parse().unwrap_or(0.0),
-                        engine: m.get("engine").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (4..=6).contains(&p.len()).then(|| (p[0], p[1], p[2], p[3], p.get(4).copied().unwrap_or(0.0), p.get(5).copied().unwrap_or(0.0))) }),
+                        engine: m.get("engine").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (4..=7).contains(&p.len()).then(|| (p[0], p[1], p[2], p[3], p.get(4).copied().unwrap_or(0.0), p.get(5).copied().unwrap_or(0.0), p.get(6).copied().unwrap_or(0.0))) }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -677,7 +689,8 @@ impl StrokeScore {
                         load[i] += val * ss;
                     }
                 }
-                canvas.aqua_inject(&path, rec.w0 * ss, rec.wet, &load, rec.press, self.header.engine.map(|e| e.5).unwrap_or(0.0));
+                let (eb, ex) = self.header.engine.map(|e| (e.5, e.6)).unwrap_or((0.0, 0.0));
+                canvas.aqua_inject(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex);
                 continue;
             }
             // A CLIP record (`K`): strokes after it lay paint only inside its rings; a one-point record clears.
@@ -768,7 +781,7 @@ impl StrokeScore {
         for idx in from..to.min(n) {
             // THE WATER ENGINE (see `Canvas::aqua_settle`): the session's water dried and its pigment laid, before
             // anything else touches the sheet.
-            if let Some((er, ee, ew, ep, ev, _)) = self.header.engine {
+            if let Some((er, ee, ew, ep, ev, _, _)) = self.header.engine {
                 if crate::paint::painter::aqua_stage(self.header.stages.as_deref(), idx) {
                     canvas.aqua_settle(er, ee, ew, ep, ev);
                 }
@@ -885,7 +898,8 @@ impl StrokeScore {
                 }
                 let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
                 if rec.inject {
-                    canvas.aqua_inject(&path, rec.w0 * ss, rec.wet, &load, rec.press, self.header.engine.map(|e| e.5).unwrap_or(0.0));
+                    let (eb, ex) = self.header.engine.map(|e| (e.5, e.6)).unwrap_or((0.0, 0.0));
+                canvas.aqua_inject(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex);
                     laid += 1;
                     if laid % every == 0 {
                         frames.push(canvas.snapshot());
@@ -1051,19 +1065,23 @@ mod tests {
         let mut s = sample();
         s.header.transmittance = true;
         s.header.stages = Some(vec!["aqua-1".into()]);
-        s.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.5, 0.0));
+        s.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.5, 0.0, 0.0));
         s.strokes = vec![StrokeRecord { id: 1, wipe: false, wash: false, inject: true, stage: "aqua-1".into(), spline: vec![[20.0, 20.0], [30.0, 24.0]], w0: 8.0, w1: 0.0, taper: 0.0, mix: vec![("cadmium-red".into(), 0.5)], wet: 0.9, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None }];
         let text = s.to_text();
         assert!(text.contains(" engine=6,1,0.8,1,0.5") && text.contains("\nJ 1 stage=aqua-1 "), "the tokens: {text}");
         let parsed = StrokeScore::parse(&text).expect("parses");
         assert!(parsed.strokes[0].inject && !parsed.strokes[0].wash, "the touch back from the text");
-        assert_eq!(parsed.header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.5, 0.0)), "the engine back from the text");
-        assert_eq!(StrokeScore::parse(&text.replace("engine=6,1,0.8,1,0.5", "engine=6,1,0.8,1")).unwrap().header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0)), "a set-9 header without the viscosity");
+        assert_eq!(parsed.header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.5, 0.0, 0.0)), "the engine back from the text");
+        assert_eq!(StrokeScore::parse(&text.replace("engine=6,1,0.8,1,0.5", "engine=6,1,0.8,1")).unwrap().header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.0)), "a set-9 header without the viscosity");
         let mut boosted = s.clone();
-        boosted.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.0, 1.0));
+        boosted.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.0, 1.0, 0.0));
         let bt = boosted.to_text();
         assert!(bt.contains(" engine=6,1,0.8,1,0,1"), "the boost as the sixth value: {bt}");
-        assert_eq!(StrokeScore::parse(&bt).unwrap().header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.0, 1.0)), "and back");
+        assert_eq!(StrokeScore::parse(&bt).unwrap().header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.0, 1.0, 0.0)), "and back");
+        boosted.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.4));
+        let xt = boosted.to_text();
+        assert!(xt.contains(" engine=6,1,0.8,1,0,0,0.4"), "the bias as the seventh value: {xt}");
+        assert_eq!(StrokeScore::parse(&xt).unwrap().header.engine, Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.4)), "and back");
         let laid = s.replay(64, 48).unwrap().to_image().into_raw();
         let mut bare = s.clone();
         bare.strokes.clear();

@@ -1908,6 +1908,9 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_press = plan.medium.aqua_press;
     params.aqua_dry_boost = plan.medium.aqua_dry_boost;
     params.aqua_tip = plan.medium.aqua_tip;
+    params.aqua_skip = plan.medium.aqua_skip;
+    params.aqua_taper = plan.medium.aqua_taper;
+    params.aqua_bias = plan.medium.aqua_bias;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2914,6 +2917,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_press = m.aqua_press;
         params.aqua_dry_boost = m.aqua_dry_boost;
         params.aqua_tip = m.aqua_tip;
+        params.aqua_skip = m.aqua_skip;
+        params.aqua_taper = m.aqua_taper;
+        params.aqua_bias = m.aqua_bias;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3195,6 +3201,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_press { params.aqua_press = v.clamp(0.0, 0.95); }
         if let Some(v) = pl.aqua_dry_boost { params.aqua_dry_boost = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_tip { params.aqua_tip = v.clamp(0.0, 64.0); }
+        if let Some(v) = pl.aqua_skip { params.aqua_skip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_taper { params.aqua_taper = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_bias { params.aqua_bias = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
