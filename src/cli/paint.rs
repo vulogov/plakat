@@ -1911,6 +1911,22 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_skip = plan.medium.aqua_skip;
     params.aqua_taper = plan.medium.aqua_taper;
     params.aqua_bias = plan.medium.aqua_bias;
+    params.aqua_taper_min = plan.medium.aqua_taper_min;
+    params.aqua_fine = plan.medium.aqua_fine;
+    params.aqua_fade = plan.medium.aqua_fade;
+    params.aqua_sweep = plan.medium.aqua_sweep;
+    params.aqua_line_resist = plan.medium.aqua_line_resist;
+    params.aqua_light = plan.medium.aqua_light;
+    params.aqua_light_dir = plan.medium.aqua_light_dir;
+    params.aqua_vignette = plan.medium.aqua_vignette;
+    params.aqua_line_density = plan.medium.aqua_line_density;
+    params.aqua_grain_dir = plan.medium.aqua_grain_dir;
+    params.aqua_spot_dry = plan.medium.aqua_spot_dry;
+    params.aqua_fine_calm = plan.medium.aqua_fine_calm;
+    params.aqua_line_press = plan.medium.aqua_line_press;
+    params.aqua_line_tooth = plan.medium.aqua_line_tooth;
+    params.aqua_line_lift = plan.medium.aqua_line_lift;
+    params.aqua_tech = plan.medium.aqua_tech;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2920,6 +2936,22 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_skip = m.aqua_skip;
         params.aqua_taper = m.aqua_taper;
         params.aqua_bias = m.aqua_bias;
+        params.aqua_taper_min = m.aqua_taper_min;
+        params.aqua_fine = m.aqua_fine;
+        params.aqua_fade = m.aqua_fade;
+        params.aqua_sweep = m.aqua_sweep;
+        params.aqua_line_resist = m.aqua_line_resist;
+        params.aqua_light = m.aqua_light;
+        params.aqua_light_dir = m.aqua_light_dir;
+        params.aqua_vignette = m.aqua_vignette;
+        params.aqua_line_density = m.aqua_line_density;
+        params.aqua_grain_dir = m.aqua_grain_dir;
+        params.aqua_spot_dry = m.aqua_spot_dry;
+        params.aqua_fine_calm = m.aqua_fine_calm;
+        params.aqua_line_press = m.aqua_line_press;
+        params.aqua_line_tooth = m.aqua_line_tooth;
+        params.aqua_line_lift = m.aqua_line_lift;
+        params.aqua_tech = m.aqua_tech;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3204,6 +3236,22 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_skip { params.aqua_skip = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_taper { params.aqua_taper = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_bias { params.aqua_bias = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_taper_min { params.aqua_taper_min = v.clamp(0.0, 16.0); }
+        if let Some(v) = pl.aqua_fine { params.aqua_fine = v.clamp(0.0, 20.0); }
+        if let Some(v) = pl.aqua_fade { params.aqua_fade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sweep { params.aqua_sweep = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_resist { params.aqua_line_resist = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_light { params.aqua_light = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_light_dir { params.aqua_light_dir = v.rem_euclid(360.0); }
+        if let Some(v) = pl.aqua_vignette { params.aqua_vignette = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_density { params.aqua_line_density = v.clamp(0.0, 4.0); }
+        if let Some(v) = pl.aqua_grain_dir { params.aqua_grain_dir = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_spot_dry { params.aqua_spot_dry = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_fine_calm { params.aqua_fine_calm = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_press { params.aqua_line_press = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_tooth { params.aqua_line_tooth = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_lift { params.aqua_line_lift = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tech { params.aqua_tech = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {

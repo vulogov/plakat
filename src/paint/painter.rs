@@ -659,6 +659,36 @@ pub struct PaintParams {
     pub aqua_taper: f32,
     /// AQUA BIAS (0..1): one edge of every touch cut sharper than the other (`MediumProfile::aqua_bias`).
     pub aqua_bias: f32,
+    /// AQUA TAPER MIN (brush radii): a stroke shorter than this is laid as the plain touch (`MediumProfile::aqua_taper_min`).
+    pub aqua_taper_min: f32,
+    /// AQUA FINE (thousandths of the long side): the thin dark structure the skeleton draws and the engine closes out (`MediumProfile::aqua_fine`).
+    pub aqua_fine: f32,
+    /// AQUA FADE (0..1): off the focus a faint target's debt zeroed, the paper left bare (`MediumProfile::aqua_fade`).
+    pub aqua_fade: f32,
+    /// AQUA SWEEP (0..1): a stroke's pigment falling from its middle to its ends (`MediumProfile::aqua_sweep`).
+    pub aqua_sweep: f32,
+    /// AQUA LINE RESIST (0..1): the masking fluid along the skeleton's lines (`MediumProfile::aqua_line_resist`).
+    pub aqua_line_resist: f32,
+    /// AQUA LIGHT (0..1): a touch at an edge facing the light wetter, turned from it drier (`MediumProfile::aqua_light`).
+    pub aqua_light: f32,
+    /// AQUA LIGHT DIR (degrees): where the light comes from, 0 the left, 90 the top (`MediumProfile::aqua_light_dir`).
+    pub aqua_light_dir: f32,
+    /// AQUA VIGNETTE (0..1): the debt off the attention ellipse let go from the second session on (`MediumProfile::aqua_vignette`).
+    pub aqua_vignette: f32,
+    /// AQUA LINE DENSITY: the pencil laid direct to this power of its tone (see `MediumProfile::aqua_line_density`).
+    pub aqua_line_density: f32,
+    /// AQUA LINE PRESS / TOOTH / LIFT: the pencil's hand (see `MediumProfile::aqua_line_press`, `aqua_line_tooth`, `aqua_line_lift`).
+    pub aqua_line_press: f32,
+    pub aqua_line_tooth: f32,
+    pub aqua_line_lift: f32,
+    /// AQUA TECH: the technique's grip on the water engine (see `MediumProfile::aqua_tech`).
+    pub aqua_tech: f32,
+    /// AQUA GRAIN DIR: the pigment settling on the relief's slopes turned from the light (see `MediumProfile::aqua_grain_dir`).
+    pub aqua_grain_dir: f32,
+    /// AQUA SPOT DRY: the sheet dried under the focus's high-contrast touches (see `MediumProfile::aqua_spot_dry`).
+    pub aqua_spot_dry: f32,
+    /// AQUA FINE CALM: the fine skeleton only on a calm surround (see `MediumProfile::aqua_fine_calm`).
+    pub aqua_fine_calm: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay straight hatch lines of one width (see `MediumProfile::hatch`).
     pub hatch: f32,
     /// VERDACCIO (0..1, 0 = off): the flesh underpainted in a greenish grey (see `MediumProfile::verdaccio`).
@@ -929,7 +959,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -3187,7 +3217,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let anchor_z: f32 = { let q = p.anchor.clamp(0.01, 0.5); ((1.0 - q) / q).ln() / 1.702 };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, old_paper: p.old_paper, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: p.weave, sag: p.sag, gloss: p.gloss, hiding: p.hiding, tone: 0.0, water: wash_water, agent: wash_agent, light: p.blade_light, phong: p.blade_phong, spread: p.blade_relief, peak: p.blade_peak, collide: None, hold_mask: None },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, old_paper: p.old_paper, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: p.weave, sag: p.sag, gloss: p.gloss, hiding: p.hiding, tone: 0.0, water: wash_water, agent: wash_agent, light: p.blade_light, phong: p.blade_phong, spread: p.blade_relief, peak: p.blade_peak, collide: None, hold_mask: None },
         strokes: Vec::new(),
     };
 
@@ -3488,6 +3518,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // the header for the replay.
     if aqua_on {
         score.header.charge = p.aqua_charge.clamp(0.0, 1.0);
+        // AQUA LINE DENSITY (see `MediumProfile::aqua_line_density`): the pencil laid direct, in the header for the replay.
+        score.header.pencil = p.aqua_line_density.clamp(0.0, 4.0);
+        // AQUA LINE PRESS / TOOTH / LIFT (see `MediumProfile::aqua_line_press`): the pencil's hand, in the header.
+        let hand = (p.aqua_line_press.clamp(0.0, 1.0), p.aqua_line_tooth.clamp(0.0, 1.0), p.aqua_line_lift.clamp(0.0, 1.0));
+        if hand.0 > 0.0 || hand.1 > 0.0 || hand.2 > 0.0 {
+            score.header.hand = Some(hand);
+        }
     }
     if aqua_on && p.aqua_wet > 0.0 && flow_s > 0.0 {
         let wet_k = p.aqua_wet.clamp(0.0, 1.0);
@@ -3532,6 +3569,29 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     if engine_on {
         let wet_k = p.aqua_wet.clamp(0.0, 1.0);
         score.header.engine = Some(((w.min(h) as f32 / 48.0 * (0.5 + wet_k)).max(1.0), p.aqua_evap.clamp(0.0, 1.0), p.aqua_weight.clamp(0.0, 1.0), p.aqua_pool.clamp(0.0, 1.0), p.aqua_visc.clamp(0.0, 1.0), p.aqua_dry_boost.clamp(0.0, 1.0), p.aqua_bias.clamp(0.0, 1.0)));
+        // AQUA TECH (see `MediumProfile::aqua_tech`): the technique's grip on the engine's drying — wet-on-wet with the
+        // rim's evaporation and the viscosity down by the key, the reach up by it, the water's spread (twice the key)
+        // in the header's `tech=`; wet-on-dry (or no technique) with the dry paper sealed by the key; dry-on-dry none.
+        let tech_k = p.aqua_tech.clamp(0.0, 1.0);
+        if tech_k > 0.0 {
+            match p.technique {
+                WetTechnique::WetOnWet => {
+                    if let Some(e) = score.header.engine.as_mut() {
+                        e.0 *= 1.0 + tech_k;
+                        e.1 *= 1.0 - tech_k;
+                        e.4 *= 1.0 - tech_k;
+                    }
+                    score.header.tech = Some((2.0 * tech_k, 0.0));
+                }
+                WetTechnique::DryOnDry => {}
+                _ => score.header.tech = Some((0.0, tech_k)),
+            }
+        }
+        // AQUA GRAIN DIR (see `MediumProfile::aqua_grain_dir`): the directional grain of the engine's drying, with the
+        // light's direction, in the header for the replay.
+        if p.aqua_grain_dir > 0.0 {
+            score.header.grain_dir = Some((p.aqua_grain_dir.clamp(0.0, 1.0), p.aqua_light_dir.rem_euclid(360.0)));
+        }
     }
     if wcb_trans || aqua_on {
         canvas = canvas.with_transmittance(true);
@@ -11493,6 +11553,10 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
 /// a boat in a sky wash raises no halo, its own dark waits for a brush it fills — the small brush the local dark;
 /// the glaze's densities by `trans_densities`, the cell's mass over three dabs along the picture's flow (the
 /// structure tensor over a 48th of the sheet). The lights above the paper gate take no touch; the masking fluid
+/// SET 15 (`aqua_grain_dir`, `aqua_spot_dry`; see `MediumProfile`): the pigment of every session's drying settling
+/// on the slopes of the tooth turned from the light (`Canvas::aqua_settle_lit`, from the header), and from the
+/// second wet session on the sheet dried under the focus's high-contrast touches before they land, those touches
+/// laid without water (`Canvas::aqua_dry_spot`; the record's `hold`).
 /// and the skeleton (`aqua_resist`, `aqua_line`) as in `aqua_pass`. Deterministic from the seed. Returns no
 /// mass: the drawing after the washes holds back nowhere.
 /// SET 10 (the review of set 9: the structure lost to isotropic touches): AQUA CRISP — the last sessions laid
@@ -11510,6 +11574,19 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
 /// falling to its ends (the record's `w1`), the grid point's mass over the thinner dabs; AQUA BIAS — the
 /// pressure's solid share grown toward the left of the travel and shrunk toward the right (the engine header's
 /// seventh value) (`MediumProfile::aqua_skip`, `aqua_taper`, `aqua_bias`). At 0, set 11.
+/// SET 13 (the review of set 12: the tapered seams beads, the rigging drawn in fluid paint, the sky filled wall to
+/// wall, every passage worked alike): AQUA TAPER MIN — a stroke shorter than the key's brush radii is the plain
+/// touch; AQUA FINE — the picture's thin dark structure closed out of the engine's picture (the skeleton of
+/// `aqua_line_pass` draws it) so the engine lays the mass it lies on as one; AQUA FADE — off the focus a faint
+/// target's debt zeroed, the paper left bare; AQUA SWEEP — a stroke's pigment falling from its middle to its ends
+/// (the record's `taper`) (`MediumProfile::aqua_taper_min`, `aqua_fine`, `aqua_fade`, `aqua_sweep`). At 0, set 12.
+/// SET 14 (the review of set 13: the sheet worked alike everywhere, the pencil lost under the washes): AQUA LINE
+/// RESIST — the masking fluid along the skeleton's lines (`aqua_line_pass`), the line a wall to the water; AQUA
+/// LIGHT — a touch at an edge facing the light wetter (up to twice the water), at an edge turned from it drier (down
+/// to none: the dry share through the tooth), by the signed slope of the value over the window against the light's
+/// direction (`aqua_light_dir`); AQUA VIGNETTE — the attention an ellipse on the focus's centroid, twice its
+/// spread, and from the second session on the debt off it let go by the key (`MediumProfile::aqua_line_resist`,
+/// `aqua_light`, `aqua_light_dir`, `aqua_vignette`). At 0, set 13.
 #[allow(clippy::too_many_arguments)]
 fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_stages_total: usize, line_off: usize, p: &PaintParams, protect: Option<&[bool]>, focus_line: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) -> Option<Vec<bool>> {
     let (w, h) = (source.width() as usize, source.height() as usize);
@@ -11519,6 +11596,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let sessions = aqua_planes_of(p);
     // AQUA CRISP (see `MediumProfile::aqua_crisp`): the sessions from `crisp_from` on are laid dry.
     let crisp_from = sessions - ((p.aqua_crisp.clamp(0.0, 1.0) * sessions as f32).round() as usize).min(sessions);
+    // AQUA TECH (see `MediumProfile::aqua_tech`): dry-on-dry — the wet sessions cut to the key's complement (at 1
+    // every session dry: no water on the sheet or the brush, no solver).
+    let tech_k = p.aqua_tech.clamp(0.0, 1.0);
+    let crisp_from = if p.technique == WetTechnique::DryOnDry { (crisp_from as f32 * (1.0 - tech_k)).round() as usize } else { crisp_from };
     let stroke_k = p.aqua_stroke.clamp(0.0, 16.0);
     let press_k = p.aqua_press.clamp(0.0, 0.95);
     let boost_k = p.aqua_dry_boost.clamp(0.0, 1.0);
@@ -11526,9 +11607,20 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let skip_k = p.aqua_skip.clamp(0.0, 1.0);
     let taper_k = p.aqua_taper.clamp(0.0, 1.0);
     let bias_k = p.aqua_bias.clamp(0.0, 1.0);
+    let tmin_k = p.aqua_taper_min.clamp(0.0, 16.0);
+    let fine_k = p.aqua_fine.clamp(0.0, 20.0);
+    let fade_k = p.aqua_fade.clamp(0.0, 1.0);
+    let sweep_k = p.aqua_sweep.clamp(0.0, 1.0);
+    let light_k = p.aqua_light.clamp(0.0, 1.0);
+    let vig_k = p.aqua_vignette.clamp(0.0, 1.0);
+    let spot_k = p.aqua_spot_dry.clamp(0.0, 1.0);
     let long = w.max(h) as f32;
     let r_wash = (long * 0.007).max(2.0);
     let input = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
+    // AQUA FINE (see `MediumProfile::aqua_fine`): the thin dark structure CLOSED out of the engine's picture — the
+    // rigging and the seams are the skeleton's (`aqua_line_pass`); the engine reads the mass they lie on as one, so
+    // no stroke of fluid paint is aimed at a rope and no ridge of the tensor is a seam.
+    let input = if fine_k > 0.0 { close_rgb(&input, (long * fine_k / 1000.0).round().max(1.0) as usize) } else { input };
     let luma = luma_map(&input);
     let lin: Vec<color::LinRgb> = input.pixels().map(|px| color::srgb_to_linear(px.0)).collect();
     let paper_k = p.aqua_paper.clamp(0.0, 1.0);
@@ -11551,10 +11643,46 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         let rb = (long / 60.0).round().max(1.0) as i32;
         box_blur(&box_blur(&base, w as u32, h as u32, rb), w as u32, h as u32, rb)
     };
+    // AQUA VIGNETTE (see `MediumProfile::aqua_vignette`): THE ATTENTION — an ellipse on the focus's centroid, its
+    // axes twice the focus's spread (at least a tenth of the sheet), full inside, nothing beyond twice the axes.
+    let attention: Vec<f32> = if vig_k > 0.0 {
+        let (mut sw, mut sx, mut sy) = (0f64, 0f64, 0f64);
+        for (i, f) in focus.iter().enumerate() {
+            let f = *f as f64;
+            sw += f;
+            sx += f * (i % w) as f64;
+            sy += f * (i / w) as f64;
+        }
+        let (cx, cy) = if sw > 1e-6 { (sx / sw, sy / sw) } else { (w as f64 / 2.0, h as f64 / 2.0) };
+        let (mut vx, mut vy) = (0f64, 0f64);
+        for (i, f) in focus.iter().enumerate() {
+            let f = *f as f64;
+            vx += f * ((i % w) as f64 - cx).powi(2);
+            vy += f * ((i / w) as f64 - cy).powi(2);
+        }
+        let floor = long as f64 / 10.0;
+        let (ax, ay) = if sw > 1e-6 { ((2.0 * (vx / sw).sqrt()).max(floor), (2.0 * (vy / sw).sqrt()).max(floor)) } else { (long as f64 / 4.0, long as f64 / 4.0) };
+        (0..w * h)
+            .map(|i| {
+                let rho = ((((i % w) as f64 - cx) / ax).powi(2) + (((i / w) as f64 - cy) / ay).powi(2)).sqrt();
+                (2.0 - rho).clamp(0.0, 1.0) as f32
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let (tech_water, prewet_mul) = match p.technique {
         WetTechnique::WetOnWet => (1.2, 1.0),
         WetTechnique::DryOnDry => (0.5, 0.0),
         _ => (1.0, 0.7),
+    };
+    // AQUA TECH: the technique's grip on the brush and the sheet — wet-on-wet the brush's water up by the key, the
+    // subject's silhouette no drier than the ground by it (`relax`), a wet session's touches on a grid wider by it
+    // (`sparse`); wet-on-dry (or no technique) the sheet not wetted before a session by it: a wet brush on dry paper.
+    let (tech_water, prewet_mul, sparse, relax) = match p.technique {
+        WetTechnique::WetOnWet => (tech_water * (1.0 + tech_k), prewet_mul, tech_k, tech_k),
+        WetTechnique::DryOnDry => (tech_water, prewet_mul, 0.0, 0.0),
+        _ => (tech_water, prewet_mul * (1.0 - tech_k), 0.0, 0.0),
     };
     let wet_k = p.aqua_wet.clamp(0.0, 1.0);
     let water_mul = tech_water * (0.5 + 0.5 * wet_k);
@@ -11589,6 +11717,24 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         let m = (dx * dx + dy * dy).sqrt();
         if m < 1e-4 { (1.0, 0.0) } else { (dx / m, dy / m) }
     };
+    // AQUA LIGHT (see `MediumProfile::aqua_light`): the signed slope of the value over the window (toward the
+    // lighter side) against the direction the light comes from — a touch at an edge facing the light (the mass's
+    // lit edge) is wetter, at an edge turned from it (the shadow edge) drier; nothing on a flat passage.
+    let (lgx, lgy, lit_span, lsx, lsy) = if light_k > 0.0 {
+        let (sx, sy) = sobel(&luma, w as u32, h as u32);
+        let a = p.aqua_light_dir.to_radians();
+        (box_blur(&sx, w as u32, h as u32, sigma), box_blur(&sy, w as u32, h as u32, sigma), (2 * sigma + 1) as f32 / 8.0 / 0.1, -a.cos(), -a.sin())
+    } else {
+        (Vec::new(), Vec::new(), 0.0, 0.0, 0.0)
+    };
+    let lit = |x: f32, y: f32| -> f32 {
+        if light_k <= 0.0 {
+            return 0.0;
+        }
+        let i = at(x, y);
+        let m = (lgx[i] * lgx[i] + lgy[i] * lgy[i]).sqrt();
+        if m < 1e-9 { 0.0 } else { light_k * (m * lit_span).clamp(0.0, 1.0) * (lgx[i] * lsx + lgy[i] * lsy) / m }
+    };
     let hash = |a: u64, b: u64, c: u64| -> f32 {
         let mut z = p.seed ^ a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ c.wrapping_mul(0x1656_67B1_9E37_79F9);
         z ^= z >> 29;
@@ -11600,11 +11746,11 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let clear = vec![0f32; n];
     let mut want_cache: std::collections::HashMap<(i16, i16, i16), Vec<f32>> = std::collections::HashMap::new();
     let mut samples: Vec<(f32, [f32; 3])> = Vec::new();
-    let record = |score: &mut StrokeScore, placed: &mut usize, k: &mut u64, stage: &str, dabs: Vec<[f32; 2]>, r: f32, r_end: f32, wet: f32, load: &[f32]| {
+    let record = |score: &mut StrokeScore, placed: &mut usize, k: &mut u64, stage: &str, dabs: Vec<[f32; 2]>, r: f32, r_end: f32, sweep: f32, spot: bool, wet: f32, load: &[f32]| {
         *k += 1;
         *placed += 1;
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: true, stage: stage.to_string(), spline: dabs, w0: r, w1: r_end, taper: 0.0, mix, wet, press: press_k, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: true, stage: stage.to_string(), spline: dabs, w0: r, w1: r_end, taper: sweep, mix, wet, press: press_k, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: spot, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None });
     };
     for s in 0..sessions {
         let stage = format!("aqua-{}", s + 1);
@@ -11641,6 +11787,18 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         // THE SHEET WETTED before the session: clear water on a grid of 1.5 radii (a mean of the session's prewet
         // share), the subject's silhouette drier.
         let pre = if crisp { 0.0 } else { water * prewet_mul * (1.0 - t) };
+        // AQUA SPOT DRY (see `MediumProfile::aqua_spot_dry`): from the second wet session on, the value's step across
+        // the brush's width on the picture's own range — the contrast a touch sits on.
+        let step_map: Vec<f32> = if spot_k > 0.0 && s > 0 && !crisp {
+            let rb = (r * 0.5).round().max(1.0) as i32;
+            let bl = box_blur(&luma, w as u32, h as u32, rb);
+            let (sx, sy) = sobel(&bl, w as u32, h as u32);
+            let (lo, hi) = aqua_range(&luma);
+            let span = (2 * rb + 1) as f32 / (8.0 * (hi - lo).max(1e-3));
+            (0..w * h).map(|i| (sx[i] * sx[i] + sy[i] * sy[i]).sqrt() * span).collect()
+        } else {
+            Vec::new()
+        };
         if pre > 0.02 && *placed < p.budget {
             let rp = r * 1.5;
             let (nx, ny) = ((w as f32 / rp).ceil() as usize, (h as f32 / rp).ceil() as usize);
@@ -11651,9 +11809,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     }
                     let (cx, cy) = ((i as f32 + 0.5) * rp, (j as f32 + 0.5) * rp);
                     let m = focus[at(cx, cy)];
-                    let wv = pre / 1.5708 * (1.0 - 0.6 * m);
+                    let wv = pre / 1.5708 * (1.0 - 0.6 * m * (1.0 - relax)) * (1.0 + lit(cx, cy).min(0.0));
                     canvas.aqua_inject(&[[cx, cy]], rp, 0.0, wv, &clear, press_k, boost_k, bias_k);
-                    record(score, placed, k, &stage, vec![[cx, cy]], rp, 0.0, wv, &clear);
+                    record(score, placed, k, &stage, vec![[cx, cy]], rp, 0.0, 0.0, false, wv, &clear);
                 }
             }
         }
@@ -11670,11 +11828,48 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     let ceil = ground[c].max(0.002).powf(1.0 - a) * lin[i][c].max(0.002).powf(a);
                     d[c] = (ceil / under[i][c].max(0.002)).ln().min(0.0);
                 }
+                // AQUA FADE (see `MediumProfile::aqua_fade`): off the focus a faint target — its darkness against the
+                // paper under half the key — owes nothing and is left as bare paper; from half the key to the key
+                // the debt comes back smoothly; on the focus every tint is laid.
+                if fade_k > 0.0 {
+                    let lum = |c: &[f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                    let dark = 1.0 - lum(&lin[i]) / lum(&ground).max(1e-3);
+                    let f = ((dark - 0.5 * fade_k) / (0.5 * fade_k)).clamp(0.0, 1.0);
+                    let keep = 1.0 - (1.0 - focus[i]) * (1.0 - f * f * (3.0 - 2.0 * f));
+                    for v in &mut d {
+                        *v *= keep;
+                    }
+                }
+                // AQUA VIGNETTE: from the second session on, the debt off the attention let go by the key — the
+                // periphery keeps the first session's tint and no more.
+                if vig_k > 0.0 && s > 0 {
+                    let keep = 1.0 - vig_k * (1.0 - attention[i]);
+                    for v in &mut d {
+                        *v *= keep;
+                    }
+                }
                 d
             })
             .collect();
         let pct = 0.85 - 0.7 * t;
-        let sp_min = 1.25 * r * 0.65;
+        // AQUA TECH: dry-on-dry — the value's step across the brush's width (as the spot's) and its key quantile over
+        // the sheet (the paper's pixels aside): a dry session's touch off a ridge is withheld under it.
+        let (edge_map, edge_th): (Vec<f32>, f32) = if crisp && tech_k > 0.0 && p.technique == WetTechnique::DryOnDry {
+            let rb = (r * 0.5).round().max(1.0) as i32;
+            let bl = box_blur(&luma, w as u32, h as u32, rb);
+            let (sx, sy) = sobel(&bl, w as u32, h as u32);
+            let (lo, hi) = aqua_range(&luma);
+            let span = (2 * rb + 1) as f32 / (8.0 * (hi - lo).max(1e-3));
+            let m: Vec<f32> = (0..w * h).map(|i| (sx[i] * sx[i] + sy[i] * sy[i]).sqrt() * span).collect();
+            let mut v: Vec<f32> = (0..w * h).filter(|&i| !paper(i)).map(|i| m[i]).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let th = if v.is_empty() { 0.0 } else { v[(((v.len() - 1) as f32) * tech_k).round() as usize] };
+            (m, th)
+        } else {
+            (Vec::new(), 0.0)
+        };
+        // AQUA TECH: wet-on-wet — a wet session's grid wider by the key, each touch the mass of its wider cell.
+        let sp_min = 1.25 * r * 0.65 * if crisp { 1.0 } else { 1.0 + sparse };
         let (nx, ny) = ((w as f32 / sp_min).ceil() as usize, (h as f32 / sp_min).ceil() as usize);
         let stride = ((r / 6.0).round() as usize).max(1);
         'grid: for j in 0..ny {
@@ -11744,6 +11939,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // runs; the grid point's mass over the stroke's dabs. Off a structure, the three dabs along the flow.
                 let mut r_s = r_loc;
                 let mut r_end = 0.0f32;
+                let mut sweep_rec = 0.0f32;
                 let mut dabs: Vec<[f32; 2]> = Vec::new();
                 if stroke_k > 0.0 {
                     let want_mag = dmag(&want);
@@ -11809,7 +12005,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                                 len += step;
                             }
                         }
-                        if back.len() + fwd.len() >= 2 {
+                        // AQUA TAPER MIN (see `MediumProfile::aqua_taper_min`): a stroke shorter than the key's brush
+                        // radii is no stroke — the plain touch instead (a short tapered stroke read as a bead).
+                        let short = tmin_k > 0.0 && (back.len() + fwd.len()) as f32 * step < tmin_k * r_loc;
+                        if back.len() + fwd.len() >= 2 && !short {
                             // AQUA SKIP: the stroke withheld — the touch not laid at all, the contour left unsaid.
                             if skip_k > 0.0 && hash(s as u64 + 303, i as u64, j as u64) < skip_k {
                                 continue;
@@ -11822,8 +12021,14 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                             if taper_k > 0.0 {
                                 r_end = (r_s * (1.0 - taper_k)).max(0.5);
                             }
+                            // AQUA SWEEP: the brush charged where it touched, run dry toward the stroke's ends.
+                            sweep_rec = sweep_k;
                         }
                     }
+                }
+                // AQUA TECH: dry-on-dry — off a ridge, the touch withheld under the key's quantile of the contrast.
+                if dabs.is_empty() && !edge_map.is_empty() && edge_map[at(cx, cy)] < edge_th {
+                    continue;
                 }
                 if dabs.is_empty() {
                     r_s = r_loc;
@@ -11838,11 +12043,18 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 } else {
                     dabs.len() as f32 * 0.5 * std::f32::consts::PI * r_s * r_s
                 };
-                let scale = sp_loc * sp_loc / denom;
+                let sp_eff = if sparse > 0.0 && !crisp { sp_loc.max(sp_min) } else { sp_loc };
+                let scale = sp_eff * sp_eff / denom;
                 let dab: Vec<f32> = load.iter().map(|v| v * scale).collect();
-                let wv = water * (1.0 - 0.5 * m);
-                canvas.aqua_inject(&dabs, r_s, r_end, wv, &dab, press_k, boost_k, bias_k);
-                record(score, placed, k, &stage, dabs, r_s, r_end, wv, &dab);
+                // AQUA SPOT DRY: on the focus, at a step of the key's complement or more, the sheet under the touch is
+                // dried first and the touch laid without water — the dry brush over the dried underpainting.
+                let spot = !step_map.is_empty() && m >= 0.5 && step_map[at(cx, cy)] >= 1.0 - spot_k;
+                let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) };
+                if spot {
+                    canvas.aqua_dry_spot(&dabs, r_s, r_end);
+                }
+                canvas.aqua_inject_with(&dabs, r_s, r_end, wv, &dab, press_k, boost_k, bias_k, sweep_rec);
+                record(score, placed, k, &stage, dabs, r_s, r_end, sweep_rec, spot, wv, &dab);
                 if let Some(pr) = progress {
                     pr(PaintProgress::Placed(*placed));
                 }
@@ -11868,6 +12080,26 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
 /// dark (`trans_densities` toward a grey) at a transmittance from 0.7 on a faint edge to 0.35 on a black one ×
 /// key, the densities for two hits of the point; a tenth of the budget × key. Recorded on the `line` stage,
 /// replay-exact.
+/// AQUA FINE (`MediumProfile::aqua_fine`, 7.16.0 set 13): LINE AND WASH decoupled — the skeleton draws the
+/// picture's THIN DARK STRUCTURE only (the rigging, the seams, a thin spar: the black-hat of the unsmoothed luma,
+/// its closing over the key's radius less itself, on the picture's own range, at the same step threshold) and no
+/// broad step of value (those are the washes' and the engine's), anywhere on the sheet, off the focus withheld by
+/// the share `aqua_focus` as the drawing is; the line traced along the structure tensor's direction over twice the
+/// radius (the gradient is nil on a line's axis), its colour and weight the line's own.
+/// AQUA LINE RESIST (`MediumProfile::aqua_line_resist`, 7.16.0 set 14): the masking fluid laid along every line
+/// drawn whose pencil is darker than the wash that will cover it (its transmittance under the surround's value by
+/// the step threshold), after all of them, as one record of NaN-separated polylines with the key's share and the
+/// line's radius (`Canvas::add_resist_lines`): the pencil a wall to the engine's water, its own tone under every
+/// wash; a line under a dark mass is left to the mass.
+/// AQUA LINE DENSITY (`MediumProfile::aqua_line_density`, 7.16.0 set 15): the line laid as GRAPHITE, direct
+/// (`Canvas::pencil_line`) at the densities of its tone to the key's power, not by the brush's deposit (which
+/// landed a fifth of the nominal density); the record's mix the nominal densities, the header's `pencil` the power.
+/// AQUA LINE PRESS / TOOTH / LIFT (`MediumProfile::aqua_line_press`, `aqua_line_tooth`, `aqua_line_lift`, 7.16.0
+/// set 16): the pencil's HAND (`Canvas::pencil_line_hand`) — the pressure along the line (the ends tapered, the
+/// body fluctuating), the dry graphite on the relief's peaks the lighter the debt, the lead lifting along long
+/// straight runs; the header's `hand` for the replay.
+/// (The engine's SET 18 — `MediumProfile::aqua_tech`: the technique's grip on the engine — is in `aqua_engine_pass`,
+/// the header's `tech=` and `Canvas::aqua_settle_tech`; the records are plain touches.)
 fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, focus: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
     let (w, h) = (input.width(), input.height());
     let key = p.aqua_line.clamp(0.0, 1.0);
@@ -11884,6 +12116,27 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
     let span = (2 * rb + 1) as f32 / (8.0 * (hi - lo).max(1e-3));
     let mag: Vec<f32> = gx.iter().zip(&gy).map(|(a, b)| (a * a + b * b).sqrt() * span).collect();
     let thr = 0.25 - 0.15 * key;
+    // AQUA FINE: the thin dark structure on the picture's range, and the direction along it.
+    let fine_r = (w.max(h) as f32 * p.aqua_fine.clamp(0.0, 20.0) / 1000.0).round().max(1.0) as usize;
+    let closed: Option<Vec<f32>> = (p.aqua_fine > 0.0).then(|| close_field(&luma_raw, w as usize, h as usize, fine_r));
+    let fine: Option<Vec<f32>> = closed.as_ref().map(|c| (0..luma_raw.len()).map(|i| (c[i] - luma_raw[i]) / (hi - lo).max(1e-3)).collect());
+    let (fgx, fgy) = if fine.is_some() { coherent_gradient(&luma, w, h, (2 * fine_r as i32).max(2), p.infill) } else { (Vec::new(), Vec::new()) };
+    // A LINE, NOT A TEXTURE: the fine structure is drawn only where it is SPARSE — under a sixth of a window of
+    // eight radii about the seed (a rope in the sky, a seam on a sail); where it fills the window (a sea's ripples,
+    // foliage, a wall's grain) it is the washes' texture and no line of the skeleton.
+    let fine_sparse: Option<Vec<f32>> = fine.as_ref().map(|f| box_blur(&f.iter().map(|v| if *v >= thr { 1.0 } else { 0.0 }).collect::<Vec<f32>>(), w, h, (8 * fine_r) as i32));
+    // AQUA FINE CALM (see `MediumProfile::aqua_fine_calm`): the surround's TEXTURE — the mean slope of the closed
+    // picture (its thin structure removed) over eight radii, as a step across the line's radius on the picture's
+    // range; a seed is kept only where it is under the key's share of the step threshold.
+    let calm_k = p.aqua_fine_calm.clamp(0.0, 1.0);
+    let texture: Option<Vec<f32>> = match (&closed, calm_k > 0.0) {
+        (Some(c), true) => {
+            let (cx, cy) = sobel(c, w, h);
+            let g: Vec<f32> = (0..c.len()).map(|i| (cx[i] * cx[i] + cy[i] * cy[i]).sqrt() / 8.0 * fine_r as f32 / (hi - lo).max(1e-3)).collect();
+            Some(box_blur(&g, w, h, (8 * fine_r) as i32))
+        }
+        _ => None,
+    };
     let radius = (w.max(h) as f32 / 800.0).max(1.0);
     let min_len = (w.max(h) as f32 / 120.0).max(3.0);
     // The point: one stiff bristle, round, clean, no cap, none of the brush's other characters (as the replay
@@ -11909,10 +12162,16 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
     let cols = ((w as f32) / grid).ceil() as u32;
     let rows = ((h as f32) / grid).ceil() as u32;
     let mut dens_cache: std::collections::HashMap<i16, Vec<f32>> = std::collections::HashMap::new();
-    for gyi in 0..rows {
+    let res_k = p.aqua_line_resist.clamp(0.0, 1.0);
+    // AQUA LINE DENSITY (see `MediumProfile::aqua_line_density`): the pencil laid direct to this power of its tone.
+    let pencil_k = p.aqua_line_density.clamp(0.0, 4.0);
+    // AQUA LINE PRESS / TOOTH / LIFT (see `MediumProfile::aqua_line_press`): the pencil's hand (`Canvas::pencil_line_hand`).
+    let hand = (p.aqua_line_press.clamp(0.0, 1.0), p.aqua_line_tooth.clamp(0.0, 1.0), p.aqua_line_lift.clamp(0.0, 1.0));
+    let mut res_paths: Vec<[f32; 2]> = Vec::new();
+    'seeds: for gyi in 0..rows {
         for gxi in 0..cols {
             if *placed >= cap {
-                return;
+                break 'seeds;
             }
             *k += 1;
             let jx = jitter(p.seed ^ 0xA11E_0001, *k) * grid;
@@ -11923,7 +12182,13 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
                 continue;
             }
             let i = cy as usize * w as usize + cx as usize;
-            if mag[i] < thr || focus.is_some_and(|m| !m.get(i).copied().unwrap_or(true)) || canvas.resist_at(i) >= 1.0 {
+            let off_focus = focus.is_some_and(|m| !m.get(i).copied().unwrap_or(true));
+            let on_fine = fine.as_ref().is_some_and(|f| f[i] >= thr) && fine_sparse.as_ref().is_some_and(|d| d[i] < 1.0 / 6.0) && texture.as_ref().map_or(true, |t| t[i] <= calm_k * thr);
+            let no_seed = match &fine {
+                Some(_) => !on_fine || (off_focus && jitter(p.seed ^ 0xA9F0_C513, *k) + 0.5 < p.aqua_focus.clamp(0.0, 1.0)),
+                None => mag[i] < thr || off_focus,
+            };
+            if no_seed || canvas.resist_at(i) >= 1.0 {
                 continue;
             }
             // One line per edge: a seed on a pixel the skeleton has drawn is skipped (the sheet is bare otherwise).
@@ -11935,7 +12200,7 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
             let (ux, uy) = (gx[i] / gnorm, gy[i] / gnorm);
             let sx = (cx + ux * radius * 2.0).clamp(0.0, w as f32 - 1.0);
             let sy = (cy + uy * radius * 2.0).clamp(0.0, h as f32 - 1.0);
-            let dark = input.get_pixel(sx as u32, sy as u32).0;
+            let dark = if on_fine { input.get_pixel(cx as u32, cy as u32).0 } else { input.get_pixel(sx as u32, sy as u32).0 };
             let dl = color::linear_luma(color::srgb_to_linear(dark)).clamp(0.0, 1.0);
             let t = 0.7 - 0.35 * key * (0.4 + 0.6 * (1.0 - dl));
             let tq = (t * 100.0).round() as i16;
@@ -11944,17 +12209,43 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
             if load.iter().all(|v| *v <= 0.0) {
                 continue;
             }
-            let path = grow_path(cx, cy, radius, &gx, &gy, input, dark, None, None, None, trace, STOP_TOL);
+            let path = grow_path(cx, cy, radius, if on_fine { &fgx } else { &gx }, if on_fine { &fgy } else { &gy }, input, dark, None, None, None, trace, STOP_TOL);
             if path.len() < 2 || path.windows(2).map(|q| ((q[1][0] - q[0][0]).powi(2) + (q[1][1] - q[0][1]).powi(2)).sqrt()).sum::<f32>() < min_len {
                 continue;
             }
             let path = waver_path(&path, 0.05 * radius, p.seed, *k);
             let s = Stroke { path, width0: radius, width1: (radius * 0.7).max(0.7), load, pressure: 1.0, wetness: 0.0 };
-            s.rasterize(canvas, &brush);
-            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            if pencil_k > 0.0 {
+                // AQUA LINE DENSITY: graphite, not the brush — the densities of the tone to the key's power
+                // (`Canvas::pencil_line`); the record carries the nominal densities, the header the power.
+                let dd: Vec<f32> = dens.iter().map(|v| v * pencil_k).collect();
+                canvas.pencil_line_hand(&s.path, s.width0, s.width1, &dd, hand);
+            } else {
+                s.rasterize(canvas, &brush);
+            }
+            // AQUA LINE RESIST: the fluid protects a line only where the pencil is DARKER than the wash that will
+            // cover it — its transmittance under the surround's value (the picture with the line closed out, or the
+            // smoothed picture) by the step threshold. A line under a dark mass is the mass's; a pencil under a
+            // wash is not seen, and a fluid there would leave a light scratch in the dark.
+            let surround = closed.as_ref().map(|c| c[i]).unwrap_or(luma[i]);
+            if res_k > 0.0 && t + thr <= surround {
+                if !res_paths.is_empty() {
+                    res_paths.push([f32::NAN, f32::NAN]);
+                }
+                res_paths.extend_from_slice(&s.path);
+            }
+            let mix_src: &[f32] = if pencil_k > 0.0 { &dens } else { &s.load };
+            let mix: Vec<(String, f32)> = mix_src.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
             *placed += 1;
             score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None });
         }
+    }
+    // AQUA LINE RESIST: the fluid along every line drawn, one record after them all (a line crossing a line is
+    // not lifted by the other's fluid).
+    if res_k > 0.0 && !res_paths.is_empty() {
+        canvas.add_resist_lines(&res_paths, radius, res_k);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: res_paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(res_k) });
     }
 }
 
@@ -12616,6 +12907,45 @@ fn key_plate(drawn: &RgbImage, skin: Option<&[bool]>, long: f32, features: &[cra
         }
     }
     mask_rings(&ink, w, h, (long * KEY_TOL).max(0.8))
+}
+
+/// The grey CLOSING of a field over a square of `r` px (its greatest over the square, then the least of that): a
+/// dark feature narrower than the square is filled with its surround, a broad one is kept. Separable, O(r) a pixel.
+fn close_field(g: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    fn pass(src: &[f32], w: usize, h: usize, r: usize, hi: bool) -> Vec<f32> {
+        let pick = |a: f32, b: f32| if hi { a.max(b) } else { a.min(b) };
+        let mut rows = vec![0f32; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let (x0, x1) = (x.saturating_sub(r), (x + r).min(w - 1));
+                rows[y * w + x] = src[y * w + x0..=y * w + x1].iter().copied().fold(src[y * w + x], pick);
+            }
+        }
+        let mut out = vec![0f32; w * h];
+        for y in 0..h {
+            let (y0, y1) = (y.saturating_sub(r), (y + r).min(h - 1));
+            for x in 0..w {
+                let mut m = rows[y0 * w + x];
+                for yy in y0 + 1..=y1 {
+                    m = pick(m, rows[yy * w + x]);
+                }
+                out[y * w + x] = m;
+            }
+        }
+        out
+    }
+    let d = pass(g, w, h, r, true);
+    pass(&d, w, h, r, false)
+}
+
+/// `close_field` on each channel of an image.
+fn close_rgb(img: &RgbImage, r: usize) -> RgbImage {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let chans: Vec<Vec<f32>> = (0..3).map(|c| close_field(&img.pixels().map(|p| p.0[c] as f32).collect::<Vec<f32>>(), w, h, r)).collect();
+    RgbImage::from_fn(w as u32, h as u32, |x, y| {
+        let i = y as usize * w + x as usize;
+        image::Rgb([chans[0][i].round().clamp(0.0, 255.0) as u8, chans[1][i].round().clamp(0.0, 255.0) as u8, chans[2][i].round().clamp(0.0, 255.0) as u8])
+    })
 }
 
 /// The least of a field within `r` px (a square) of each point.
@@ -15218,7 +15548,7 @@ mod tempera_tests {
         p.ground = Some(tone);
         p.bole = 1.0;
         p.from_scratch = true;
-        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "tempera".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: Some(tone), brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "tempera".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: Some(tone), brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let mut canvas = Canvas::toned(w, h, crate::paint::palette::ZORN, tone, 0.85).with_opacity(1.0);
         let mut score = StrokeScore { header: header.clone(), strokes: Vec::new() };
         let (mut placed, mut k) = (0usize, 0u64);
@@ -15392,7 +15722,7 @@ mod transmittance_tests {
         // from the text as from memory — the flag, `kd` and `cap` all survive serialisation.
         let pal = palette::EARTH;
         let mut sc = crate::paint::score::StrokeScore {
-            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None },
+            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None },
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();
@@ -15430,7 +15760,7 @@ mod pastel_tests {
         let (gx, gy) = (vec![0.0f32; (w * h) as usize], vec![1.0f32; (w * h) as usize]);
         let mut p = PaintParams::new(crate::paint::palette::ZORN, 10_000);
         p.blend = 1.0;
-        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let mut canvas = Canvas::white(w, h, crate::paint::palette::ZORN, 0.85);
         let patch = Stroke { path: vec![[4.0, 24.0], [36.0, 24.0]], width0: 40.0, width1: 40.0, load: vec![0.0, 0.0, 6.0, 0.0], pressure: 1.0, wetness: 0.3 };
         patch.rasterize(&mut canvas, &BrushConfig { k_pickup: 0.0, hold_charge: true, ..BrushConfig::default() });
@@ -16369,7 +16699,7 @@ mod dot_tests {
         p.dot_space = 0.6;
         p.dot_pure = 1.0;
         p.seed = 3;
-        let header = ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let header = ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let mut canvas = Canvas::white(w, h, pal, 0.85);
         let mut score = StrokeScore { header, strokes: Vec::new() };
         let (mut placed, mut k) = (0usize, 0u64);
@@ -16406,7 +16736,7 @@ mod dot_tests {
     }
 
     fn dot_header(w: u32, h: u32) -> ScoreHeader {
-        ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None }
+        ScoreHeader { version: 1, palette: "divisionist".into(), pigments: Vec::new(), medium: "pointillism".into(), seed: 3, width: w, height: h, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None }
     }
 
     fn run_dots(img: &RgbImage, p: &PaintParams) -> (Canvas, StrokeScore) {
@@ -17425,6 +17755,281 @@ mod aqua_tests {
         assert_eq!(StrokeScore::parse(&text).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "and from the text");
     }
 
+    /// The sky and the ground with a 2 px dark line down the sky (a mast's stay).
+    fn sky_ground_and_a_line(w: u32, h: u32) -> RgbImage {
+        let mut img = sky_and_ground(w, h);
+        for y in 0..h / 2 {
+            for x in w / 3..w / 3 + 2 {
+                img.put_pixel(x, y, image::Rgb([40, 36, 30]));
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_skeleton_draws_the_fine_line_and_the_engine_lays_the_mass_without_it() {
+        // Set 13 over set 12 on a sky with a 2 px line down it: the fine key sends the skeleton to the line (a line
+        // record along its x) and closes it out of the engine's picture (no stroke of the engine runs down it); the
+        // fade leaves the faint sky barer than without; a stroke shorter than the key's radii is a plain touch
+        // (three dabs, no taper, no sweep) and the long ones carry the sweep; the replay exact from the score and
+        // from its text.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_ground_and_a_line(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_stroke = 6.0;
+        p.aqua_press = 0.6;
+        p.aqua_tip = 2.0;
+        p.aqua_taper = 0.6;
+        p.aqua_line = 0.5;
+        let base = paint_from_image(&img, &p);
+        p.aqua_fine = 20.0;
+        p.aqua_fade = 0.5;
+        p.aqua_sweep = 0.8;
+        p.aqua_taper_min = 3.0;
+        p.aqua_line_resist = 1.0;
+        let r = paint_from_image(&img, &p);
+        let lx = (w / 3) as f32 + 1.0;
+        let lines: Vec<&StrokeRecord> = r.score.strokes.iter().filter(|s| s.stage == "line" && s.resist.is_none()).collect();
+        assert!(lines.iter().any(|s| s.spline.len() >= 2 && s.spline.iter().all(|q| (q[0] - lx).abs() < 4.0)), "the skeleton draws the line: {} line records", lines.len());
+        // The lines' resist (set 14): one record, neither wash nor touch, and the fluid on the sheet along the line.
+        assert_eq!(r.score.strokes.iter().filter(|s| !s.wash && !s.inject && s.resist == Some(1.0)).count(), 1, "the lines' resist record");
+        assert!((0..h / 2).any(|y| (0..w).any(|x| (x as f32 - lx).abs() < 4.0 && r.canvas.resist_at((y * w + x) as usize) >= 0.999)), "the fluid along the line");
+        let down = |s: &StrokeRecord| s.inject && s.spline.len() > 3 && s.spline.iter().all(|q| (q[0] - lx).abs() < 4.0 && q[1] < (h / 2) as f32);
+        assert!(!r.score.strokes.iter().any(|s| down(s)), "no stroke of the engine runs down the line");
+        let sky = |img: &RgbImage| -> f64 { (0..h / 2 - 4).flat_map(|y| (w / 2..w).map(move |x| (x, y))).map(|(x, y)| img.get_pixel(x, y).0.iter().map(|v| *v as f64).sum::<f64>()).sum::<f64>() };
+        assert!(sky(&r.canvas.to_image()) > sky(&base.canvas.to_image()), "the faint sky barer under the fade");
+        let touches: Vec<&StrokeRecord> = r.score.strokes.iter().filter(|s| s.inject).collect();
+        assert!(touches.iter().all(|s| s.spline.len() > 3 || (s.w1 <= 0.0 && s.taper <= 0.0)), "a plain touch: no taper, no sweep");
+        assert!(touches.iter().any(|s| s.spline.len() > 3 && (s.taper - 0.8).abs() < 1e-6 && s.w1 > 0.0), "a long stroke carries the sweep and tapers");
+        let painted = r.canvas.to_image().into_raw();
+        assert_eq!(r.score.replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact");
+        assert_eq!(StrokeScore::parse(&r.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "and from the text");
+    }
+
+    #[test]
+    fn the_pencil_lays_its_tone_the_spot_dries_under_the_accent_and_the_grain_follows_the_light() {
+        // Set 15 on the sky with a line: the pencil laid direct is far darker on the line's pixels than the brush's
+        // (the line stage replayed alone, the header's pencil in the text); the spot key dries the sheet under the
+        // focus's high-contrast touches from the second session on (touches with `hold` and no water) and none
+        // without it; the grain's direction changes the sheet and is in the header; every variant replays exact.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_ground_and_a_line(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_line = 1.0;
+        p.aqua_fine = 20.0;
+        let base = paint_from_image(&img, &p);
+        p.aqua_line_density = 2.0;
+        let pen = paint_from_image(&img, &p);
+        assert!(pen.score.to_text().contains(" pencil=2"), "the pencil in the header");
+        let line_only = |r: &PaintResult| -> f64 {
+            let mut sc = r.score.clone();
+            sc.strokes.retain(|s| s.stage == "line");
+            let c = sc.replay(w, h).unwrap();
+            let (mut sum, mut n) = (0f64, 0usize);
+            for y in 0..h {
+                for x in 0..w {
+                    if c.saturation_at(x, y) > 1e-6 {
+                        sum += color::linear_luma(color::srgb_to_linear(c.color_at(x, y))) as f64;
+                        n += 1;
+                    }
+                }
+            }
+            sum / n.max(1) as f64
+        };
+        let (lb, lp) = (line_only(&base), line_only(&pen));
+        assert!(lp < lb - 0.2, "the pencil's line darker than the brush's: {lp:.3} vs {lb:.3}");
+        assert!(!base.score.strokes.iter().any(|s| s.inject && s.hold), "no spot dried without the key");
+        p.aqua_spot_dry = 1.0;
+        let spot = paint_from_image(&img, &p);
+        let dried: Vec<&StrokeRecord> = spot.score.strokes.iter().filter(|s| s.inject && s.hold).collect();
+        assert!(!dried.is_empty() && dried.iter().all(|s| s.wet <= 0.0 && s.stage != "aqua-1"), "the focus's touches dried and laid without water from the second session: {}", dried.len());
+        let painted = spot.canvas.to_image().into_raw();
+        assert_eq!(spot.score.replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact");
+        assert_eq!(StrokeScore::parse(&spot.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "and from the text");
+        // AQUA FINE CALM: on the flat sky the line stays at the strictest key; a rippled sea (the ground striped
+        // every 4 px) loses its fine dashes.
+        p.aqua_fine_calm = 1.0;
+        let calm = paint_from_image(&img, &p);
+        let lx = (w / 3) as f32 + 1.0;
+        assert!(calm.score.strokes.iter().any(|s| s.stage == "line" && s.spline.len() >= 2 && s.spline.iter().all(|q| (q[0] - lx).abs() < 4.0)), "the calm key keeps the line on the flat sky");
+        // (A broad swell every 16 rows that the closing keeps — the texture — with a thin dark trough on its
+        // crest that seeds the fine skeleton; the troughs are sparse, so only the calm key can withhold them.)
+        let mut rippled = img.clone();
+        for y in h / 2..h {
+            for x in 0..w {
+                let swell = 0.5 + 0.5 * (std::f32::consts::TAU * (y % 16) as f32 / 16.0).sin();
+                let v = (20.0 + 230.0 * swell) as u8;
+                rippled.put_pixel(x, y, if y % 16 == 4 { image::Rgb([15, 12, 10]) } else { image::Rgb([v, v, (v as f32 * 0.8) as u8]) });
+            }
+        }
+        let sea_lines = |r: &PaintResult| r.score.strokes.iter().filter(|s| s.stage == "line" && s.spline.iter().all(|q| q[1] >= (h / 2) as f32)).count();
+        p.aqua_fine_calm = 0.0;
+        let busy = paint_from_image(&rippled, &p);
+        p.aqua_fine_calm = 1.0;
+        let quiet = paint_from_image(&rippled, &p);
+        assert!(sea_lines(&busy) > 0 && sea_lines(&quiet) < sea_lines(&busy), "the ripples' dashes withheld on the busy ground: {} vs {}", sea_lines(&quiet), sea_lines(&busy));
+        p.aqua_grain_dir = 1.0;
+        p.aqua_light_dir = 90.0;
+        let grain = paint_from_image(&img, &p);
+        assert_eq!(grain.score.header.grain_dir, Some((1.0, 90.0)), "the grain's direction in the header");
+        assert!(grain.score.to_text().contains(" graindir=1,90"), "and in the text");
+        let gp = grain.canvas.to_image().into_raw();
+        assert_ne!(gp, painted, "the grain's direction changes the sheet");
+        assert_eq!(StrokeScore::parse(&grain.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), gp, "replays byte-exact from the text");
+    }
+
+    #[test]
+    fn the_pencils_hand_presses_lifts_and_breaks_on_the_tooth() {
+        // Set 16 on the sky with a line: no hand without the keys (no token); the hand at full in the header and
+        // the text; the line stage alone lays fewer graphite pixels than the even pencil (the lift's gaps, the
+        // ends' taper, the tooth's peaks) and a different sheet; the whole replays byte-exact from the text.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_ground_and_a_line(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_line = 1.0;
+        p.aqua_fine = 20.0;
+        p.aqua_line_density = 2.0;
+        let even = paint_from_image(&img, &p);
+        assert!(even.score.header.hand.is_none() && !even.score.to_text().contains(" hand="), "no hand without the keys");
+        let line_px = |r: &PaintResult| -> usize {
+            let mut sc = r.score.clone();
+            sc.strokes.retain(|s| s.stage == "line");
+            let c = sc.replay(w, h).unwrap();
+            let mut n = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    if c.saturation_at(x, y) > 1e-6 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        p.aqua_line_press = 1.0;
+        p.aqua_line_tooth = 1.0;
+        p.aqua_line_lift = 1.0;
+        let handed = paint_from_image(&img, &p);
+        assert_eq!(handed.score.header.hand, Some((1.0, 1.0, 1.0)), "the hand in the header");
+        assert!(handed.score.to_text().contains(" hand=1,1,1"), "and in the text");
+        let (ne, nh) = (line_px(&even), line_px(&handed));
+        assert!(ne > 0 && nh < ne, "the hand lays fewer graphite pixels than the even pencil: {nh} vs {ne}");
+        let painted = handed.canvas.to_image().into_raw();
+        assert_ne!(painted, even.canvas.to_image().into_raw(), "the hand changes the sheet");
+        assert_eq!(handed.score.replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact");
+        assert_eq!(StrokeScore::parse(&handed.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "and from the text");
+    }
+
+    #[test]
+    fn the_technique_grips_the_engine_and_the_three_part() {
+        // Set 18 on the sky over the ground, each technique at the key against itself without it: no token without
+        // the key; wet-on-wet floods — the header's reach up, its evaporation and viscosity down, the spread in the
+        // text, the wet session's touches fewer on the wider grid; wet-on-dry seals — the engine as it was, the seal
+        // in the text, no clear water laid before a session; dry-on-dry lays every session dry — no token, no water
+        // in any touch, fewer touches off the ridges (at 0.8); the key changes each sheet, each replays byte-exact from the
+        // text, and the three sheets differ from each other.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_visc = 1.0;
+        p.aqua_evap = 1.0;
+        fn touches<'a>(r: &'a PaintResult, stage: &str) -> Vec<&'a StrokeRecord> {
+            r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty() && s.stage == stage).collect()
+        }
+        let clear = |r: &PaintResult| r.score.strokes.iter().filter(|s| s.inject && s.mix.is_empty()).count();
+        let mut sheets: Vec<Vec<u8>> = Vec::new();
+        for tech in [WetTechnique::WetOnWet, WetTechnique::WetOnDry, WetTechnique::DryOnDry] {
+            p.technique = tech;
+            p.aqua_tech = 0.0;
+            let base = paint_from_image(&img, &p);
+            assert!(base.score.header.tech.is_none() && !base.score.to_text().contains(" tech="), "no token without the key");
+            // (Dry-on-dry at the plan's 0.8: at 1 the quantile is the maximum and no touch off a ridge survives.)
+            p.aqua_tech = if tech == WetTechnique::DryOnDry { 0.8 } else { 1.0 };
+            let r = paint_from_image(&img, &p);
+            let text = r.score.to_text();
+            let head = text.lines().find(|l| l.contains("engine=")).unwrap_or("").to_string();
+            let (be, re) = (base.score.header.engine.unwrap(), r.score.header.engine.unwrap());
+            let (n1, b1) = (touches(&r, "aqua-1").len(), touches(&base, "aqua-1").len());
+            match tech {
+                WetTechnique::WetOnWet => {
+                    assert!(re.0 > be.0 && re.1 < be.1 && re.4 < be.4, "wet-on-wet: the reach up, the evaporation and the viscosity down: {re:?} vs {be:?}");
+                    assert_eq!(r.score.header.tech, Some((2.0, 0.0)), "the spread in the header");
+                    assert!(head.contains(" tech=2,0"), "the token: {head}");
+                    assert!(n1 > 0 && n1 < b1, "the wet session's touches fewer on the wider grid: {n1} vs {b1}");
+                }
+                WetTechnique::WetOnDry => {
+                    assert_eq!((re, r.score.header.tech), (be, Some((0.0, 1.0))), "wet-on-dry: the engine as it was, the seal in the header");
+                    assert!(head.contains(" tech=0,1"), "the token: {head}");
+                    assert!(clear(&base) > 0 && clear(&r) == 0, "the sheet not wetted: {} clear touches vs {}", clear(&r), clear(&base));
+                }
+                _ => {
+                    assert!(r.score.header.tech.is_none() && !head.contains(" tech="), "dry-on-dry: nothing for the solver");
+                    assert!(base.score.strokes.iter().any(|s| s.inject && s.wet > 0.0), "the dry brush without the key still wets its first sessions");
+                    assert!(r.score.strokes.iter().all(|s| !s.inject || s.wet <= 0.0), "every session dry: no water in any touch");
+                    assert!(n1 > 0 && n1 < b1, "off the ridges the touches withheld: {n1} vs {b1}");
+                }
+            }
+            let painted = r.canvas.to_image().into_raw();
+            assert_ne!(painted, base.canvas.to_image().into_raw(), "the key changes the sheet ({tech:?})");
+            assert_eq!(StrokeScore::parse(&text).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact from the text ({tech:?})");
+            sheets.push(painted);
+        }
+        assert!(sheets[0] != sheets[1] && sheets[1] != sheets[2] && sheets[0] != sheets[2], "the three techniques part");
+    }
+
+    #[test]
+    fn the_light_wets_the_lit_edge_and_the_vignette_lets_the_periphery_go() {
+        // The sky over the ground with the light from above: the wet session's touches at the horizon (the ground's
+        // lit edge) carry more water than without the light, and with the light from below less; the vignette at
+        // full leaves the sheet's lower corners lighter than without; both replay exact.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        let base = paint_from_image(&img, &p);
+        let horizon_wet = |sc: &StrokeScore| -> f32 {
+            let v: Vec<f32> = sc.strokes.iter().filter(|s| s.inject && s.stage == "aqua-1" && !s.mix.is_empty() && s.spline.iter().any(|q| (q[1] - (h / 2) as f32).abs() < 6.0)).map(|s| s.wet).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        p.aqua_light = 1.0;
+        p.aqua_light_dir = 90.0;
+        let above = paint_from_image(&img, &p);
+        p.aqua_light_dir = 270.0;
+        let below = paint_from_image(&img, &p);
+        let (b, a, u) = (horizon_wet(&base.score), horizon_wet(&above.score), horizon_wet(&below.score));
+        assert!(a > 1.2 * b && u < 0.8 * b, "the lit edge wetter, the shadow edge drier: {a} / {b} / {u}");
+        let painted = above.canvas.to_image().into_raw();
+        assert_eq!(above.score.replay(w, h).unwrap().to_image().into_raw(), painted, "the light replays exact");
+        p.aqua_light = 0.0;
+        p.aqua_vignette = 1.0;
+        let vig = paint_from_image(&img, &p);
+        let corners = |img: &RgbImage| -> f64 { [(0u32, h - 8), (w - 8, h - 8)].iter().flat_map(|&(x0, y0)| (y0..y0 + 8).flat_map(move |y| (x0..x0 + 8).map(move |x| (x, y)))).map(|(x, y)| img.get_pixel(x, y).0.iter().map(|v| *v as f64).sum::<f64>()).sum::<f64>() };
+        let (cv, cb) = (corners(&vig.canvas.to_image()), corners(&base.canvas.to_image()));
+        assert!(cv > 1.02 * cb, "the periphery let go: {cv} vs {cb}");
+        let painted = vig.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&vig.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the vignette replays exact from the text");
+    }
+
     #[test]
     fn the_engine_lays_the_picture_as_touches_on_water_and_replays_exact() {
         // The sky and the ground through the water engine: the score holds the brush's touches and no polygon
@@ -17568,3 +18173,4 @@ mod aqua_tests {
         assert_eq!(loose.score.replay(w, h).unwrap().to_image().into_raw(), loose.canvas.to_image().into_raw(), "the loose sheet replays byte-exact");
     }
 }
+

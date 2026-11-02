@@ -935,6 +935,136 @@ pub struct MediumProfile {
     /// right (that edge left to the tooth), by the cosine across the stroke; a single dab is symmetric. In the
     /// score's header (the engine's seventh value) for the replay.
     pub aqua_bias: f32,
+    /// AQUA TAPER MIN (brush radii, 0 = none; the water engine, 7.16.0 set 13): THE TAPER'S THRESHOLD — a stroke along
+    /// a structure (`aqua_stroke`) shorter than this many radii of the brush is no stroke: it is laid as the plain
+    /// touch (the three dabs along the flow, untapered, unswept). A short stroke tapered to its ends (`aqua_taper`) read
+    /// as an oval bead — a weak seam became a row of drops; a line is a line only when it is long.
+    pub aqua_taper_min: f32,
+    /// AQUA FINE (thousandths of the long side, 0 = off; the water engine, 7.16.0 set 13): LINE AND WASH DECOUPLED —
+    /// the picture's THIN DARK STRUCTURE (a feature narrower than twice this radius: the rigging, a sail's seams, a
+    /// thin spar, read as the black-hat of the luma, its grey closing over the radius less itself) is the SKELETON's
+    /// (`aqua_line`: the dry graphite line on the bare sheet, its seeds on the fine structure only, anywhere on the
+    /// sheet, off the focus withheld by `aqua_focus`, and only where the fine structure is SPARSE — under a sixth of
+    /// a window of eight radii: a rope in the sky, a seam; a sea's ripples or foliage fill the window and are the
+    /// washes' texture, no line), and it is CLOSED OUT of the engine's picture — the engine
+    /// reads the mass the line lies on as one, lays its colour over the line as a wash, and aims no stroke of fluid
+    /// paint at a rope. Fluid paint cannot hold a rope's width; a pencil can.
+    pub aqua_fine: f32,
+    /// AQUA FADE (0..1, 0 = none; the water engine, 7.16.0 set 13): THE PARSER'S ECONOMY — off the focus (the
+    /// subject's feathered silhouette), a pixel whose target is faint — its darkness against the paper under half the
+    /// key — owes nothing: its debt is zeroed and the paper is left bare, the debt returning smoothly from half the
+    /// key to the key; on the focus every tint is laid. A pale sky and the water's lights stay paper, as a
+    /// watercolourist leaves them, instead of a carpet of touches.
+    pub aqua_fade: f32,
+    /// AQUA SWEEP (0..1, 0 = none; the water engine, 7.16.0 set 13): THE BRUSH RUN DRY — along a stroke on a structure
+    /// the pigment a dab lays falls from the stroke's middle (where the brush touched, charged) to its ends by
+    /// 1 − sweep × |2t − 1|, the water unchanged, so the stroke is a swing that comes to nothing instead of an even
+    /// bead of paint; a plain touch is not swept. In every touch's record (`taper`) for the replay.
+    pub aqua_sweep: f32,
+    /// AQUA LINE RESIST (0..1, 0 = none; the water engine, 7.16.0 set 14): THE PENCIL PROTECTED — the masking fluid
+    /// laid along every line of the graphite skeleton (`aqua_line`) whose pencil is DARKER than the wash that will
+    /// cover it (its transmittance under the surround's value by the step threshold — a line under a dark mass is
+    /// the mass's, a pencil under a wash is not seen) after the skeleton is drawn, a band of the
+    /// line's own radius refusing this share of every deposit and of the water, and every engine cell the line
+    /// crosses a WALL to the engine's water whatever the share — the pool breaks on it, the pigment pins along its
+    /// edges, the line keeps its own tone under every wash (bare of wash at 1, tinted by the rest under it). The
+    /// pencil's weight is `aqua_line`'s. One record of NaN-separated polylines in the score
+    /// (`Canvas::add_resist_lines`).
+    pub aqua_line_resist: f32,
+    /// AQUA LIGHT (0..1, 0 = off; the water engine, 7.16.0 set 14): THE DIRECTIONAL WASH — wet against dry by the
+    /// light: at a touch the value's signed slope over the window (toward the lighter side) is read against the
+    /// direction the light comes from (`aqua_light_dir`); at an edge FACING the light (the mass's lit edge) the
+    /// brush carries up to twice its water and the touch runs wet into the paper, at an edge TURNED from it (the
+    /// shadow edge) down to none — the sheet not wetted there either — and the touch lands dry through the tooth
+    /// with a hard, broken edge; a flat passage is untouched. The edges of one mass no longer alike.
+    pub aqua_light: f32,
+    /// AQUA LIGHT DIR (degrees, with `aqua_light`): where the light comes FROM — 0 the left, 90 the top, 180 the
+    /// right, 270 the bottom; 45 the upper left.
+    pub aqua_light_dir: f32,
+    /// AQUA VIGNETTE (0..1, 0 = none; the water engine, 7.16.0 set 14): THE CENTRE OF INTEREST — the attention an
+    /// ellipse on the centroid of the soft focus (the subject's silhouette, or the salient third), its axes twice
+    /// the focus's spread (at least a tenth of the sheet), full inside and nothing beyond twice the axes; from the
+    /// SECOND session on every pixel's debt is let go off the attention by this share, so the periphery keeps the
+    /// first session's tint — large, wet, unsaid — and the picture is finished only at its centre.
+    pub aqua_vignette: f32,
+    /// AQUA LINE DENSITY (0..4, 0 = the brush; the skeleton, 7.16.0 set 15): THE PENCIL LAID DIRECT — the
+    /// graphite skeleton (`aqua_line`) no longer drawn by the brush's deposit (one stiff point through the paper's
+    /// tooth, whose footprint's falloff and single hit per pixel landed a fifth of the line's nominal density: a
+    /// nominal transmittance of 0.35 on a black edge came out at 0.80, a pencil lost under the first wash) but laid
+    /// as graphite: every pixel within the line's radius takes the densities of the line's tone — the palette's
+    /// neutral dark at the transmittance `aqua_line` gives it, 0.7 on a faint edge to 0.35 on a black one — to THIS
+    /// POWER, full in the core, one pixel of anti-aliasing at the edge, the grain's hollows at 0.7 of the core.
+    /// 1 = the nominal tone itself; 2 = its square (0.35 → 0.12, a hard dark line); 3–4 = black. The masking fluid
+    /// refuses its share as ever; the washes and the engine lie over it as before. In the score header (`pencil=`)
+    /// for an exact replay; old scores replay with the brush. The other media untouched at 0.
+    pub aqua_line_density: f32,
+    /// AQUA GRAIN DIR (0..1, 0 = none; the water engine, 7.16.0 set 15): THE DIRECTIONAL GRAIN — when a session
+    /// dries and the landed pigment is laid on the cells' pixels, every pixel's weight is also 1 + key × shade, the
+    /// shade the slope of the paper's relief against the light (`aqua_light_dir`: where it comes from): the slope
+    /// turned from the light +1, the slope facing it −1, normalised over twice the sheet's mean slope — so the
+    /// pigment settles on the shadow side of every fibre of the tooth, on every lane alike, the mass conserved, and
+    /// a flat wash carries a directional texture that reads as the light's. In the score header (`graindir=`).
+    /// The other media untouched at 0.
+    pub aqua_grain_dir: f32,
+    /// AQUA SPOT DRY (0..1, 0 = none; the water engine, 7.16.0 set 15): THE SPOT DRIED under the accent — from the
+    /// second wet session on, a touch on the focus (the soft focus at half or more) that sits on a value step of at
+    /// least 1 − key across the brush's width (the picture's own range; 1 = every focus touch, 0.5 = the steps of
+    /// half the range and up) has the sheet under it dried first — the wetness map and the engine's free water
+    /// under its dabs set to nothing (`Canvas::aqua_dry_spot`) — and is laid without water, so its pigment lands
+    /// at the pixel through the tooth with a hard, unblurred edge: the dry brush over the dried underpainting, the
+    /// wet-against-dry contrast at the centre while the rest of the session runs wet. Recorded on the touch
+    /// (`hold`) for an exact replay. The other media untouched at 0.
+    pub aqua_spot_dry: f32,
+    /// AQUA FINE CALM (0..1, 0 = any surround; the skeleton, 7.16.0 set 15): the fine skeleton (`aqua_fine`) drawn
+    /// only on a CALM surround — where the TEXTURE of the picture with its thin structure closed out (the mean
+    /// slope of the closed luma over a window of eight radii, read as a step across the line's radius on the
+    /// picture's own range) is under this share of the step threshold. A rope in the sky or a seam on a sail lies
+    /// on a surround whose slope is nil (a sail's edge crossing the window is one line of slope, little in the
+    /// mean); a sea's ripple troughs, foliage or a wall's grain are themselves the texture — their dark dashes are
+    /// the washes', never the pencil's. (Measured on the schooner, closed grey over 97 px: sky 0.002–0.005, the
+    /// stays 0.013, a seam 0.02, the sea 0.05–0.17, the deck 0.25.) The other media untouched at 0.
+    pub aqua_fine_calm: f32,
+    /// AQUA LINE PRESS (0..1, 0 = an even line; the pencil laid direct, 7.16.0 set 16): THE HAND'S PRESSURE along
+    /// every line of the skeleton laid as graphite (`aqua_line_density`) — at the ends of a line the pressure falls
+    /// to a quarter over the shorter of eight radii and half the line (a short stroke tapers to both ends, a long
+    /// one keeps a body), and over the body it fluctuates ±0.2 by a value noise of the sheet at twelve radii (the
+    /// hand's weight changing as it travels); the radius 0.3 + 0.7 of the pressure, the density the pressure, so a
+    /// light hand lays a thin light line and a pressed one a full dark one — the key mixing from the even line.
+    /// In the score header (`hand=`, with the tooth and the lift). The other media untouched at 0.
+    pub aqua_line_press: f32,
+    /// AQUA LINE TOOTH (0..1, 0 = the grain's 0.7..1; the pencil laid direct, 7.16.0 set 16): DRY GRAPHITE sits on
+    /// the PEAKS of the paper's relief — a pixel of a line takes the graphite only where the relief (the field the
+    /// engine's hollows are read from) stands above key × (1 − debt), the debt the pixel's coverage × pressure ×
+    /// the line's darkness (1 − the mean transmittance of its densities), over a soft step of 0.24: the core of a
+    /// hard dark line is laid whole, its anti-aliased edge and its light ends break into the fibres' tops, and a
+    /// light line is all grain — the marker's even band gone. In the score header (`hand=`). The other media
+    /// untouched at 0.
+    pub aqua_line_tooth: f32,
+    /// AQUA LINE LIFT (0..1, 0 = unbroken; the pencil laid direct, 7.16.0 set 16): THE LEAD LIFTS off the sheet —
+    /// the pressure along the line gated by a value noise of the sheet at five radii against a chance of key ×
+    /// (0.1 + 0.4 × run / 24 radii), the run the arc since the line's heading last turned by 0.35 rad: a long
+    /// straight run (a waterline, a stay) breaks in places, a curve hardly, the line thinning into every gap and
+    /// coming back after it (the gate a soft step of 0.16). In the score header (`hand=`). The other media
+    /// untouched at 0.
+    pub aqua_line_lift: f32,
+    /// AQUA TECH (0..1, 0 = the water alone; the water engine, 7.16.0 set 18): THE TECHNIQUE'S GRIP ON THE ENGINE —
+    /// until now `--technique` reached the engine only as the brush's water (wet-on-wet 1.2, wet-on-dry 1, dry-on-dry
+    /// 0.5) and the sheet's wetting before a session (1, 0.7, 0), the solver's own rates the same for all three, so
+    /// the three pictures were alike to a few percent. By the key the technique rules the solver and the parser.
+    /// WET-ON-WET: the rim's evaporation and the pigment's viscosity down by the key (no pinned edge, no charge
+    /// holding its shape), the water's reach up by it and its permeability up by twice it (the `tech=` header's
+    /// spread — the water crosses the gaps), the brush's water up by it, the subject's silhouette no drier than the
+    /// ground by it, and a wet session's touches on a grid wider by it, each touch the mass of its wider cell: sparse
+    /// flooded touches, the water filling the gaps between them, the colours blooming into each other.
+    /// WET-ON-DRY: the sheet not wetted before a session by the key (a wet brush on dry paper) and the dry paper
+    /// sealed by it (the `tech=` header's seal — the solver's flow into a dry cell, a third of the flow, down to
+    /// nothing): the pool stays within the brush's footprint and dries with a hard edge, its pigment free within.
+    /// DRY-ON-DRY: the wet sessions cut to the key's complement (at 1 every session dry — no water, no solver, the
+    /// touch at the pixel through the tooth) and a dry session's touch off a ridge withheld where the value's step
+    /// across the brush (as `aqua_spot_dry` reads it) is under the key's quantile over the sheet: the touches along
+    /// the structure and in the zones of the highest contrast only. No technique named: the classic (wet-on-dry).
+    /// The other media untouched at 0.
+    pub aqua_tech: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -1938,6 +2068,18 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2239,6 +2381,18 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2540,6 +2694,18 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2882,6 +3048,18 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3192,6 +3370,18 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3497,6 +3687,18 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3798,6 +4000,18 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4102,6 +4316,18 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4406,6 +4632,18 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4710,6 +4948,18 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5017,6 +5267,18 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -5321,6 +5583,18 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5627,6 +5901,18 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5928,6 +6214,18 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6229,6 +6527,18 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6536,6 +6846,18 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6844,6 +7166,18 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7150,6 +7484,18 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_skip: 0.0,
     aqua_taper: 0.0,
     aqua_bias: 0.0,
+    aqua_taper_min: 0.0,
+    aqua_fine: 0.0,
+    aqua_fade: 0.0,
+    aqua_sweep: 0.0,
+    aqua_line_resist: 0.0,
+    aqua_light: 0.0,
+    aqua_light_dir: 0.0,
+    aqua_vignette: 0.0,
+    aqua_line_density: 0.0,
+    aqua_grain_dir: 0.0,
+    aqua_spot_dry: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

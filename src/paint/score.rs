@@ -104,6 +104,20 @@ pub struct ScoreHeader {
     /// edge's bias 0..1 — `aqua_bias`; read with four to seven values, the trailing zeros not written). None = off
     /// (the polygon washes and `fluid`).
     pub engine: Option<(f32, f32, f32, f32, f32, f32, f32)>,
+    /// THE PENCIL LAID DIRECT (see `Canvas::pencil_line`; `MediumProfile::aqua_line_density`, 7.16.0 set 15): every
+    /// `line` record's densities laid direct to this power instead of by the brush. 0 = the brush (old scores).
+    pub pencil: f32,
+    /// THE DIRECTIONAL GRAIN (see `Canvas::aqua_settle_lit`; `MediumProfile::aqua_grain_dir`, 7.16.0 set 15): (the
+    /// share 0..1, the light's direction in degrees) for the engine's drying. None = none (old scores).
+    pub grain_dir: Option<(f32, f32)>,
+    /// THE PENCIL'S HAND (see `Canvas::pencil_line_hand`; `MediumProfile::aqua_line_press`, `aqua_line_tooth`,
+    /// `aqua_line_lift`, 7.16.0 set 16): (press, tooth, lift) 0..1 for every `line` record laid direct. None = the
+    /// plain pencil (old scores).
+    pub hand: Option<(f32, f32, f32)>,
+    /// THE TECHNIQUE'S GRIP on the engine's drying (`Canvas::aqua_settle_tech`; see `MediumProfile::aqua_tech`,
+    /// 7.16.0 set 18): `(spread, seal)` — the water's permeability up by the spread (wet-on-wet), the solver's flow
+    /// into a dry cell down by the seal (wet-on-dry: the hard edge). None = neither (old scores).
+    pub tech: Option<(f32, f32)>,
     /// CANVAS WEAVE (see `Finish::weave`). 0 = none.
     pub weave: f32,
     /// CANVAS SAG (see `Finish::sag`). 0 = none.
@@ -146,7 +160,8 @@ pub struct StrokeRecord {
     pub wash: bool,
     /// A TOUCH of the water engine (see `Canvas::aqua_inject`): `spline` the brush's dabs, `w0` the brush's radius in
     /// px, `wet` its water (1 flooded, 0 dry), `mix` the pigment's densities at a dab's centre — laid on the water,
-    /// the shape the water's when the stage dries (the header's `engine`). Neither a stroke nor a wash.
+    /// the shape the water's when the stage dries (the header's `engine`), `taper` the brush's sweep along a stroke
+    /// (`Canvas::aqua_inject_with`). Neither a stroke nor a wash.
     pub inject: bool,
     pub stage: String,
     pub spline: Vec<[f32; 2]>,
@@ -177,7 +192,8 @@ pub struct StrokeRecord {
     pub cap: Option<f32>,
     /// A flat-ended wash stroke (see `BrushConfig::flat_ends`).
     pub flat: bool,
-    /// A stroke whose brush held its charge (see `BrushConfig::hold_charge`).
+    /// A stroke whose brush held its charge (see `BrushConfig::hold_charge`); on a TOUCH (`inject`) THE SPOT DRIED
+    /// under it before it (see `Canvas::aqua_dry_spot`; `MediumProfile::aqua_spot_dry`).
     pub hold: bool,
     /// This stroke's impasto viscosity (height per unit of paint), when it differs from the header's — the
     /// thickness mapped to the picture (see `PaintParams::impasto_map`). `None` = the header's.
@@ -218,7 +234,9 @@ pub struct StrokeRecord {
     pub prof: Option<Vec<f32>>,
     /// THE MASKING FLUID (see `Canvas::set_resist_rings`; the aqua schedule's `aqua_resist`): a `wash` record
     /// with this set lays no colour — its rings are the lights reserved, refusing this share of every deposit
-    /// and of the water laid after it; `w0` is the fluid's feathered edge in px. `None` = a wash.
+    /// and of the water laid after it; `w0` is the fluid's feathered edge in px. `None` = a wash. On a record that
+    /// is NEITHER a wash nor a touch (7.16.0 set 14): THE LINES' RESIST — `spline` the skeleton's lines as
+    /// NaN-separated polylines, `w0` the line's radius, the fluid laid along them (`Canvas::add_resist_lines`).
     pub resist: Option<f32>,
 }
 
@@ -352,6 +370,19 @@ impl StrokeScore {
             }
             None => ground,
         };
+        let ground = if h.pencil > 0.0 { format!("{ground} pencil={}", fmt_f(h.pencil)) } else { ground };
+        let ground = match h.grain_dir {
+            Some((k, a)) if k > 0.0 => format!("{ground} graindir={},{}", fmt_f(k), fmt_f(a)),
+            _ => ground,
+        };
+        let ground = match h.hand {
+            Some((a, b, c)) if a > 0.0 || b > 0.0 || c > 0.0 => format!("{ground} hand={},{},{}", fmt_f(a), fmt_f(b), fmt_f(c)),
+            _ => ground,
+        };
+        let ground = match h.tech {
+            Some((a, b)) if a > 0.0 || b > 0.0 => format!("{ground} tech={},{}", fmt_f(a), fmt_f(b)),
+            _ => ground,
+        };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
             h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if (b.deplete - 1.0).abs() > 1e-6 { format!(" deplete={}", fmt_f(b.deplete)) } else { String::new() } + &if b.comma > 0.0 { format!(" comma={}", fmt_f(b.comma)) } else { String::new() } + &if b.chalk > 0.0 { format!(" chalk={}", fmt_f(b.chalk)) } else { String::new() } + &if b.dust > 0.0 { format!(" dust={}", fmt_f(b.dust)) } else { String::new() } + &if b.rewet > 0.0 { format!(" rewet={}", fmt_f(b.rewet)) } else { String::new() } + &if b.tsuke > 0.0 { format!(" tsuke={}", fmt_f(b.tsuke)) } else { String::new() } + &if b.kasure > 0.0 { format!(" kasure={}", fmt_f(b.kasure)) } else { String::new() } + &if b.katsu > 0.0 { format!(" katsu={}", fmt_f(b.katsu)) } else { String::new() } + &if b.bevel > 0.0 { format!(" bevel={}", fmt_f(b.bevel)) } else { String::new() } + &if b.mix > 0.0 { format!(" bmix={}", fmt_f(b.mix)) } else { String::new() } + &if b.fade > 0.0 { format!(" bfade={}", fmt_f(b.fade)) } else { String::new() } + &if b.pile > 0.0 { format!(" bpile={}", fmt_f(b.pile)) } else { String::new() } + &if b.skid > 0.0 { format!(" bskid={}", fmt_f(b.skid)) } else { String::new() } + &if b.rim > 0.0 { format!(" brim={}", fmt_f(b.rim)) } else { String::new() } + &if b.slip > 0.0 { format!(" bslip={}", fmt_f(b.slip)) } else { String::new() } + &if b.bed > 0.0 { format!(" bbed={}", fmt_f(b.bed)) } else { String::new() } + &if b.drag > 0.0 { format!(" bdrag={}", fmt_f(b.drag)) } else { String::new() } + &if b.age > 0.0 { format!(" bage={}", fmt_f(b.age)) } else { String::new() } + &if b.bridge > 0.0 { format!(" bbridge={}", fmt_f(b.bridge)) } else { String::new() } + &if b.liftoff > 0.0 { format!(" blift={}", fmt_f(b.liftoff)) } else { String::new() } + &if b.broken > 0.0 { format!(" bbroken={}", fmt_f(b.broken)) } else { String::new() } + &if b.lip > 0.0 { format!(" blip={}", fmt_f(b.lip)) } else { String::new() } + &if b.marble > 0.0 { format!(" bmarble={}", fmt_f(b.marble)) } else { String::new() } + &if b.slump > 0.0 { format!(" bslump={}", fmt_f(b.slump)) } else { String::new() } + &if b.tilt > 0.0 { format!(" btilt={}", fmt_f(b.tilt)) } else { String::new() } + &if b.stiction > 0.0 { format!(" bstict={}", fmt_f(b.stiction)) } else { String::new() } + &if b.smear > 0.0 { format!(" bsmear={}", fmt_f(b.smear)) } else { String::new() } + &if b.heel > 0.0 { format!(" bheel={}", fmt_f(b.heel)) } else { String::new() } + &if b.dirty > 0.0 { format!(" bdirty={}", fmt_f(b.dirty)) } else { String::new() } + &if b.tear > 0.0 { format!(" btear={}", fmt_f(b.tear)) } else { String::new() } + &if b.nijimi > 0.0 { format!(" nijimi={}", fmt_f(b.nijimi)) } else { String::new() } + &if b.turn > 0.0 { format!(" turn={}", fmt_f(b.turn)) } else { String::new() } + &if b.join > 0.0 { format!(" join={}", fmt_f(b.join)) } else { String::new() } + &if b.waver > 0.0 { format!(" waver={}", fmt_f(b.waver)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &if h.sag > 0.0 { format!(" sag={}", fmt_f(h.sag)) } else { String::new() } + &if h.gloss > 0.0 { format!(" gloss={}", fmt_f(h.gloss)) } else { String::new() } + &if h.hiding > 0.0 { format!(" hiding={}", fmt_f(h.hiding)) } else { String::new() } + &if h.tone > 0.0 { format!(" tone={}", fmt_f(h.tone)) } else { String::new() } + &if h.water > 0.0 { format!(" water={}", fmt_f(h.water)) } else { String::new() } + &if h.agent > 0.0 { format!(" agent={}", fmt_f(h.agent)) } else { String::new() } + &if h.light > 0.0 { format!(" light={}", fmt_f(h.light)) } else { String::new() } + &if h.phong > 0.0 { format!(" phong={}", fmt_f(h.phong)) } else { String::new() } + &if h.spread > 0.0 { format!(" spread={}", fmt_f(h.spread)) } else { String::new() } + &if h.peak > 0.0 { format!(" peak={}", fmt_f(h.peak)) } else { String::new() } + (if h.old_paper { " oldpaper=1" } else { "" }) + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
@@ -476,6 +507,10 @@ impl StrokeScore {
                         fluid: m.get("fluid").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 4 || p.len() == 5).then(|| (p[0], p[1], p[2], p[3], p.get(4).copied().unwrap_or(0.0))) }),
                         charge: get("charge").parse().unwrap_or(0.0),
                         engine: m.get("engine").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (4..=7).contains(&p.len()).then(|| (p[0], p[1], p[2], p[3], p.get(4).copied().unwrap_or(0.0), p.get(5).copied().unwrap_or(0.0), p.get(6).copied().unwrap_or(0.0))) }),
+                        pencil: get("pencil").parse().unwrap_or(0.0),
+                        grain_dir: m.get("graindir").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 2).then(|| (p[0], p[1])) }),
+                        hand: m.get("hand").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 3).then(|| (p[0], p[1], p[2])) }),
+                        tech: m.get("tech").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 2).then(|| (p[0], p[1])) }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -689,13 +724,23 @@ impl StrokeScore {
                         load[i] += val * ss;
                     }
                 }
+                // THE SPOT DRIED (a touch with `hold`; see `Canvas::aqua_dry_spot`): the sheet under it dried first.
+                if rec.hold {
+                    canvas.aqua_dry_spot(&path, rec.w0 * ss, rec.w1 * ss);
+                }
                 let (eb, ex) = self.header.engine.map(|e| (e.5, e.6)).unwrap_or((0.0, 0.0));
-                canvas.aqua_inject(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex);
+                canvas.aqua_inject_with(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex, rec.taper);
                 continue;
             }
             // A CLIP record (`K`): strokes after it lay paint only inside its rings; a one-point record clears.
             if rec.wash && rec.wipe {
                 canvas.set_clip_rings(&path);
+                continue;
+            }
+            // THE LINES' RESIST (a record with `resist`, no wash, no touch; see `Canvas::add_resist_lines`): the fluid
+            // along the skeleton's lines.
+            if let (false, Some(r)) = (rec.wash, rec.resist) {
+                canvas.add_resist_lines(&path, rec.w0 * ss, r);
                 continue;
             }
             // THE MASKING FLUID (an `A` record with `resist`; see `Canvas::set_resist_rings`): the lights reserved.
@@ -729,6 +774,18 @@ impl StrokeScore {
                 // much comes off — oil lifts freely, a staining watercolour barely at all.
                 let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load: Vec::new(), pressure: rec.press, wetness: rec.wet };
                 s.wipe(&mut canvas, &brush, rec.wet * self.header.lift);
+                continue;
+            }
+            // THE PENCIL LAID DIRECT (a `line` record of a score with `pencil`; see `Canvas::pencil_line`): the
+            // densities of the record's mix (unscaled: a density is a density) to the header's power.
+            if self.header.pencil > 0.0 && rec.stage == "line" {
+                let mut dens = vec![0f32; n];
+                for (name, val) in &rec.mix {
+                    if let Some(i) = index_of(name) {
+                        dens[i] += val * self.header.pencil;
+                    }
+                }
+                canvas.pencil_line_hand(&path, rec.w0 * ss, rec.w1 * ss, &dens, self.header.hand.unwrap_or((0.0, 0.0, 0.0)));
                 continue;
             }
             let mut load = vec![0f32; n];
@@ -783,7 +840,9 @@ impl StrokeScore {
             // anything else touches the sheet.
             if let Some((er, ee, ew, ep, ev, _, _)) = self.header.engine {
                 if crate::paint::painter::aqua_stage(self.header.stages.as_deref(), idx) {
-                    canvas.aqua_settle(er, ee, ew, ep, ev);
+                    let (gd, ga) = self.header.grain_dir.unwrap_or((0.0, 0.0));
+                    let (ts, tl) = self.header.tech.unwrap_or((0.0, 0.0));
+                    canvas.aqua_settle_tech(er, ee, ew, ep, ev, gd, ga, ts, tl);
                 }
             }
             if self.header.bleed > 0.0 {
@@ -898,8 +957,11 @@ impl StrokeScore {
                 }
                 let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
                 if rec.inject {
+                    if rec.hold {
+                        canvas.aqua_dry_spot(&path, rec.w0 * ss, rec.w1 * ss);
+                    }
                     let (eb, ex) = self.header.engine.map(|e| (e.5, e.6)).unwrap_or((0.0, 0.0));
-                canvas.aqua_inject(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex);
+                canvas.aqua_inject_with(&path, rec.w0 * ss, rec.w1 * ss, rec.wet, &load, rec.press, eb, ex, rec.taper);
                     laid += 1;
                     if laid % every == 0 {
                         frames.push(canvas.snapshot());
@@ -908,6 +970,10 @@ impl StrokeScore {
                 }
                 if rec.wash && rec.wipe {
                     canvas.set_clip_rings(&path);
+                    continue;
+                }
+                if let (false, Some(r)) = (rec.wash, rec.resist) {
+                    canvas.add_resist_lines(&path, rec.w0 * ss, r);
                     continue;
                 }
                 if let (true, Some(r)) = (rec.wash, rec.resist) {
@@ -920,6 +986,20 @@ impl StrokeScore {
                         Some(e) => canvas.fill_rings_charged(&path, &load, rec.wet, rec.w0 * ss, Some(&e.iter().map(|v| v * ss).collect::<Vec<f32>>()), charge),
                         None => canvas.fill_rings_charged(&path, &load, rec.wet, rec.w0 * ss, None, charge),
                     }
+                    laid += 1;
+                    if laid % every == 0 {
+                        frames.push(canvas.snapshot());
+                    }
+                    continue;
+                }
+                if self.header.pencil > 0.0 && rec.stage == "line" {
+                    let mut dens = vec![0f32; n];
+                    for (name, val) in &rec.mix {
+                        if let Some(i) = index_of(name) {
+                            dens[i] += val * self.header.pencil;
+                        }
+                    }
+                    canvas.pencil_line_hand(&path, rec.w0 * ss, rec.w1 * ss, &dens, self.header.hand.unwrap_or((0.0, 0.0, 0.0)));
                     laid += 1;
                     if laid % every == 0 {
                         frames.push(canvas.snapshot());
@@ -989,7 +1069,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None },
                 StrokeRecord { id: 2, wipe: false, wash: false, inject: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None },
@@ -1058,6 +1138,92 @@ mod tests {
     }
 
     #[test]
+    fn the_pencil_the_dried_spot_and_the_grains_direction_round_trip() {
+        // Set 15: the header's pencil and grain direction and a touch's dried spot in the text and back; the pencil's
+        // line darker on the sheet than the brush's; the replay exact from the text.
+        let pal = crate::paint::palette::LIMITED_LANDSCAPE;
+        let mut s = StrokeScore { header: ScoreHeader { version: 1, palette: pal.name.into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 3, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: Some(vec!["line".into(), "aqua-1".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.0)), pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None }, strokes: Vec::new() };
+        let line = StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "line".into(), spline: vec![[10.0, 4.0], [10.0, 44.0]], w0: 1.5, w1: 1.0, taper: 0.0, mix: vec![("ultramarine-blue".into(), 1.0)], wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
+        let touch = StrokeRecord { id: 2, wipe: false, wash: false, inject: true, stage: "aqua-1".into(), spline: vec![[40.0, 24.0]], w0: 8.0, w1: 0.0, taper: 0.0, mix: vec![("cadmium-red".into(), 0.5)], wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: true, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
+        s.strokes = vec![line, touch];
+        let brush = s.replay(64, 48).unwrap();
+        s.header.pencil = 2.0;
+        s.header.grain_dir = Some((0.5, 45.0));
+        let text = s.to_text();
+        assert!(text.contains(" pencil=2") && text.contains(" graindir=0.5,45") && text.contains(" hold=1"), "the tokens: {}", text.lines().take(1).chain(text.lines().skip_while(|l| !l.starts_with('J')).take(1)).collect::<Vec<_>>().join(" | "));
+        let parsed = StrokeScore::parse(&text).unwrap();
+        assert_eq!(parsed.header.pencil, 2.0);
+        assert_eq!(parsed.header.grain_dir, Some((0.5, 45.0)));
+        assert!(parsed.strokes[1].hold && parsed.strokes[1].inject, "the touch's dried spot");
+        let direct = s.replay(64, 48).unwrap();
+        let lum = |c: &Canvas, x: u32, y: u32| crate::paint::color::linear_luma(crate::paint::color::srgb_to_linear(c.color_at(x, y)));
+        assert!(lum(&direct, 10, 24) < lum(&brush, 10, 24) - 0.2, "the pencil's line darker than the brush's: {} vs {}", lum(&direct, 10, 24), lum(&brush, 10, 24));
+        assert_eq!(parsed.replay(64, 48).unwrap().to_image().into_raw(), direct.to_image().into_raw(), "replays byte-exact from the text");
+    }
+
+    #[test]
+    fn the_pencils_hand_round_trips_tapers_lifts_and_skips_on_the_tooth() {
+        // Set 16: the header's hand in the text and back; the pressure thins the line's ends against its middle;
+        // the lift leaves fewer pixels of a long straight line; the tooth leaves fewer pixels of a light line; each
+        // replays exact from the text; no hand = the set-15 pencil byte-identical.
+        let pal = crate::paint::palette::LIMITED_LANDSCAPE;
+        let mut s = StrokeScore { header: ScoreHeader { version: 1, palette: pal.name.into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 3, width: 64, height: 96, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: Some(vec!["line".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 2.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None }, strokes: Vec::new() };
+        let line = |dens: f32| StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "line".into(), spline: vec![[20.0, 4.0], [20.0, 92.0]], w0: 2.0, w1: 2.0, taper: 0.0, mix: vec![("ultramarine-blue".into(), dens)], wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
+        s.strokes = vec![line(1.0)];
+        let plain_c = s.replay(64, 96).unwrap();
+        let plain = plain_c.to_image().into_raw();
+        s.header.hand = Some((0.0, 0.0, 0.0));
+        assert!(!s.to_text().contains(" hand="), "a hand of nothing is not written");
+        assert_eq!(s.replay(64, 96).unwrap().to_image().into_raw(), plain, "and lays the plain pencil");
+        let drawn = |c: &Canvas, y0: u32, y1: u32| -> usize { let mut n = 0; for y in y0..y1 { for x in 0..64 { if c.saturation_at(x, y) > 1e-6 { n += 1; } } } n };
+        // The pressure: the ends thinner than the middle.
+        s.header.hand = Some((1.0, 0.0, 0.0));
+        let text = s.to_text();
+        assert!(text.contains(" hand=1,0,0"), "the hand's token: {}", text.lines().next().unwrap_or(""));
+        let parsed = StrokeScore::parse(&text).unwrap();
+        assert_eq!(parsed.header.hand, Some((1.0, 0.0, 0.0)));
+        let pressed = s.replay(64, 96).unwrap();
+        assert!(drawn(&pressed, 4, 10) < drawn(&pressed, 44, 50), "the ends thinner: {} vs {}", drawn(&pressed, 4, 10), drawn(&pressed, 44, 50));
+        assert_eq!(parsed.replay(64, 96).unwrap().to_image().into_raw(), pressed.to_image().into_raw(), "the pressure replays exact from the text");
+        // The lift: a long straight line loses pixels.
+        s.header.hand = Some((0.0, 0.0, 1.0));
+        let lifted = s.replay(64, 96).unwrap();
+        assert!(drawn(&lifted, 0, 96) < drawn(&plain_c, 0, 96), "the lead lifts: {} vs {}", drawn(&lifted, 0, 96), drawn(&plain_c, 0, 96));
+        assert_eq!(StrokeScore::parse(&s.to_text()).unwrap().replay(64, 96).unwrap().to_image().into_raw(), lifted.to_image().into_raw(), "the lift replays exact from the text");
+        // The tooth: a light line breaks on the peaks.
+        s.strokes = vec![line(0.15)];
+        s.header.hand = None;
+        let light = s.replay(64, 96).unwrap();
+        s.header.hand = Some((0.0, 1.0, 0.0));
+        let toothed = s.replay(64, 96).unwrap();
+        assert!(drawn(&toothed, 0, 96) < drawn(&light, 0, 96), "the light line on the peaks only: {} vs {}", drawn(&toothed, 0, 96), drawn(&light, 0, 96));
+        assert_eq!(StrokeScore::parse(&s.to_text()).unwrap().replay(64, 96).unwrap().to_image().into_raw(), toothed.to_image().into_raw(), "the tooth replays exact from the text");
+    }
+
+    #[test]
+    fn the_lines_resist_round_trips_and_walls_the_touch() {
+        // A record with `resist` and neither wash nor touch (set 14): two NaN-separated lines of the skeleton's fluid,
+        // back from the text with the NaN, laid before a touch of the engine so the sheet differs from the one
+        // without it, and exact from the text.
+        let mut s = sample();
+        s.header.transmittance = true;
+        s.header.stages = Some(vec!["aqua-1".into()]);
+        s.header.engine = Some((6.0, 1.0, 0.8, 1.0, 0.0, 0.0, 0.0));
+        let lines = StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "aqua-1".into(), spline: vec![[30.0, 4.0], [30.0, 44.0], [f32::NAN, f32::NAN], [40.0, 4.0], [40.0, 44.0]], w0: 1.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(1.0) };
+        let touch = StrokeRecord { id: 2, wipe: false, wash: false, inject: true, stage: "aqua-1".into(), spline: vec![[20.0, 24.0]], w0: 8.0, w1: 0.0, taper: 0.0, mix: vec![("cadmium-red".into(), 0.5)], wet: 0.9, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
+        s.strokes = vec![lines, touch];
+        let text = s.to_text();
+        assert!(text.contains("NaN") && text.contains(" resist=1"), "the record's tokens: {text}");
+        let parsed = StrokeScore::parse(&text).expect("parses");
+        assert!(!parsed.strokes[0].wash && !parsed.strokes[0].inject && parsed.strokes[0].resist == Some(1.0) && parsed.strokes[0].spline[2][0].is_nan(), "the lines back from the text");
+        let laid = s.replay(64, 48).unwrap().to_image().into_raw();
+        let mut bare = s.clone();
+        bare.strokes.remove(0);
+        assert_ne!(laid, bare.replay(64, 48).unwrap().to_image().into_raw(), "the fluid along the lines walls the touch's water");
+        assert_eq!(parsed.replay(64, 48).unwrap().to_image().into_raw(), laid, "and replays exact from the text");
+    }
+
+    #[test]
     fn a_touch_of_the_water_engine_round_trips_and_replays_exact() {
         // A `J` record under an `engine` header: the tokens in the text, the record and the header back from it,
         // the touch laid when its stage dries (the sheet differs from the bare one), and the replay from the text
@@ -1087,6 +1253,14 @@ mod tests {
         bare.strokes.clear();
         assert_ne!(laid, bare.replay(64, 48).unwrap().to_image().into_raw(), "the touch lands when the stage dries");
         assert_eq!(parsed.replay(64, 48).unwrap().to_image().into_raw(), laid, "and replays exact from the text");
+        // The brush's sweep in the record's `taper` (set 13): the touch lays less toward its ends, the text carries it.
+        let mut swept = s.clone();
+        swept.strokes[0].taper = 0.6;
+        let st = swept.to_text();
+        assert!(st.contains(" taper=0.6 "), "the sweep in the record: {st}");
+        let swept_laid = swept.replay(64, 48).unwrap().to_image().into_raw();
+        assert_ne!(swept_laid, laid, "the sweep runs the brush dry along the touch");
+        assert_eq!(StrokeScore::parse(&st).unwrap().replay(64, 48).unwrap().to_image().into_raw(), swept_laid, "and replays exact from the text");
     }
 
     #[test]
@@ -1154,7 +1328,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let stroke = StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, wash: false, inject: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
@@ -1183,7 +1357,7 @@ mod tests {
         // A score that lays a black stroke on the left and then SMUDGES rightward from inside it: the record
         // survives the text round trip, and the replay carries the black beyond the stroke — darker there than
         // without the smudge — while the stroke's own start is unchanged.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: 60, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 0.5, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "pastel".into(), seed: 1, width: 60, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 0.5, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let stroke = StrokeRecord { id: 1, wipe: false, wash: false, inject: false, stage: "block-in".into(), spline: vec![[2.0, 10.0], [24.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 0.5, press: 1.0, streak: 0.6, round: 0.7, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: true, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
         let finger = StrokeRecord { id: 2, wipe: true, wash: false, inject: false, stage: "block-in".into(), spline: vec![[16.0, 10.0], [50.0, 10.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.5, press: 1.0, streak: 0.0, round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: Some(0.5), stop: None, edge: None, prof: None, resist: None };
         let without = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
@@ -1212,7 +1386,7 @@ mod tests {
         // A square wash, its wet edge 0 along its left side and 12 px along its right: the record survives the
         // text round trip; the replay blooms past the right side and not past the left; a score without the
         // edge (the one feather, 0) blooms past neither.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "watercolour".into(), seed: 1, width: 80, height: 40, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 0.5, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "watercolour".into(), seed: 1, width: 80, height: 40, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 0.5, transmittance: false, flow: None, bloom: None, grain_mid: 0.0, grain_wet: 0.0, barrier: 0.0, ragged: 0.0, tension: 0.0, fluid: None, charge: 0.0, engine: None, pencil: 0.0, grain_dir: None, hand: None, tech: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, tone: 0.0, water: 0.0, agent: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, collide: None, hold_mask: None };
         let rings = vec![[30.0, 8.0], [50.0, 8.0], [50.0, 32.0], [30.0, 32.0]];
         let plain = StrokeRecord { id: 1, wipe: false, wash: true, inject: false, stage: "wash".into(), spline: rings.clone(), w0: 0.0, w1: 0.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None };
         let edged = StrokeRecord { edge: Some(vec![0.0, 12.0, 12.0, 0.0]), ..plain.clone() };

@@ -125,6 +125,9 @@ pub struct Canvas {
     /// THE MASKING FLUID (empty = none; see `set_resist_rings`): per pixel the share (0..1) of every deposit and
     /// of the water refused there — the lights reserved before the first wash (the aqua schedule's `aqua_resist`).
     resist: Vec<f32>,
+    /// THE LINES' WALLS (`add_resist_lines`): at the engine's cells, every cell a skeleton line crosses, however
+    /// little of its area the fluid covers — the line a wall to the engine's water. Empty = none.
+    line_wall: Vec<bool>,
     /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
     /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
     /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
@@ -209,7 +212,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), line_wall: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -242,6 +245,7 @@ impl Canvas {
     /// `k` ≤ 0, clears it.
     pub fn set_resist_rings(&mut self, rings: &[[f32; 2]], k: f32, feather: f32) {
         let k = k.clamp(0.0, 1.0);
+        self.line_wall = Vec::new();
         let (w, h) = (self.w as usize, self.h as usize);
         let Some(mask) = Self::rings_mask(w, h, rings).filter(|_| k > 0.0) else {
             self.resist = Vec::new();
@@ -275,6 +279,281 @@ impl Canvas {
         self.resist = (0..w * h)
             .map(|i| if cur[i] { k } else if depth[i] > 0 { k * depth[i] as f32 / (f as f32 + 1.0) } else { 0.0 })
             .collect();
+    }
+
+    /// THE LINES' RESIST (7.16.0 set 14; see `MediumProfile::aqua_line_resist`): the masking fluid laid ALONG the
+    /// skeleton's lines — `paths` NaN-separated polylines, each a band of the line's own `radius` px taking `k`
+    /// (0..1) where the sheet had less, ADDED to the fluid laid before (`set_resist_rings`), the rest untouched;
+    /// and every cell of the engine's grid the line crosses (its centre within the radius, or within 0.71 of a
+    /// cell so a diagonal leaves no corner open) a WALL to the engine's water whatever the share: the line breaks
+    /// the pool, the pigment pins along its edges, the line keeps its own tone (bare of wash at 1, tinted by the
+    /// rest under it). `k` ≤ 0 or no path = no-op.
+    pub fn add_resist_lines(&mut self, paths: &[[f32; 2]], radius: f32, k: f32) {
+        let k = k.clamp(0.0, 1.0);
+        if k <= 0.0 || paths.is_empty() {
+            return;
+        }
+        let (w, h) = (self.w as usize, self.h as usize);
+        if self.resist.is_empty() {
+            self.resist = vec![0.0; w * h];
+        }
+        let band = radius.max(0.5);
+        let b2 = band * band;
+        let cs = self.aqua_cell();
+        let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
+        if self.line_wall.len() != cw * ch {
+            self.line_wall = vec![false; cw * ch];
+        }
+        let reach = band.max(0.71 * cs as f32);
+        let r2 = reach * reach;
+        let mut prev: Option<[f32; 2]> = None;
+        for pt in paths {
+            if !(pt[0].is_finite() && pt[1].is_finite()) {
+                prev = None;
+                continue;
+            }
+            let (a, b) = (prev.unwrap_or(*pt), *pt);
+            let x0 = (a[0].min(b[0]) - band).floor().max(0.0) as usize;
+            let x1 = ((a[0].max(b[0]) + band).ceil().max(0.0) as usize).min(w - 1);
+            let y0 = (a[1].min(b[1]) - band).floor().max(0.0) as usize;
+            let y1 = ((a[1].max(b[1]) + band).ceil().max(0.0) as usize).min(h - 1);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let t = if l2 > 1e-9 { (((px - a[0]) * dx + (py - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (qx, qy) = (a[0] + dx * t - px, a[1] + dy * t - py);
+                    if qx * qx + qy * qy <= b2 {
+                        let i = y * w + x;
+                        if self.resist[i] < k {
+                            self.resist[i] = k;
+                        }
+                    }
+                }
+            }
+            // The cells the line crosses: walls.
+            let csf = cs as f32;
+            let cx0 = ((a[0].min(b[0]) - reach) / csf).floor().max(0.0) as usize;
+            let cx1 = (((a[0].max(b[0]) + reach) / csf).ceil().max(0.0) as usize).min(cw - 1);
+            let cy0 = ((a[1].min(b[1]) - reach) / csf).floor().max(0.0) as usize;
+            let cy1 = (((a[1].max(b[1]) + reach) / csf).ceil().max(0.0) as usize).min(ch - 1);
+            for qy in cy0..=cy1 {
+                for qx in cx0..=cx1 {
+                    let (px, py) = ((qx * cs) as f32 + csf * 0.5, (qy * cs) as f32 + csf * 0.5);
+                    let t = if l2 > 1e-9 { (((px - a[0]) * dx + (py - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (a[0] + dx * t - px, a[1] + dy * t - py);
+                    if ex * ex + ey * ey <= r2 {
+                        self.line_wall[qy * cw + qx] = true;
+                    }
+                }
+            }
+            prev = Some(b);
+        }
+    }
+
+    /// THE PENCIL LAID DIRECT (7.16.0 set 15; see `MediumProfile::aqua_line_density`): the skeleton's line as
+    /// graphite on the sheet, not as a brush's deposit — `path` a polyline (NaN-separated polylines allowed), its
+    /// radius running from `r0` at its start to `r1` at its end, every pixel within it taking the densities `dens`
+    /// at full in the line's core and over one pixel of anti-aliasing at its edge (the nearest point of the
+    /// polyline deciding, so a joint is laid once), by the paper's tooth: the hollows of the grain take 0.7 of the
+    /// core (a graphite line on a cold-pressed sheet skips in the hollows). Through `deposit`, so the masking fluid
+    /// refuses its share and the film rises. (The brush's deposit — `Stroke::rasterize` — lands a fifth of the
+    /// line's nominal density: the footprint's falloff, the tooth and one hit per pixel; measured at 0.80
+    /// transmittance for a nominal 0.35.)
+    pub fn pencil_line(&mut self, path: &[[f32; 2]], r0: f32, r1: f32, dens: &[f32]) {
+        self.pencil_line_hand(path, r0, r1, dens, (0.0, 0.0, 0.0));
+    }
+
+    /// THE PENCIL'S HAND (7.16.0 set 16): `pencil_line` with `hand` = (press, tooth, lift), each 0..1, all 0 =
+    /// `pencil_line` byte-identical.
+    /// PRESS (`MediumProfile::aqua_line_press`): the pressure along the line — at the ends of every polyline it
+    /// falls to a quarter over the shorter of eight mean radii and half the line (a short stroke tapers to both
+    /// ends, a long one has a body), and over the body it fluctuates by a value noise of the sheet at twelve radii
+    /// ±0.2 (the hand's weight changing as it travels); the radius 0.3 + 0.7 of the pressure, the density the
+    /// pressure (a light hand lays a thin light line) — the key mixing from 1.
+    /// TOOTH (`aqua_line_tooth`): dry graphite sits on the PEAKS of the paper's relief — a pixel takes the line
+    /// only where the relief (the same field the engine's hollows are read from) is above `key × (1 − debt)`,
+    /// the debt the pixel's coverage × pressure × the line's darkness (1 − the mean transmittance of its
+    /// densities), over a soft step of 0.24: a hard dark line's core is laid whole, its anti-aliased edge and its
+    /// light ends break into the fibres' tops, a light line is all grain.
+    /// LIFT (`aqua_line_lift`): the lead LIFTS off the sheet — the pressure gated by a value noise of the sheet at
+    /// five radii against a chance `key × (0.1 + 0.4 × run/24 radii)`, the run the arc since the heading last
+    /// turned by 0.35 rad (so a long straight waterline breaks in places and a curve hardly), the gate a soft step
+    /// of 0.16: the line thins into the gap and comes back after it. Every value a function of the sheet's
+    /// position and the path, so the replay is exact.
+    pub fn pencil_line_hand(&mut self, path: &[[f32; 2]], r0: f32, r1: f32, dens: &[f32], hand: (f32, f32, f32)) {
+        if path.len() < 2 || dens.iter().all(|v| *v <= 0.0) {
+            return;
+        }
+        let (hk, tk, lk) = (hand.0.clamp(0.0, 1.0), hand.1.clamp(0.0, 1.0), hand.2.clamp(0.0, 1.0));
+        let handed = hk > 0.0 || tk > 0.0 || lk > 0.0;
+        let (w, h) = (self.w as usize, self.h as usize);
+        let gs = self.grain_scale.max(1.0);
+        let fin = |p: &[f32; 2]| p[0].is_finite() && p[1].is_finite();
+        let mut cum = vec![0f32; path.len()];
+        for i in 1..path.len() {
+            let (a, b) = (&path[i - 1], &path[i]);
+            cum[i] = cum[i - 1] + if fin(a) && fin(b) { ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt() } else { 0.0 };
+        }
+        let total = cum[path.len() - 1].max(1e-6);
+        let (r0, r1) = (r0.max(0.5), if r1 > 0.0 { r1.max(0.5) } else { r0.max(0.5) });
+        let rmax = r0.max(r1) + 1.0;
+        // THE HAND: per vertex, the arc of its own polyline's start and end (the taper) and the arc since the
+        // heading last turned (the lift's run).
+        let rmean = 0.5 * (r0 + r1);
+        let mut sub_lo = vec![0f32; path.len()];
+        let mut sub_hi = vec![total; path.len()];
+        let mut run_at = vec![0f32; path.len()];
+        if handed {
+            let mut i = 0usize;
+            while i < path.len() {
+                if !fin(&path[i]) {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j + 1 < path.len() && fin(&path[j + 1]) {
+                    j += 1;
+                }
+                let (lo, hi) = (cum[i], cum[j]);
+                let mut head: Option<(f32, f32)> = None;
+                let mut run0 = lo;
+                for q in i..=j {
+                    sub_lo[q] = lo;
+                    sub_hi[q] = hi;
+                    if q > i {
+                        let (dx, dy) = (path[q][0] - path[q - 1][0], path[q][1] - path[q - 1][1]);
+                        let l = (dx * dx + dy * dy).sqrt();
+                        if l > 1e-6 {
+                            let d = (dx / l, dy / l);
+                            match head {
+                                None => head = Some(d),
+                                Some(h) => {
+                                    if (h.0 * d.0 + h.1 * d.1).clamp(-1.0, 1.0).acos() > 0.35 {
+                                        head = Some(d);
+                                        run0 = cum[q - 1];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    run_at[q] = cum[q] - run0;
+                }
+                i = j + 1;
+            }
+        }
+        // The line's darkness: one less the mean transmittance of its densities (the sheet's log reflectances,
+        // or the densities as they are).
+        let darkness = if tk > 0.0 {
+            let t = if self.ln_r.len() == dens.len() && !dens.is_empty() {
+                (0..3).map(|ch| (0..dens.len()).map(|i| dens[i].max(0.0) * self.ln_r[i][ch]).sum::<f32>().exp()).sum::<f32>() / 3.0
+            } else {
+                (-dens.iter().map(|v| v.max(0.0)).sum::<f32>()).exp()
+            };
+            (1.0 - t).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let smooth = |v: f32| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
+        let (mut bx0, mut by0, mut bx1, mut by1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for q in path.iter().filter(|q| fin(q)) {
+            bx0 = bx0.min(q[0]);
+            by0 = by0.min(q[1]);
+            bx1 = bx1.max(q[0]);
+            by1 = by1.max(q[1]);
+        }
+        if bx0 > bx1 || bx1 + rmax < 0.0 || by1 + rmax < 0.0 || bx0 - rmax > w as f32 || by0 - rmax > h as f32 {
+            return;
+        }
+        let x0 = ((bx0 - rmax).floor().max(0.0) as usize).min(w - 1);
+        let x1 = ((bx1 + rmax).ceil().max(0.0) as usize).min(w - 1);
+        let y0 = ((by0 - rmax).floor().max(0.0) as usize).min(h - 1);
+        let y1 = ((by1 + rmax).ceil().max(0.0) as usize).min(h - 1);
+        let bw = x1 + 1 - x0;
+        let mut cov = vec![0f32; bw * (y1 + 1 - y0)];
+        let mut prs = vec![1f32; if handed { bw * (y1 + 1 - y0) } else { 0 }];
+        for i in 1..path.len() {
+            let (a, b) = (&path[i - 1], &path[i]);
+            if !(fin(a) && fin(b)) {
+                continue;
+            }
+            let (ra, rb) = (r0 + (r1 - r0) * cum[i - 1] / total, r0 + (r1 - r0) * cum[i] / total);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            let seg_len = l2.sqrt();
+            let taper_len = (8.0 * rmean).min(0.5 * (sub_hi[i] - sub_lo[i])).max(1e-3);
+            let sx0 = (((a[0].min(b[0]) - rmax).floor().max(0.0) as usize).min(w - 1)).max(x0);
+            let sx1 = (((a[0].max(b[0]) + rmax).ceil().max(0.0) as usize).min(w - 1)).min(x1);
+            let sy0 = (((a[1].min(b[1]) - rmax).floor().max(0.0) as usize).min(h - 1)).max(y0);
+            let sy1 = (((a[1].max(b[1]) + rmax).ceil().max(0.0) as usize).min(h - 1)).min(y1);
+            for y in sy0..=sy1 {
+                for x in sx0..=sx1 {
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let t = if l2 > 1e-9 { (((px - a[0]) * dx + (py - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (a[0] + dx * t - px, a[1] + dy * t - py);
+                    let d = (ex * ex + ey * ey).sqrt();
+                    let mut r = ra + (rb - ra) * t;
+                    let mut press = 1.0f32;
+                    if handed {
+                        // The nearest point's arc, its pressure (the ends' taper, the hand's weight), the lift.
+                        let s = cum[i - 1] + seg_len * t;
+                        let (nx, ny) = (a[0] + dx * t, a[1] + dy * t);
+                        if hk > 0.0 {
+                            let end = (s - sub_lo[i]).min(sub_hi[i] - s) / taper_len;
+                            let taper = 0.25 + 0.75 * smooth(end);
+                            let wob = 1.0 + 0.4 * (value_noise(nx / (12.0 * rmean), ny / (12.0 * rmean), 0x6_1A1_0016) - 0.5);
+                            press *= 1.0 - hk * (1.0 - taper * wob);
+                        }
+                        if lk > 0.0 {
+                            let run = run_at[i - 1] + seg_len * t;
+                            let chance = lk * (0.1 + 0.4 * (run / (24.0 * rmean)).clamp(0.0, 1.0));
+                            let m = value_noise(nx / (5.0 * rmean), ny / (5.0 * rmean), 0x6_1A1_0116);
+                            press *= smooth((m - chance + 0.08) / 0.16);
+                        }
+                        r *= 0.3 + 0.7 * press.min(1.0);
+                    }
+                    let c = (r - d + 0.5).clamp(0.0, 1.0);
+                    if c > 0.0 {
+                        let q = (y - y0) * bw + (x - x0);
+                        if c > cov[q] {
+                            cov[q] = c;
+                            if handed {
+                                prs[q] = press;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut d = vec![0f32; dens.len()];
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let c = cov[(y - y0) * bw + (x - x0)];
+                if c <= 0.0 {
+                    continue;
+                }
+                let g = paper_grain_at(x as f32 / gs, y as f32 / gs, 0x6_1A1_0000);
+                let mut k = c * (0.7 + 0.3 * g);
+                if handed {
+                    let press = prs[(y - y0) * bw + (x - x0)];
+                    k *= press.min(1.0);
+                    if tk > 0.0 {
+                        // THE TOOTH: the graphite on the relief's peaks, the lighter the debt the higher the peak.
+                        let debt = (c * press.min(1.0) * darkness).clamp(0.0, 1.0);
+                        let th = tk * (1.0 - debt);
+                        k *= smooth((g - th + 0.12) / 0.24);
+                    }
+                    if k <= 0.0 {
+                        continue;
+                    }
+                }
+                for (i, v) in d.iter_mut().enumerate() {
+                    *v = dens[i].max(0.0) * k;
+                }
+                self.deposit(x as u32, y as u32, &d, 0.0);
+            }
+        }
     }
 
     /// The masking fluid's share at row-major pixel `p` (0 where none).
@@ -1739,7 +2018,7 @@ impl Canvas {
                 wall_acc[q] += self.resist_at(p);
                 count[q] += 1.0;
             }
-            let wall: Vec<bool> = (0..cells).map(|q| wall_acc[q] / count[q].max(1.0) >= 0.999).collect();
+            let wall: Vec<bool> = (0..cells).map(|q| wall_acc[q] / count[q].max(1.0) >= 0.999 || self.line_wall.get(q).copied().unwrap_or(false)).collect();
             let relief: Vec<f32> = (0..cells)
                 .map(|q| {
                     let (cx, cy) = (((q % cw) * cs) as f32 + cs as f32 * 0.5, ((q / cw) * cs) as f32 + cs as f32 * 0.5);
@@ -1782,6 +2061,15 @@ impl Canvas {
     /// other is left to the tooth.
     #[allow(clippy::too_many_arguments)]
     pub fn aqua_inject(&mut self, path: &[[f32; 2]], radius: f32, end_radius: f32, water: f32, load: &[f32], press: f32, boost: f32, bias: f32) {
+        self.aqua_inject_with(path, radius, end_radius, water, load, press, boost, bias, 0.0);
+    }
+
+    /// `aqua_inject` with THE BRUSH'S SWEEP (`sweep`, 7.16.0 set 13; see `MediumProfile::aqua_sweep`): along a path of
+    /// several dabs the pigment a dab lays falls from the stroke's middle to its ends by 1 − sweep × |2t − 1| — the
+    /// brush charged where it touched and run dry by the time it lifts — the water unchanged; 0 = the whole charge
+    /// on every dab (`aqua_inject`). A touch's record carries it in `taper`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aqua_inject_with(&mut self, path: &[[f32; 2]], radius: f32, end_radius: f32, water: f32, load: &[f32], press: f32, boost: f32, bias: f32, sweep: f32) {
         if !self.transmittance || path.is_empty() {
             return;
         }
@@ -1789,6 +2077,7 @@ impl Canvas {
         let r0 = radius.max(0.5);
         let r_end = if end_radius > 0.0 { end_radius.max(0.5) } else { r0 };
         let bias_k = bias.clamp(0.0, 1.0);
+        let sweep_k = sweep.clamp(0.0, 1.0);
         let m = path.len();
         let wat = water.clamp(0.0, 2.0);
         let dry = (1.0 - wat / 0.35).clamp(0.0, 1.0);
@@ -1805,12 +2094,13 @@ impl Canvas {
         let mut d = vec![0f32; n];
         for (pi, pt) in path.iter().enumerate() {
             let (px, py) = (pt[0], pt[1]);
-            // The dab's radius along the stroke and the stroke's left-hand normal for the edge's bias.
-            let r = if m > 1 {
+            // The dab's radius and the brush's charge along the stroke, and the stroke's left-hand normal for the
+            // edge's bias.
+            let (r, sw) = if m > 1 {
                 let t = pi as f32 / (m - 1) as f32;
-                r_end + (r0 - r_end) * (std::f32::consts::PI * t).sin()
+                (r_end + (r0 - r_end) * (std::f32::consts::PI * t).sin(), 1.0 - sweep_k * (2.0 * t - 1.0).abs())
             } else {
-                r0
+                (r0, 1.0)
             };
             let (nx_, ny_) = if m > 1 && bias_k > 0.0 {
                 let (a, b) = (&path[pi.saturating_sub(1)], &path[(pi + 1).min(m - 1)]);
@@ -1878,7 +2168,7 @@ impl Canvas {
                         let gate = gates[(y - y0) * bw + (x - x0)] * factor;
                         if gate > 0.0 {
                             for (c, v) in d.iter_mut().enumerate() {
-                                *v = load.get(c).copied().unwrap_or(0.0).max(0.0) * f * dry * gate;
+                                *v = load.get(c).copied().unwrap_or(0.0).max(0.0) * f * dry * gate * sw;
                             }
                             self.deposit(x as u32, y as u32, &d, 0.0);
                         }
@@ -1891,8 +2181,49 @@ impl Canvas {
                     let st = self.aqua.as_mut().unwrap();
                     st.water[q] += wat * f * (1.0 - rp) / area;
                     for c in 0..n {
-                        st.mass[q * n + c] += load.get(c).copied().unwrap_or(0.0).max(0.0) * f * (1.0 - dry) * (1.0 - rp);
+                        st.mass[q * n + c] += load.get(c).copied().unwrap_or(0.0).max(0.0) * f * (1.0 - dry) * (1.0 - rp) * sw;
                     }
+                }
+            }
+        }
+    }
+
+    /// THE SPOT DRIED (7.16.0 set 15; see `MediumProfile::aqua_spot_dry`): the sheet under a touch dried before the
+    /// touch — every pixel within the dabs' radii (the taper's radii as `aqua_inject`'s) set dry on the wetness map
+    /// and every engine cell under them emptied of its free water (the pigment it held in suspension stays in the
+    /// cell and lands where it is when the session dries), so the touch that follows lands at the pixel through
+    /// the tooth with a hard edge: the dry brush over a dried underpainting. A no-op off the transmittance film.
+    pub fn aqua_dry_spot(&mut self, path: &[[f32; 2]], radius: f32, end_radius: f32) {
+        if !self.transmittance || path.is_empty() {
+            return;
+        }
+        let (w, h) = (self.w as usize, self.h as usize);
+        let r0 = radius.max(0.5);
+        let r_end = if end_radius > 0.0 { end_radius.max(0.5) } else { r0 };
+        let m = path.len();
+        let (cs, cw) = {
+            let st = self.aqua_state();
+            (st.cs, st.cw)
+        };
+        for (pi, pt) in path.iter().enumerate() {
+            let (px, py) = (pt[0], pt[1]);
+            let r = if m > 1 { r_end + (r0 - r_end) * (std::f32::consts::PI * pi as f32 / (m - 1) as f32).sin() } else { r0 };
+            if !(px.is_finite() && py.is_finite()) || px + r < 0.0 || py + r < 0.0 || px - r > w as f32 || py - r > h as f32 {
+                continue;
+            }
+            let x0 = (px - r).floor().max(0.0) as usize;
+            let x1 = ((px + r).ceil().max(0.0) as usize).min(w - 1);
+            let y0 = (py - r).floor().max(0.0) as usize;
+            let y1 = ((py + r).ceil().max(0.0) as usize).min(h - 1);
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let (dx, dy) = (x as f32 + 0.5 - px, y as f32 + 0.5 - py);
+                    if dx * dx + dy * dy >= r * r {
+                        continue;
+                    }
+                    self.wetness[y * w + x] = 0.0;
+                    let q = (y / cs) * cw + x / cs;
+                    self.aqua.as_mut().unwrap().water[q] = 0.0;
                 }
             }
         }
@@ -1914,6 +2245,30 @@ impl Canvas {
     /// the water's depth), the thicker of the two cells deciding — a dense charge laid with little water holds its
     /// edge on a wet sheet; a tint in a pool runs as before. At 0 the flow is the set-9 flow to the float.
     pub fn aqua_settle(&mut self, reach: f32, evap: f32, weight: f32, pool: f32, visc: f32) {
+        self.aqua_settle_lit(reach, evap, weight, pool, visc, 0.0, 0.0);
+    }
+
+    /// `aqua_settle` with THE DIRECTIONAL GRAIN (`grain_dir` 0..1, `light_dir` degrees — where the light comes
+    /// from, 0 the left, 90 the top; 7.16.0 set 15; see `MediumProfile::aqua_grain_dir`): when the landed pigment
+    /// is laid on the cells' pixels, every pixel's weight is also 1 + grain_dir × shade, the shade the slope of the
+    /// paper's relief against the light — the relief's gradient (uphill) toward the light's source on the slope
+    /// turned from it, normalised over twice the sheet's mean slope and clamped to ±1 — so the pigment settles on
+    /// the shadow side of every fibre, +1 on the far slope and −1 on the lit, on every lane alike (the hollows by
+    /// the pigment's weight as before), the lane's mass still conserved to the float. 0 = `aqua_settle` to the bit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aqua_settle_lit(&mut self, reach: f32, evap: f32, weight: f32, pool: f32, visc: f32, grain_dir: f32, light_dir: f32) {
+        self.aqua_settle_tech(reach, evap, weight, pool, visc, grain_dir, light_dir, 0.0, 0.0);
+    }
+
+    /// `aqua_settle_lit` with THE TECHNIQUE'S GRIP (`spread` ≥ 0, `seal` 0..1; 7.16.0 set 18; see
+    /// `MediumProfile::aqua_tech`): the water's permeability — the share of the level's step that crosses between two
+    /// cells a step, 0.2 — up by 1 + spread (wet-on-wet: the water crosses the gaps between sparse touches before it
+    /// dries; each cell still gives at most a fifth of its water to a neighbour a step), and the flow into a DRY cell
+    /// (under 0.3 of water — the wicking into the fibres, a third of the flow with two thirds of its pigment
+    /// filtered) down by 1 − seal (wet-on-dry: at 1 no water and no pigment enter a dry cell, the pool stays within
+    /// the brush's footprint and its rim pins and dries first — the hard edge). (0, 0) = `aqua_settle_lit` to the bit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aqua_settle_tech(&mut self, reach: f32, evap: f32, weight: f32, pool: f32, visc: f32, grain_dir: f32, light_dir: f32, spread: f32, seal: f32) {
         let Some(st) = self.aqua.take() else {
             return;
         };
@@ -1952,7 +2307,8 @@ impl Canvas {
             })
             .collect();
         let steps = ((3.0 * rc * rc).round() as usize).clamp(24, 400);
-        let perm = 0.2f32;
+        let perm = 0.2f32 * (1.0 + spread.max(0.0));
+        let wick = 0.3f32 * (1.0 - seal.clamp(0.0, 1.0));
         let e0 = 1.6 / steps as f32;
         let ek = evap.clamp(0.0, 1.0);
         let pool_k = pool.clamp(0.0, 1.0);
@@ -2015,10 +2371,10 @@ impl Canvas {
                         continue;
                     }
                     let dry_dst = water[dst] < 0.3;
-                    let amt = if dry_dst { amt * 0.3 } else { amt };
+                    let amt = if dry_dst { amt * wick } else { amt };
                     dw[src] -= amt;
                     dw[dst] += amt;
-                    let share = amt / water[src].max(1e-6) * if dry_dst { 0.3 } else { 1.0 };
+                    let share = amt / water[src].max(1e-6) * if dry_dst { wick } else { 1.0 };
                     for c in 0..n {
                         let mv = mass[src * n + c] * share * (1.0 - 0.6 * wt[c]);
                         dm[src * n + c] -= mv;
@@ -2123,7 +2479,27 @@ impl Canvas {
             let v = hollow_px.iter().map(|h| (h - m) * (h - m)).sum::<f32>() / px as f32;
             (m, v.sqrt().max(1e-6))
         };
-        let wgt_of = |c: usize| -> Vec<f32> { (0..px).map(|p| gate[p] * (1.0 + wt[c] * ((hollow_px[p] - h_mean) / (2.0 * h_dev)).clamp(-1.0, 1.0)).max(0.0)).collect() };
+        // THE DIRECTIONAL GRAIN (see `aqua_settle_lit`): the relief's slope against the light, per pixel.
+        let gd = grain_dir.clamp(0.0, 1.0);
+        let shade: Vec<f32> = if gd > 0.0 {
+            let a = light_dir.to_radians();
+            let (lsx, lsy) = (-a.cos(), -a.sin());
+            let relief_at = |x: usize, y: usize| 1.0 - hollow_px[y * w + x];
+            let mut raw = vec![0f32; px];
+            let mut mean = 0f32;
+            for p in 0..px {
+                let (x, y) = (p % w, p / w);
+                let gx = (relief_at((x + 1).min(w - 1), y) - relief_at(x.saturating_sub(1), y)) * 0.5;
+                let gy = (relief_at(x, (y + 1).min(h - 1)) - relief_at(x, y.saturating_sub(1))) * 0.5;
+                raw[p] = gx * lsx + gy * lsy;
+                mean += (gx * gx + gy * gy).sqrt();
+            }
+            let norm = (2.0 * mean / px as f32).max(1e-6);
+            raw.iter().map(|v| (v / norm).clamp(-1.0, 1.0)).collect()
+        } else {
+            Vec::new()
+        };
+        let wgt_of = |c: usize| -> Vec<f32> { (0..px).map(|p| { let b = gate[p] * (1.0 + wt[c] * ((hollow_px[p] - h_mean) / (2.0 * h_dev)).clamp(-1.0, 1.0)).max(0.0); if gd > 0.0 { b * (1.0 + gd * shade[p]) } else { b } }).collect() };
         let mut wgt: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut wgt_mean: Vec<Vec<f32>> = Vec::with_capacity(n);
         for c in 0..n {
@@ -3852,6 +4228,103 @@ mod flow_tests {
         let (lp, rp) = (side(&plain, true), side(&plain, false));
         // (The tooth is not symmetric about the axis: alike within the grain's own unevenness.)
         assert!((lp - rp).abs() < 0.3 * lp.max(rp), "no bias, both sides alike: {lp} vs {rp}");
+    }
+
+    #[test]
+    fn the_sealed_paper_holds_the_pool_and_the_spread_carries_it() {
+        // Set 18: one loaded dab of a dye (weight 0) on a dry 96² sheet. (0, 0) is the lit settling to the bit; with
+        // the paper sealed (seal 1) the water enters no dry cell, so the pigment lands within the brush's footprint
+        // and none a pixel beyond it; with the spread (2) the water crosses more cells before it dries, so more pigment lands
+        // beyond the footprint than at the base; the mass kept in each.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let outside = |c: &Canvas| -> f32 {
+            (0..c.h)
+                .flat_map(|y| (0..c.w).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let (dx, dy) = (x as f32 + 0.5 - 48.0, y as f32 + 0.5 - 48.0);
+                    dx * dx + dy * dy > 13.0 * 13.0
+                })
+                .map(|(x, y)| c.conc_at(x, y)[0])
+                .sum()
+        };
+        let run = |spread: f32, seal: f32| -> Canvas {
+            let mut c = fresh();
+            c.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+            c.aqua_settle_tech(12.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, spread, seal);
+            c
+        };
+        let base = run(0.0, 0.0);
+        let mut lit = fresh();
+        lit.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+        lit.aqua_settle_lit(12.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        assert_eq!(lit.to_image().into_raw(), base.to_image().into_raw(), "(0, 0) is the lit settling to the bit");
+        let sealed = run(0.0, 1.0);
+        let spread = run(2.0, 0.0);
+        let expect = 0.8 * std::f32::consts::PI * 144.0 * 0.5;
+        for (name, c) in [("base", &base), ("sealed", &sealed), ("spread", &spread)] {
+            assert!((total(c) - expect).abs() < 1e-2 * expect, "{name}: the mass kept: {} vs {expect}", total(c));
+        }
+        assert!(outside(&sealed) < 1e-3 * total(&sealed), "sealed: none beyond the footprint: {}", outside(&sealed));
+        assert!(outside(&base) > 0.0 && outside(&spread) > outside(&base), "the spread carries more beyond the footprint: {} vs {} (sealed {})", outside(&spread), outside(&base), outside(&sealed));
+    }
+
+    #[test]
+    fn the_fluid_along_a_line_walls_the_engines_water() {
+        // A vertical line's fluid down the sheet's middle and a flooded dab left of it, dried by the engine: the
+        // fluid on the line and the sheet beside it bare; the open sheet carries pigment past the line's place and
+        // the walled one does not; the lines add to the fluid laid before them.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let right = |c: &Canvas| -> f32 { (0..96u32).flat_map(|y| (52..96u32).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let run = |walled: bool| -> Canvas {
+            let mut c = fresh();
+            if walled {
+                c.add_resist_lines(&[[48.0, 4.0], [48.0, 92.0]], 1.5, 1.0);
+            }
+            // The sheet flooded first (as the engine wets it before a session), the charge laid left of the line.
+            c.aqua_inject(&[[48.0, 48.0]], 40.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+            c.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+            c.aqua_settle(16.0, 1.0, 0.8, 1.0, 0.0);
+            c
+        };
+        let (open, walled) = (run(false), run(true));
+        assert!(open.resist_at(48 * 96 + 48) <= 0.0 && walled.resist_at(48 * 96 + 48) >= 0.999 && walled.resist_at(48 * 96 + 40) <= 0.0, "the fluid on the line, the sheet beside it bare");
+        assert!(right(&open) > 0.0, "the open sheet carries the pigment past the line's place: {}", right(&open));
+        assert!(right(&walled) < 0.02 * right(&open), "the walled sheet does not: {} vs {}", right(&walled), right(&open));
+        let mut both = fresh();
+        both.set_resist_rings(&[[4.0, 4.0], [20.0, 4.0], [20.0, 20.0], [4.0, 20.0]], 1.0, 0.0);
+        both.add_resist_lines(&[[48.0, 4.0], [48.0, 92.0]], 1.5, 1.0);
+        assert!(both.resist_at(10 * 96 + 10) >= 0.999 && both.resist_at(48 * 96 + 48) >= 0.999, "the lines added to the fluid laid before");
+    }
+
+    #[test]
+    fn the_sweep_runs_the_brush_dry_toward_the_strokes_ends() {
+        // The same straight dry stroke of nine dabs with the sweep at full and at none: the ends lay less of their
+        // share than the middle does, the whole lays less than the even stroke, and no sweep is the eight-argument
+        // touch to the byte.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let path: Vec<[f32; 2]> = (0..9).map(|i| [16.0 + 8.0 * i as f32, 48.0]).collect();
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let mut swept = fresh();
+        swept.aqua_inject_with(&path, 8.0, 0.0, 0.0, &load, 0.95, 0.0, 0.0, 1.0);
+        let mut even = fresh();
+        even.aqua_inject(&path, 8.0, 0.0, 0.0, &load, 0.95, 0.0, 0.0);
+        let end = swept.conc_at(16, 48)[0] / even.conc_at(16, 48)[0].max(1e-6);
+        let mid = swept.conc_at(48, 48)[0] / even.conc_at(48, 48)[0].max(1e-6);
+        assert!(end < 0.5 * mid, "the end run dry, the middle charged: {end} vs {mid}");
+        assert!(total(&swept) < 0.75 * total(&even), "the swept stroke lays less: {} vs {}", total(&swept), total(&even));
+        let mut none = fresh();
+        none.aqua_inject_with(&path, 8.0, 0.0, 0.0, &load, 0.95, 0.0, 0.0, 0.0);
+        assert_eq!(none.to_image().into_raw(), even.to_image().into_raw(), "no sweep is the plain touch");
     }
 
     #[test]
