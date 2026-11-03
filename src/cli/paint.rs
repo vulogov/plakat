@@ -1870,6 +1870,67 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.dot_lab = plan.medium.dot_lab;
     params.dot_lap = plan.medium.dot_lap;
     params.dot_tone = plan.medium.dot_tone;
+    params.aqua = plan.medium.aqua;
+    params.aqua_planes = plan.medium.aqua_planes;
+    params.aqua_reserve = plan.medium.aqua_reserve;
+    params.aqua_wet = plan.medium.aqua_wet;
+    params.aqua_grade = plan.medium.aqua_grade;
+    params.aqua_detail = plan.medium.aqua_detail;
+    params.aqua_soft = plan.medium.aqua_soft;
+    params.aqua_rim = plan.medium.aqua_rim;
+    params.aqua_bloom = plan.medium.aqua_bloom;
+    params.aqua_grain = plan.medium.aqua_grain;
+    params.aqua_mark = plan.medium.aqua_mark;
+    params.aqua_grain_mid = plan.medium.aqua_grain_mid;
+    params.aqua_grain_wet = plan.medium.aqua_grain_wet;
+    params.aqua_lip = plan.medium.aqua_lip;
+    params.aqua_mass = plan.medium.aqua_mass;
+    params.aqua_barrier = plan.medium.aqua_barrier;
+    params.aqua_body = plan.medium.aqua_body;
+    params.aqua_cut = plan.medium.aqua_cut;
+    params.aqua_ragged = plan.medium.aqua_ragged;
+    params.aqua_tension = plan.medium.aqua_tension;
+    params.aqua_paper = plan.medium.aqua_paper;
+    params.aqua_focus = plan.medium.aqua_focus;
+    params.aqua_resist = plan.medium.aqua_resist;
+    params.aqua_line = plan.medium.aqua_line;
+    params.aqua_loose = plan.medium.aqua_loose;
+    params.aqua_fluid = plan.medium.aqua_fluid;
+    params.aqua_evap = plan.medium.aqua_evap;
+    params.aqua_weight = plan.medium.aqua_weight;
+    params.aqua_under = plan.medium.aqua_under;
+    params.aqua_pool = plan.medium.aqua_pool;
+    params.aqua_charge = plan.medium.aqua_charge;
+    params.aqua_engine = plan.medium.aqua_engine;
+    params.aqua_crisp = plan.medium.aqua_crisp;
+    params.aqua_stroke = plan.medium.aqua_stroke;
+    params.aqua_visc = plan.medium.aqua_visc;
+    params.aqua_press = plan.medium.aqua_press;
+    params.aqua_dry_boost = plan.medium.aqua_dry_boost;
+    params.aqua_tip = plan.medium.aqua_tip;
+    params.aqua_skip = plan.medium.aqua_skip;
+    params.aqua_taper = plan.medium.aqua_taper;
+    params.aqua_bias = plan.medium.aqua_bias;
+    params.aqua_taper_min = plan.medium.aqua_taper_min;
+    params.aqua_fine = plan.medium.aqua_fine;
+    params.aqua_fade = plan.medium.aqua_fade;
+    params.aqua_sweep = plan.medium.aqua_sweep;
+    params.aqua_line_resist = plan.medium.aqua_line_resist;
+    params.aqua_light = plan.medium.aqua_light;
+    params.aqua_light_dir = plan.medium.aqua_light_dir;
+    params.aqua_vignette = plan.medium.aqua_vignette;
+    params.aqua_line_density = plan.medium.aqua_line_density;
+    params.aqua_grain_dir = plan.medium.aqua_grain_dir;
+    params.aqua_spot_dry = plan.medium.aqua_spot_dry;
+    params.aqua_fine_calm = plan.medium.aqua_fine_calm;
+    params.aqua_line_press = plan.medium.aqua_line_press;
+    params.aqua_line_tooth = plan.medium.aqua_line_tooth;
+    params.aqua_line_lift = plan.medium.aqua_line_lift;
+    params.aqua_tech = plan.medium.aqua_tech;
+    params.aqua_thick = plan.medium.aqua_thick;
+    params.aqua_hold = plan.medium.aqua_hold;
+    params.aqua_sink = plan.medium.aqua_sink;
+    params.aqua_drift = plan.medium.aqua_drift;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2441,6 +2502,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
+        if a.diffuse.is_none() {
+            a.diffuse = plan.diffuse;
+        }
         if a.leak.is_none() {
             a.leak = plan.leak;
         }
@@ -2835,6 +2899,67 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.dot_lab = m.dot_lab;
         params.dot_lap = m.dot_lap;
         params.dot_tone = m.dot_tone;
+        params.aqua = m.aqua;
+        params.aqua_planes = m.aqua_planes;
+        params.aqua_reserve = m.aqua_reserve;
+        params.aqua_wet = m.aqua_wet;
+        params.aqua_grade = m.aqua_grade;
+        params.aqua_detail = m.aqua_detail;
+        params.aqua_soft = m.aqua_soft;
+        params.aqua_rim = m.aqua_rim;
+        params.aqua_bloom = m.aqua_bloom;
+        params.aqua_grain = m.aqua_grain;
+        params.aqua_mark = m.aqua_mark;
+        params.aqua_grain_mid = m.aqua_grain_mid;
+        params.aqua_grain_wet = m.aqua_grain_wet;
+        params.aqua_lip = m.aqua_lip;
+        params.aqua_mass = m.aqua_mass;
+        params.aqua_barrier = m.aqua_barrier;
+        params.aqua_body = m.aqua_body;
+        params.aqua_cut = m.aqua_cut;
+        params.aqua_ragged = m.aqua_ragged;
+        params.aqua_tension = m.aqua_tension;
+        params.aqua_paper = m.aqua_paper;
+        params.aqua_focus = m.aqua_focus;
+        params.aqua_resist = m.aqua_resist;
+        params.aqua_line = m.aqua_line;
+        params.aqua_loose = m.aqua_loose;
+        params.aqua_fluid = m.aqua_fluid;
+        params.aqua_evap = m.aqua_evap;
+        params.aqua_weight = m.aqua_weight;
+        params.aqua_under = m.aqua_under;
+        params.aqua_pool = m.aqua_pool;
+        params.aqua_charge = m.aqua_charge;
+        params.aqua_engine = m.aqua_engine;
+        params.aqua_crisp = m.aqua_crisp;
+        params.aqua_stroke = m.aqua_stroke;
+        params.aqua_visc = m.aqua_visc;
+        params.aqua_press = m.aqua_press;
+        params.aqua_dry_boost = m.aqua_dry_boost;
+        params.aqua_tip = m.aqua_tip;
+        params.aqua_skip = m.aqua_skip;
+        params.aqua_taper = m.aqua_taper;
+        params.aqua_bias = m.aqua_bias;
+        params.aqua_taper_min = m.aqua_taper_min;
+        params.aqua_fine = m.aqua_fine;
+        params.aqua_fade = m.aqua_fade;
+        params.aqua_sweep = m.aqua_sweep;
+        params.aqua_line_resist = m.aqua_line_resist;
+        params.aqua_light = m.aqua_light;
+        params.aqua_light_dir = m.aqua_light_dir;
+        params.aqua_vignette = m.aqua_vignette;
+        params.aqua_line_density = m.aqua_line_density;
+        params.aqua_grain_dir = m.aqua_grain_dir;
+        params.aqua_spot_dry = m.aqua_spot_dry;
+        params.aqua_fine_calm = m.aqua_fine_calm;
+        params.aqua_line_press = m.aqua_line_press;
+        params.aqua_line_tooth = m.aqua_line_tooth;
+        params.aqua_line_lift = m.aqua_line_lift;
+        params.aqua_tech = m.aqua_tech;
+        params.aqua_thick = m.aqua_thick;
+        params.aqua_hold = m.aqua_hold;
+        params.aqua_sink = m.aqua_sink;
+        params.aqua_drift = m.aqua_drift;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3078,6 +3203,67 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.dot_lab { params.dot_lab = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dot_lap { params.dot_lap = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.dot_tone { params.dot_tone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua { params.aqua = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_planes { params.aqua_planes = v.clamp(0.0, 12.0); }
+        if let Some(v) = pl.aqua_reserve { params.aqua_reserve = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_wet { params.aqua_wet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grade { params.aqua_grade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_detail { params.aqua_detail = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_soft { params.aqua_soft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_rim { params.aqua_rim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_bloom { params.aqua_bloom = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain { params.aqua_grain = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_mark { params.aqua_mark = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain_mid { params.aqua_grain_mid = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_grain_wet { params.aqua_grain_wet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_lip { params.aqua_lip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_mass { params.aqua_mass = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_barrier { params.aqua_barrier = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_body { params.aqua_body = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_cut { params.aqua_cut = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_ragged { params.aqua_ragged = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tension { params.aqua_tension = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_paper { params.aqua_paper = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_focus { params.aqua_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_resist { params.aqua_resist = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line { params.aqua_line = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_loose { params.aqua_loose = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_fluid { params.aqua_fluid = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_evap { params.aqua_evap = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_weight { params.aqua_weight = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_under { params.aqua_under = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_pool { params.aqua_pool = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_charge { params.aqua_charge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_engine { params.aqua_engine = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_crisp { params.aqua_crisp = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_stroke { params.aqua_stroke = v.clamp(0.0, 16.0); }
+        if let Some(v) = pl.aqua_visc { params.aqua_visc = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_press { params.aqua_press = v.clamp(0.0, 0.95); }
+        if let Some(v) = pl.aqua_dry_boost { params.aqua_dry_boost = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tip { params.aqua_tip = v.clamp(0.0, 64.0); }
+        if let Some(v) = pl.aqua_skip { params.aqua_skip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_taper { params.aqua_taper = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_bias { params.aqua_bias = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_taper_min { params.aqua_taper_min = v.clamp(0.0, 16.0); }
+        if let Some(v) = pl.aqua_fine { params.aqua_fine = v.clamp(0.0, 20.0); }
+        if let Some(v) = pl.aqua_fade { params.aqua_fade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sweep { params.aqua_sweep = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_resist { params.aqua_line_resist = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_light { params.aqua_light = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_light_dir { params.aqua_light_dir = v.rem_euclid(360.0); }
+        if let Some(v) = pl.aqua_vignette { params.aqua_vignette = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_density { params.aqua_line_density = v.clamp(0.0, 4.0); }
+        if let Some(v) = pl.aqua_grain_dir { params.aqua_grain_dir = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_spot_dry { params.aqua_spot_dry = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_fine_calm { params.aqua_fine_calm = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_press { params.aqua_line_press = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_tooth { params.aqua_line_tooth = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_line_lift { params.aqua_line_lift = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_tech { params.aqua_tech = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_thick { params.aqua_thick = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_hold { params.aqua_hold = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sink { params.aqua_sink = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_drift { params.aqua_drift = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {

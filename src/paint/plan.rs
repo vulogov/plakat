@@ -103,6 +103,11 @@ pub struct PaintPlan {
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
+    /// DIFFUSE (-1..1): the drift of the pigment in the bleed between the passes — toward the darks (+) or out into
+    /// the lights (−); the technique's own (wet-on-wet 0.35) unless the plan or `--diffuse` says otherwise
+    /// (`Canvas::bleed_with`).
+    #[serde(default)]
+    pub diffuse: Option<f32>,
     /// SPLATTER (0..1): flicked drops off the brush. A watercolour tell; the plan can ask for more or none.
     #[serde(default)]
     pub splatter: Option<f32>,
@@ -486,6 +491,186 @@ pub struct PaintPlan {
     pub dot_lap: Option<f32>,
     #[serde(default)]
     pub dot_tone: Option<f32>,
+    /// The watercolour's washes (7.16.0): AQUA (0..1): the picture laid as washes, lightest plane first, each
+    /// glazed over the darker. AQUA PLANES (count): the value planes. AQUA RESERVE (0..1): the lightest plane
+    /// left as bare paper, as shapes. AQUA WET (0..1): the water — the fluid stage after every plane and the wet
+    /// edge, by the technique. AQUA GRADE (0..1): graded washes within a mass. AQUA DETAIL (0..1): the fine
+    /// brushes' drawing after the washes (`MediumProfile::aqua` … `aqua_detail`).
+    #[serde(default)]
+    pub aqua: Option<f32>,
+    #[serde(default)]
+    pub aqua_planes: Option<f32>,
+    #[serde(default)]
+    pub aqua_reserve: Option<f32>,
+    #[serde(default)]
+    pub aqua_wet: Option<f32>,
+    #[serde(default)]
+    pub aqua_grade: Option<f32>,
+    #[serde(default)]
+    pub aqua_detail: Option<f32>,
+    /// AQUA SOFT (0..1): the wash's wet edge by the picture's gradient — soft where soft, hard at an edge (`MediumProfile::aqua_soft`).
+    #[serde(default)]
+    pub aqua_soft: Option<f32>,
+    /// AQUA RIM (0..1): the tide line's depth (twice the key; 0.4 = the classic). AQUA BLOOM (0..1): backruns
+    /// in the drying washes. AQUA GRAIN (0..1): granulation in the water. AQUA MARK (0..1): the drawing's mark
+    /// as a watercolour brush, laid where the picture has structure (`MediumProfile::aqua_rim` … `aqua_mark`).
+    #[serde(default)]
+    pub aqua_rim: Option<f32>,
+    #[serde(default)]
+    pub aqua_bloom: Option<f32>,
+    #[serde(default)]
+    pub aqua_grain: Option<f32>,
+    #[serde(default)]
+    pub aqua_mark: Option<f32>,
+    /// AQUA GRAIN MID (0..1): the granulation a bell of the lightness. AQUA GRAIN WET (0..1): the grain blurred
+    /// where the sheet is wet. AQUA LIP (0..1): the backrun's hard outer edge. AQUA MASS (0..1): the deep
+    /// shadows closed into flat masses (`MediumProfile::aqua_grain_mid` … `aqua_mass`).
+    #[serde(default)]
+    pub aqua_grain_mid: Option<f32>,
+    #[serde(default)]
+    pub aqua_grain_wet: Option<f32>,
+    #[serde(default)]
+    pub aqua_lip: Option<f32>,
+    #[serde(default)]
+    pub aqua_mass: Option<f32>,
+    /// AQUA BARRIER (0..1): the tide line scaled by the step of wetness across it. AQUA BODY (0..1): the deep
+    /// masses graded washes (`MediumProfile::aqua_barrier`, `aqua_body`).
+    #[serde(default)]
+    pub aqua_barrier: Option<f32>,
+    #[serde(default)]
+    pub aqua_body: Option<f32>,
+    /// AQUA CUT (0..1): a face cuts a hole in the mass. AQUA RAGGED (0..1): the dry-brush edge. AQUA TENSION
+    /// (0..1): the colour step restores the barrier. AQUA PAPER (0..1): the absolute paper gate. AQUA FOCUS
+    /// (0..1): the ground merged and the drawing withheld off the subject (`MediumProfile::aqua_cut` …).
+    #[serde(default)]
+    pub aqua_cut: Option<f32>,
+    #[serde(default)]
+    pub aqua_ragged: Option<f32>,
+    #[serde(default)]
+    pub aqua_tension: Option<f32>,
+    #[serde(default)]
+    pub aqua_paper: Option<f32>,
+    #[serde(default)]
+    pub aqua_focus: Option<f32>,
+    /// AQUA RESIST (0..1): the masking fluid over the lights. AQUA LINE (0..1): the dry skeleton before the
+    /// washes. AQUA LOOSE (0..1): the wet edge widened off the focus (`MediumProfile::aqua_resist` …).
+    #[serde(default)]
+    pub aqua_resist: Option<f32>,
+    #[serde(default)]
+    pub aqua_line: Option<f32>,
+    #[serde(default)]
+    pub aqua_loose: Option<f32>,
+    /// AQUA FLUID (0..1): the fluid solver after every wash plane; AQUA EVAP (0..1): its edge evaporation; AQUA
+    /// WEIGHT (0..1): its pigment weight (`MediumProfile::aqua_fluid`, `aqua_evap`, `aqua_weight`).
+    #[serde(default)]
+    pub aqua_fluid: Option<f32>,
+    #[serde(default)]
+    pub aqua_evap: Option<f32>,
+    #[serde(default)]
+    pub aqua_weight: Option<f32>,
+    /// AQUA UNDER (0..1): the ground flooded as one pool and underpainted before the planes; AQUA POOL (0..1): the
+    /// washes laid wet into wet mingle; AQUA CHARGE (0..1): the brush's charge laid unevenly over every wash
+    /// (`MediumProfile::aqua_under`, `aqua_pool`, `aqua_charge`).
+    #[serde(default)]
+    pub aqua_under: Option<f32>,
+    #[serde(default)]
+    pub aqua_pool: Option<f32>,
+    #[serde(default)]
+    pub aqua_charge: Option<f32>,
+    /// AQUA ENGINE (0..1): the picture laid by a brush on water — the water engine's touches and wet sessions in place
+    /// of the polygon washes (`MediumProfile::aqua_engine`).
+    #[serde(default)]
+    pub aqua_engine: Option<f32>,
+    /// AQUA CRISP (0..1): the share of the water engine's sessions, from the last, laid dry — no water, no solver,
+    /// the touch through the tooth (`MediumProfile::aqua_crisp`).
+    #[serde(default)]
+    pub aqua_crisp: Option<f32>,
+    /// AQUA STROKE (brush radii): a touch on a coherent structure drawn out into a stroke along it, the mass of the
+    /// grid point over its dabs (`MediumProfile::aqua_stroke`).
+    #[serde(default)]
+    pub aqua_stroke: Option<f32>,
+    /// AQUA VISC (0..1): the pigment's concentration thickening the engine's water (`MediumProfile::aqua_visc`).
+    #[serde(default)]
+    pub aqua_visc: Option<f32>,
+    /// AQUA PRESS (0..0.95): the share of a touch's radius the dry brush presses solid through the tooth
+    /// (`MediumProfile::aqua_press`).
+    #[serde(default)]
+    pub aqua_press: Option<f32>,
+    /// AQUA DRY BOOST (0..1): the dry share the tooth rejects laid on the pixels that passed (`MediumProfile::aqua_dry_boost`).
+    #[serde(default)]
+    pub aqua_dry_boost: Option<f32>,
+    /// AQUA TIP (px): a stroke along a structure never narrower than this radius (`MediumProfile::aqua_tip`).
+    #[serde(default)]
+    pub aqua_tip: Option<f32>,
+    /// AQUA SKIP (0..1): the share of the strokes along a structure withheld (`MediumProfile::aqua_skip`).
+    #[serde(default)]
+    pub aqua_skip: Option<f32>,
+    /// AQUA TAPER (0..1): a stroke's radius falling to its ends by this share (`MediumProfile::aqua_taper`).
+    #[serde(default)]
+    pub aqua_taper: Option<f32>,
+    /// AQUA BIAS (0..1): one edge of every touch cut sharper than the other (`MediumProfile::aqua_bias`).
+    #[serde(default)]
+    pub aqua_bias: Option<f32>,
+    /// AQUA TAPER MIN (brush radii): a stroke shorter than this is laid as the plain touch (`MediumProfile::aqua_taper_min`).
+    #[serde(default)]
+    pub aqua_taper_min: Option<f32>,
+    /// AQUA FINE (thousandths of the long side): the thin dark structure the skeleton draws and the engine closes out (`MediumProfile::aqua_fine`).
+    #[serde(default)]
+    pub aqua_fine: Option<f32>,
+    /// AQUA FADE (0..1): off the focus a faint target's debt zeroed, the paper left bare (`MediumProfile::aqua_fade`).
+    #[serde(default)]
+    pub aqua_fade: Option<f32>,
+    /// AQUA SWEEP (0..1): a stroke's pigment falling from its middle to its ends (`MediumProfile::aqua_sweep`).
+    #[serde(default)]
+    pub aqua_sweep: Option<f32>,
+    /// AQUA LINE RESIST (0..1): the masking fluid along the skeleton's lines (`MediumProfile::aqua_line_resist`).
+    #[serde(default)]
+    pub aqua_line_resist: Option<f32>,
+    /// AQUA LIGHT (0..1): a touch at an edge facing the light wetter, turned from it drier (`MediumProfile::aqua_light`).
+    #[serde(default)]
+    pub aqua_light: Option<f32>,
+    /// AQUA LIGHT DIR (degrees): where the light comes from, 0 the left, 90 the top (`MediumProfile::aqua_light_dir`).
+    #[serde(default)]
+    pub aqua_light_dir: Option<f32>,
+    /// AQUA VIGNETTE (0..1): the debt off the attention ellipse let go from the second session on (`MediumProfile::aqua_vignette`).
+    #[serde(default)]
+    pub aqua_vignette: Option<f32>,
+    /// AQUA LINE DENSITY (0..4): the pencil laid direct to this power of its tone (`MediumProfile::aqua_line_density`).
+    #[serde(default)]
+    pub aqua_line_density: Option<f32>,
+    /// AQUA GRAIN DIR (0..1): the pigment settling on the relief's slopes turned from the light (`MediumProfile::aqua_grain_dir`).
+    #[serde(default)]
+    pub aqua_grain_dir: Option<f32>,
+    /// AQUA SPOT DRY (0..1): the sheet dried under the focus's high-contrast touches (`MediumProfile::aqua_spot_dry`).
+    #[serde(default)]
+    pub aqua_spot_dry: Option<f32>,
+    /// AQUA FINE CALM (0..1): the fine skeleton only where the surround's texture is under this share of the step threshold (`MediumProfile::aqua_fine_calm`).
+    #[serde(default)]
+    pub aqua_fine_calm: Option<f32>,
+    /// AQUA LINE PRESS (0..1): the hand's pressure along the pencil's line, the ends tapered, the body fluctuating (`MediumProfile::aqua_line_press`).
+    #[serde(default)]
+    pub aqua_line_press: Option<f32>,
+    /// AQUA LINE TOOTH (0..1): the graphite on the relief's peaks, the lighter the line the more (`MediumProfile::aqua_line_tooth`).
+    #[serde(default)]
+    pub aqua_line_tooth: Option<f32>,
+    /// AQUA LINE LIFT (0..1): the lead lifting off the sheet along long straight runs (`MediumProfile::aqua_line_lift`).
+    #[serde(default)]
+    pub aqua_line_lift: Option<f32>,
+    /// AQUA TECH (0..1): the technique's grip on the water engine — wet-on-wet floods, wet-on-dry seals the dry paper, dry-on-dry lays every session dry (`MediumProfile::aqua_tech`).
+    #[serde(default)]
+    pub aqua_tech: Option<f32>,
+    /// AQUA THICK (0..1): a touch's water falling with the darkness of its charge — a dark mix is a thick mix (`MediumProfile::aqua_thick`).
+    #[serde(default)]
+    pub aqua_thick: Option<f32>,
+    /// AQUA HOLD (0..1): the solver's concentration barrier — the thick charge's skin against clean water (`MediumProfile::aqua_hold`).
+    #[serde(default)]
+    pub aqua_hold: Option<f32>,
+    /// AQUA SINK (0..1): the thick charge settling faster, out of the flow (`MediumProfile::aqua_sink`).
+    #[serde(default)]
+    pub aqua_sink: Option<f32>,
+    /// AQUA DRIFT (0..1): the suspended pigment creeping down the wet sheet (`MediumProfile::aqua_drift`).
+    #[serde(default)]
+    pub aqua_drift: Option<f32>,
     /// The tempera's layers: HATCH (0..1): the restating marks straight hatch lines of one width. VERDACCIO
     /// (0..1): the flesh underpainted in a greenish grey. DISHES (a count): the marks laid in this many value
     /// steps. LIGHTS (0..1): the share of the finest marks on the subject's top values hatched in toward white.
@@ -842,6 +1027,7 @@ impl Default for PaintPlan {
             rigger: None,
             hotspot: None,
             technique: None,
+            diffuse: None,
             splatter: None,
             edge_pool: None,
             oldpaper: None,
@@ -966,6 +1152,17 @@ impl Default for PaintPlan {
             dot_lab: None,
             dot_lap: None,
             dot_tone: None,
+            aqua: None,
+            aqua_planes: None,
+            aqua_reserve: None,
+            aqua_wet: None,
+            aqua_grade: None,
+            aqua_detail: None,
+            aqua_soft: None,
+            aqua_rim: None,
+            aqua_bloom: None,
+            aqua_grain: None,
+            aqua_mark: None, aqua_grain_mid: None, aqua_grain_wet: None, aqua_lip: None, aqua_mass: None, aqua_barrier: None, aqua_body: None, aqua_cut: None, aqua_ragged: None, aqua_tension: None, aqua_paper: None, aqua_focus: None, aqua_resist: None, aqua_line: None, aqua_loose: None, aqua_fluid: None, aqua_evap: None, aqua_weight: None, aqua_under: None, aqua_pool: None, aqua_charge: None, aqua_engine: None, aqua_crisp: None, aqua_stroke: None, aqua_visc: None, aqua_press: None, aqua_dry_boost: None, aqua_tip: None, aqua_skip: None, aqua_taper: None, aqua_bias: None, aqua_taper_min: None, aqua_fine: None, aqua_fade: None, aqua_sweep: None, aqua_line_resist: None, aqua_light: None, aqua_light_dir: None, aqua_vignette: None, aqua_line_density: None, aqua_grain_dir: None, aqua_spot_dry: None, aqua_fine_calm: None, aqua_line_press: None, aqua_line_tooth: None, aqua_line_lift: None, aqua_tech: None, aqua_thick: None, aqua_hold: None, aqua_sink: None, aqua_drift: None,
             hatch: None,
             verdaccio: None,
             dishes: None,
@@ -1154,6 +1351,9 @@ impl PaintPlan {
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
+        if let Some(d) = self.diffuse {
+            o.push_str(&format!("diffuse: {d:.2}\n"));
+        }
         for (k, v) in [("splatter", self.splatter), ("edge_pool", self.edge_pool), ("granulate", self.granulate), ("saliency", self.saliency), ("focus_detail", self.focus_detail)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
@@ -1192,7 +1392,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("blade", self.blade), ("blade_planes", self.blade_planes), ("blade_levels", self.blade_levels), ("blade_size", self.blade_size), ("blade_bevel", self.blade_bevel), ("blade_light", self.blade_light), ("blade_phong", self.blade_phong), ("blade_flow", self.blade_flow), ("blade_rest", self.blade_rest), ("blade_relief", self.blade_relief), ("blade_mix", self.blade_mix), ("blade_along", self.blade_along), ("blade_inertia", self.blade_inertia), ("blade_facet", self.blade_facet), ("blade_fade", self.blade_fade), ("blade_visc", self.blade_visc), ("blade_pile", self.blade_pile), ("blade_soft", self.blade_soft), ("blade_skid", self.blade_skid), ("blade_detail", self.blade_detail), ("blade_layers", self.blade_layers), ("blade_edge", self.blade_edge), ("blade_rim", self.blade_rim), ("blade_slip", self.blade_slip), ("blade_tuft", self.blade_tuft), ("blade_bed", self.blade_bed), ("blade_aniso", self.blade_aniso), ("blade_slope", self.blade_slope), ("blade_break", self.blade_break), ("blade_route", self.blade_route), ("blade_scatter", self.blade_scatter), ("blade_tint", self.blade_tint), ("blade_focus", self.blade_focus), ("blade_peak", self.blade_peak), ("blade_band", self.blade_band), ("blade_drag", self.blade_drag), ("blade_age", self.blade_age), ("blade_bridge", self.blade_bridge), ("blade_liftoff", self.blade_liftoff), ("blade_broken", self.blade_broken), ("blade_lip", self.blade_lip), ("blade_marble", self.blade_marble), ("blade_slump", self.blade_slump), ("blade_tilt", self.blade_tilt), ("blade_stiction", self.blade_stiction), ("blade_wet", self.blade_wet), ("blade_heel", self.blade_heel), ("blade_dirty", self.blade_dirty), ("blade_tear", self.blade_tear), ("dot", self.dot), ("dot_size", self.dot_size), ("dot_space", self.dot_space), ("dot_dense", self.dot_dense), ("dot_busy", self.dot_busy), ("dot_pure", self.dot_pure), ("dot_ground", self.dot_ground), ("dot_edge", self.dot_edge), ("dot_fill", self.dot_fill), ("dot_diffuse", self.dot_diffuse), ("dot_flow", self.dot_flow), ("dot_shadow", self.dot_shadow), ("dot_white", self.dot_white), ("dot_fine", self.dot_fine), ("dot_lab", self.dot_lab), ("dot_lap", self.dot_lap), ("dot_tone", self.dot_tone), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("katsu", self.katsu), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("nib_wash_scurve", self.nib_wash_scurve), ("nib_wash_vary", self.nib_wash_vary), ("nib_wash_mass", self.nib_wash_mass), ("nib_wash_hold", self.nib_wash_hold), ("nib_wash_debt", self.nib_wash_debt), ("nib_wash_dry", self.nib_wash_dry), ("nib_wash_cap", self.nib_wash_cap), ("nib_wash_tone", self.nib_wash_tone), ("nib_wash_draw", self.nib_wash_draw), ("nib_wash_planes", self.nib_wash_planes), ("nib_wash_edge", self.nib_wash_edge), ("nib_wash_depth", self.nib_wash_depth), ("nib_wash_scale", self.nib_wash_scale), ("nib_wash_levels", self.nib_wash_levels), ("nib_wash_faces", self.nib_wash_faces), ("nib_wash_rag", self.nib_wash_rag), ("nib_wash_mask", self.nib_wash_mask), ("nib_wash_half", self.nib_wash_half), ("nib_wash_grain", self.nib_wash_grain), ("nib_wash_grade", self.nib_wash_grade), ("nib_wash_profile", self.nib_wash_profile), ("nib_wash_streak", self.nib_wash_streak), ("nib_wash_sweep", self.nib_wash_sweep), ("nib_wash_water", self.nib_wash_water), ("nib_wash_agent", self.nib_wash_agent), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("blade", self.blade), ("blade_planes", self.blade_planes), ("blade_levels", self.blade_levels), ("blade_size", self.blade_size), ("blade_bevel", self.blade_bevel), ("blade_light", self.blade_light), ("blade_phong", self.blade_phong), ("blade_flow", self.blade_flow), ("blade_rest", self.blade_rest), ("blade_relief", self.blade_relief), ("blade_mix", self.blade_mix), ("blade_along", self.blade_along), ("blade_inertia", self.blade_inertia), ("blade_facet", self.blade_facet), ("blade_fade", self.blade_fade), ("blade_visc", self.blade_visc), ("blade_pile", self.blade_pile), ("blade_soft", self.blade_soft), ("blade_skid", self.blade_skid), ("blade_detail", self.blade_detail), ("blade_layers", self.blade_layers), ("blade_edge", self.blade_edge), ("blade_rim", self.blade_rim), ("blade_slip", self.blade_slip), ("blade_tuft", self.blade_tuft), ("blade_bed", self.blade_bed), ("blade_aniso", self.blade_aniso), ("blade_slope", self.blade_slope), ("blade_break", self.blade_break), ("blade_route", self.blade_route), ("blade_scatter", self.blade_scatter), ("blade_tint", self.blade_tint), ("blade_focus", self.blade_focus), ("blade_peak", self.blade_peak), ("blade_band", self.blade_band), ("blade_drag", self.blade_drag), ("blade_age", self.blade_age), ("blade_bridge", self.blade_bridge), ("blade_liftoff", self.blade_liftoff), ("blade_broken", self.blade_broken), ("blade_lip", self.blade_lip), ("blade_marble", self.blade_marble), ("blade_slump", self.blade_slump), ("blade_tilt", self.blade_tilt), ("blade_stiction", self.blade_stiction), ("blade_wet", self.blade_wet), ("blade_heel", self.blade_heel), ("blade_dirty", self.blade_dirty), ("blade_tear", self.blade_tear), ("dot", self.dot), ("dot_size", self.dot_size), ("dot_space", self.dot_space), ("dot_dense", self.dot_dense), ("dot_busy", self.dot_busy), ("dot_pure", self.dot_pure), ("dot_ground", self.dot_ground), ("dot_edge", self.dot_edge), ("dot_fill", self.dot_fill), ("dot_diffuse", self.dot_diffuse), ("dot_flow", self.dot_flow), ("dot_shadow", self.dot_shadow), ("dot_white", self.dot_white), ("dot_fine", self.dot_fine), ("dot_lab", self.dot_lab), ("dot_lap", self.dot_lap), ("dot_tone", self.dot_tone), ("aqua", self.aqua), ("aqua_planes", self.aqua_planes), ("aqua_reserve", self.aqua_reserve), ("aqua_wet", self.aqua_wet), ("aqua_grade", self.aqua_grade), ("aqua_detail", self.aqua_detail), ("aqua_soft", self.aqua_soft), ("aqua_rim", self.aqua_rim), ("aqua_bloom", self.aqua_bloom), ("aqua_grain", self.aqua_grain), ("aqua_mark", self.aqua_mark), ("aqua_grain_mid", self.aqua_grain_mid), ("aqua_grain_wet", self.aqua_grain_wet), ("aqua_lip", self.aqua_lip), ("aqua_mass", self.aqua_mass), ("aqua_barrier", self.aqua_barrier), ("aqua_body", self.aqua_body), ("aqua_cut", self.aqua_cut), ("aqua_ragged", self.aqua_ragged), ("aqua_tension", self.aqua_tension), ("aqua_paper", self.aqua_paper), ("aqua_focus", self.aqua_focus), ("aqua_resist", self.aqua_resist), ("aqua_line", self.aqua_line), ("aqua_loose", self.aqua_loose), ("aqua_fluid", self.aqua_fluid), ("aqua_evap", self.aqua_evap), ("aqua_weight", self.aqua_weight), ("aqua_under", self.aqua_under), ("aqua_pool", self.aqua_pool), ("aqua_charge", self.aqua_charge), ("aqua_engine", self.aqua_engine), ("aqua_crisp", self.aqua_crisp), ("aqua_stroke", self.aqua_stroke), ("aqua_visc", self.aqua_visc), ("aqua_press", self.aqua_press), ("aqua_dry_boost", self.aqua_dry_boost), ("aqua_tip", self.aqua_tip), ("aqua_skip", self.aqua_skip), ("aqua_taper", self.aqua_taper), ("aqua_bias", self.aqua_bias), ("aqua_taper_min", self.aqua_taper_min), ("aqua_fine", self.aqua_fine), ("aqua_fade", self.aqua_fade), ("aqua_sweep", self.aqua_sweep), ("aqua_line_resist", self.aqua_line_resist), ("aqua_light", self.aqua_light), ("aqua_light_dir", self.aqua_light_dir), ("aqua_vignette", self.aqua_vignette), ("aqua_line_density", self.aqua_line_density), ("aqua_grain_dir", self.aqua_grain_dir), ("aqua_spot_dry", self.aqua_spot_dry), ("aqua_fine_calm", self.aqua_fine_calm), ("aqua_line_press", self.aqua_line_press), ("aqua_line_tooth", self.aqua_line_tooth), ("aqua_line_lift", self.aqua_line_lift), ("aqua_tech", self.aqua_tech), ("aqua_thick", self.aqua_thick), ("aqua_hold", self.aqua_hold), ("aqua_sink", self.aqua_sink), ("aqua_drift", self.aqua_drift), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("katsu", self.katsu), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("nib_face", self.nib_face), ("nib_gap", self.nib_gap), ("nib_relief", self.nib_relief), ("nib_far", self.nib_far), ("nib_occlude", self.nib_occlude), ("nib_eyes", self.nib_eyes), ("nib_fur", self.nib_fur), ("nib_lift", self.nib_lift), ("nib_contact", self.nib_contact), ("nib_figure", self.nib_figure), ("nib_object", self.nib_object), ("nib_tuft", self.nib_tuft), ("nib_close", self.nib_close), ("nib_mass", self.nib_mass), ("nib_rim", self.nib_rim), ("nib_pool", self.nib_pool), ("nib_air", self.nib_air), ("nib_people", self.nib_people), ("nib_value", self.nib_value), ("nib_fine_face", self.nib_fine_face), ("nib_scatter", self.nib_scatter), ("nib_falloff", self.nib_falloff), ("nib_depth", self.nib_depth), ("nib_lush", self.nib_lush), ("nib_glint", self.nib_glint), ("nib_wash", self.nib_wash), ("nib_wash_dark", self.nib_wash_dark), ("nib_wash_detail", self.nib_wash_detail), ("nib_wash_line", self.nib_wash_line), ("nib_wash_swell", self.nib_wash_swell), ("nib_wash_air", self.nib_wash_air), ("nib_wash_soft", self.nib_wash_soft), ("nib_wash_gamma", self.nib_wash_gamma), ("nib_wash_flat", self.nib_wash_flat), ("nib_wash_scurve", self.nib_wash_scurve), ("nib_wash_vary", self.nib_wash_vary), ("nib_wash_mass", self.nib_wash_mass), ("nib_wash_hold", self.nib_wash_hold), ("nib_wash_debt", self.nib_wash_debt), ("nib_wash_dry", self.nib_wash_dry), ("nib_wash_cap", self.nib_wash_cap), ("nib_wash_tone", self.nib_wash_tone), ("nib_wash_draw", self.nib_wash_draw), ("nib_wash_planes", self.nib_wash_planes), ("nib_wash_edge", self.nib_wash_edge), ("nib_wash_depth", self.nib_wash_depth), ("nib_wash_scale", self.nib_wash_scale), ("nib_wash_levels", self.nib_wash_levels), ("nib_wash_faces", self.nib_wash_faces), ("nib_wash_rag", self.nib_wash_rag), ("nib_wash_mask", self.nib_wash_mask), ("nib_wash_half", self.nib_wash_half), ("nib_wash_grain", self.nib_wash_grain), ("nib_wash_grade", self.nib_wash_grade), ("nib_wash_profile", self.nib_wash_profile), ("nib_wash_streak", self.nib_wash_streak), ("nib_wash_sweep", self.nib_wash_sweep), ("nib_wash_water", self.nib_wash_water), ("nib_wash_agent", self.nib_wash_agent), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -1482,6 +1682,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             rigger: None,
             hotspot: None,
             technique: None,
+            diffuse: None,
             splatter: None,
             edge_pool: None,
             oldpaper: None,
@@ -1606,6 +1807,17 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             dot_lab: None,
             dot_lap: None,
             dot_tone: None,
+            aqua: None,
+            aqua_planes: None,
+            aqua_reserve: None,
+            aqua_wet: None,
+            aqua_grade: None,
+            aqua_detail: None,
+            aqua_soft: None,
+            aqua_rim: None,
+            aqua_bloom: None,
+            aqua_grain: None,
+            aqua_mark: None, aqua_grain_mid: None, aqua_grain_wet: None, aqua_lip: None, aqua_mass: None, aqua_barrier: None, aqua_body: None, aqua_cut: None, aqua_ragged: None, aqua_tension: None, aqua_paper: None, aqua_focus: None, aqua_resist: None, aqua_line: None, aqua_loose: None, aqua_fluid: None, aqua_evap: None, aqua_weight: None, aqua_under: None, aqua_pool: None, aqua_charge: None, aqua_engine: None, aqua_crisp: None, aqua_stroke: None, aqua_visc: None, aqua_press: None, aqua_dry_boost: None, aqua_tip: None, aqua_skip: None, aqua_taper: None, aqua_bias: None, aqua_taper_min: None, aqua_fine: None, aqua_fade: None, aqua_sweep: None, aqua_line_resist: None, aqua_light: None, aqua_light_dir: None, aqua_vignette: None, aqua_line_density: None, aqua_grain_dir: None, aqua_spot_dry: None, aqua_fine_calm: None, aqua_line_press: None, aqua_line_tooth: None, aqua_line_lift: None, aqua_tech: None, aqua_thick: None, aqua_hold: None, aqua_sink: None, aqua_drift: None,
             hatch: None,
             verdaccio: None,
             dishes: None,

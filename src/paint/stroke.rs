@@ -1476,7 +1476,8 @@ impl Stroke {
         }
 
         // The stroke wets the canvas where it lands (wet-into-wet for later strokes); bristle dries slightly.
-        canvas.wetness[p] = canvas.wetness[p].max((*bwet).min(1.0));
+        // (THE MASKING FLUID — `Canvas::set_resist_rings` — refuses the water as it refused the paint.)
+        canvas.wetness[p] = canvas.wetness[p].max((*bwet).min(1.0) * (1.0 - canvas.resist_at(p)));
         *bwet *= 0.995;
     }
 }
