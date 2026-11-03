@@ -390,6 +390,43 @@ plakat paint from photo.png --medium tempera --plan tempera.hjson -o out-tempera
 #
 plakat paint from photo.png --medium palette-knife --plan palette-knife.hjson -o out-knife.png
 
+# ── WATERCOLOUR — THE WATER ENGINE ───────────────────────────────────────────
+# The picture laid by a brush on water (7.16.0): the parser gives the brush's touches and the sheet's drying is solved
+# on a grid after every session — the flow, the wicking, the pinned rim's tide line, the pigments mingling and settling
+# by weight, the dense charge's viscosity; six sessions from a flooded tenth-of-the-sheet brush to two dry ones with
+# strokes along the structure; the technique gripping the solver (wet-on-wet floods, wet-on-dry seals, dry-on-dry stays
+# put); the thick charge that never blooms; the graphite skeleton with a hand before the washes. Every aqua key is 0
+# in the profile — run it with the plan (the keys in PAINT_CONTROLS.md and RELEASE_HISTORY.md); the technique on its
+# own line (an HJSON comment after a quoteless string is part of it):
+#
+#   medium: watercolour        palette: image             style: legible             new: true
+#   armature: 384              armature_face: 768         armature_body: 384         semantic: true
+#   sam: true                  families: true             rigger: 0.0                hotspot: 0.0
+#   splatter: 0.2              technique: wet-on-dry      diffuse: 0.0               bleed: 0.6
+#   dry_shift: 0.08            granulate: 0.12            opacity: 0.6               reserve: 0.9
+#   aqua: 1.0                  aqua_planes: 6             aqua_reserve: 1.0          aqua_wet: 0.8
+#   aqua_grade: 1.0            aqua_detail: 0.2           aqua_soft: 1.0             aqua_rim: 0.8
+#   aqua_bloom: 0.35           aqua_grain: 0.6            aqua_mark: 1.0             aqua_grain_mid: 0.75
+#   aqua_grain_wet: 1.0        aqua_lip: 0.8              aqua_mass: 0.6             aqua_barrier: 0.8
+#   aqua_body: 0.6             aqua_cut: 1.0              aqua_ragged: 0.6           aqua_tension: 0.7
+#   aqua_paper: 0.8            aqua_focus: 0.6            aqua_resist: 1.0           aqua_line: 1.0
+#   aqua_loose: 0.6            aqua_fluid: 1.0            aqua_evap: 1.0             aqua_weight: 0.8
+#   aqua_under: 1.0            aqua_pool: 1.0             aqua_charge: 0.6           aqua_engine: 1.0
+#   aqua_crisp: 0.34           aqua_stroke: 6.0           aqua_visc: 1.0             aqua_press: 0.6
+#   aqua_dry_boost: 1.0        aqua_tip: 2.0              aqua_skip: 0.25            aqua_taper: 0.6
+#   aqua_bias: 0.7             aqua_taper_min: 3.0        aqua_fine: 3.0             aqua_fade: 0.25
+#   aqua_sweep: 0.8            aqua_line_resist: 0.0      aqua_light: 0.8            aqua_light_dir: 45
+#   aqua_vignette: 0.7         aqua_line_density: 2.0     aqua_grain_dir: 0.6        aqua_spot_dry: 0.8
+#   aqua_fine_calm: 0.3        aqua_line_press: 0.7       aqua_line_tooth: 0.6       aqua_line_lift: 0.5
+#   aqua_tech: 0.8             aqua_thick: 0.8            aqua_hold: 0.8             aqua_sink: 0.6
+#   aqua_drift: 0.3
+#   (a 2048² sheet takes 75 s and ~96,000 touches, wet-on-wet 90 s, dry-on-dry 45 s; aqua_line_resist is 0 because
+#   the fluid scratched the washes where the pencil was lighter than them; the polygon-wash keys above aqua_engine
+#   steer the wash path only while the engine is off)
+#
+plakat paint from photo.png --medium watercolour --plan watercolour.hjson -o out-watercolour.png
+plakat paint from photo.png --medium watercolour --plan watercolour.hjson --technique wet-on-wet -o out-wet.png
+
 # ── POINTILLISM ──────────────────────────────────────────────────────────────
 # The picture as a field of small hard touches of pure pigment, mixed in the eye (7.15.0): the sheet sampled as a
 # Poisson disc of 10 px dots at 0.65 diameters, closed in the darks and where the picture is busy; every dot one

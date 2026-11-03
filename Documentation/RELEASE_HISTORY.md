@@ -8,6 +8,95 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.16.0 — Watercolour: the water engine — the picture laid by a brush on water, the sheet's drying solved on a grid, the technique's grip on the solver, the thick charge, the graphite skeleton's hand
+
+### `plakat paint`
+
+- **`--medium watercolour` — THE WATER ENGINE** (`aqua_engine`, with `aqua 1`). The medium was judged unsatisfactory
+  at the cycle's start: the 7.1 recipe laid cut polygons, the darks blurred and the three techniques rendered
+  alike. Twenty review-driven sets rebuilt it on one principle — **the parser gives the brush's touches and the
+  water decides the shape**. A touch is a dab's place, radius, water and pigment (a `J` record in the score); the
+  sheet's state is a grid of cells a 512th of the short side wide holding the free water, the pigment in
+  suspension per lane, the paper's relief and the masking fluid's walls (`Canvas::aqua_inject`), and after every
+  session the water dries by a fixed-step solver on one thread (`Canvas::aqua_settle`, its rates in the score
+  header `engine=`) so the replay is exact to the byte. Every `aqua_*` key is a plan key, 0 in every profile; the
+  recommended plan is the block in `PAINT_EXAMPLES.md`.
+- **The sheet's drying** (`aqua_fluid`, `aqua_evap`, `aqua_weight`, `aqua_pool`, `aqua_visc`): the water flows to
+  its lower neighbours by the step of its level, wicks into the dry paper at a third of its speed with two thirds of
+  its pigment filtered, and evaporates up to five times faster at the puddle's edge so the interior feeds the pinned
+  rim and the pigment dries there into a thin **tide line**; the dyes diffuse against their gradient and every
+  pigment mingles in a flooded pool; the heavy pigments (their weight read from the chroma of their masstone — the
+  earths and the black granulate, the dyes travel) land early and slide into the relief's hollows; the pigment's
+  concentration thickens the water as 1/(1 + 4·visc·c) so a dense charge holds its edge on a wet sheet. Every lane's
+  mass is conserved to the float; the landed pigment is laid on the cells' pixels into the hollows by its weight.
+- **The sessions** (`aqua_planes`, `aqua_wet`, `aqua_crisp`): `aqua_planes` wet sessions each dried before the next,
+  the brush halving from a tenth of the sheet, its water from flooded to dry, the sheet wetted before a wet session
+  on a grid of 1.5 radii with the subject's feathered silhouette drier; every touch on a jittered grid of 0.8 radii
+  laying the glaze that a falling share of its footprint owes toward the session's ceiling paper^(1−a)·colour^a —
+  the first session the lightest tint of the picture's own hue, the last its full value, nothing lightened after.
+  The last `aqua_crisp` sessions are laid **dry**: no water on the brush or the sheet, no solver, the touch landing
+  at the pixel through the paper's tooth.
+- **The dry brush and the stroke** (`aqua_stroke`, `aqua_press`, `aqua_dry_boost`, `aqua_tip`, `aqua_skip`,
+  `aqua_taper`, `aqua_bias`, `aqua_taper_min`, `aqua_sweep`): a touch on a coherent structure (the structure tensor
+  over a 48th of the sheet at the picture's own energy) is aimed across the ridge at its darkest point, narrowed to
+  the ridge's half-width and walked both ways along the tensor's direction into a stroke with the grid point's mass
+  over its dabs, never narrower than the liner's tip; the tooth's gate is off along the touch's axis under the
+  brush's pressure and full at its rim, asymmetric across the travel (a clean cut on the left, a ragged edge on the
+  right), the share the tooth rejects laid on the pixels that passed; the stroke's radius falls to its ends by
+  sin(πt) and its pigment from the middle as the brush runs dry; a stroke shorter than the key's radii is no stroke
+  (a tapered short stroke read as a bead); a share of the strokes withheld by a hash of the seed and the touch so
+  the contour is left unsaid in places.
+- **The technique's grip on the solver** (`aqua_tech`): `--technique` reached the engine only as the brush's water
+  (×1.2 / 1 / 0.5) and the sheet's wetting before a session (1 / 0.7 / 0), the solver's rates the same for all
+  three, so the three pictures were alike to a few percent. By the key **wet-on-wet** floods — the rim's evaporation
+  down, the water's reach and permeability up (the header's `tech=` spread), the brush's water up, the subject's
+  silhouette no drier than the ground, the wet sessions' touches on a wider grid each carrying the mass of its
+  cell, the water filling the gaps; **wet-on-dry** seals — the sheet not wetted before a session and the solver's
+  flow into a dry cell cut (the header's seal), so the pool stays within the brush's footprint and dries with a
+  hard edge; **dry-on-dry** lays every session dry and a dry touch off a ridge only in the key's quantile of the
+  value's step across the brush — the touches along the structure and in the highest contrast only.
+- **The thick charge** (`aqua_thick`, `aqua_hold`, `aqua_sink`, `aqua_drift`): a painter never pours black water into
+  a flooded sheet — a dark mix is a thick mix. A touch's water falls with the darkness of its charge (water ×
+  (1 − key × darkness), the darkness 1 − exp(−the charge's log debt); the mass as the debt decides), so a dark laid
+  into a wet sail keeps its core under the concentration's viscosity instead of blooming into a brown cloud; in the
+  solver the flow and the mingling between two cells are damped by exp(−8·key·the concentration step) — the skin of a
+  dense paint against clean water (`aqua_hold`, the header's third value); a cell's settling rate rises up to tenfold
+  with its concentration so the thick charge lands before it drifts (`aqua_sink`); each step a flooded cell gives a
+  share of its suspended pigment to the wet cell below it, so a thick mark creeps down the tilted sheet and not into
+  a symmetric blot (`aqua_drift`). The header's `tech=` carries the five values, read with two to five.
+- **The sheet's economy and the light** (`aqua_fade`, `aqua_vignette`, `aqua_light`, `aqua_light_dir`,
+  `aqua_grain_dir`, `aqua_spot_dry`, `aqua_focus`, `aqua_loose`): off the focus a target under half the key darker
+  than the paper owes nothing and is left as bare paper, the debt back in full at the key; from the second session on
+  the debt off the attention ellipse (the focus's centroid, twice its spread) let go by the key — the periphery keeps
+  the first tint; at an edge facing the light (`aqua_light_dir`, 0 the left, 90 the top) the touch carries up to
+  twice its water, at an edge turned from it down to a fifth — soft into the paper on the lit side, dry through the
+  tooth on the shadow side; the landed pigment weighted by the relief's slope against the light so it settles on the
+  shadow side of every fibre; from the second wet session on a focus touch on a value step of the key's complement
+  or more dries the sheet under it and lands without water — a hard edge over the dried underpainting.
+- **Line and wash decoupled — the graphite skeleton with a hand** (`aqua_line`, `aqua_fine`, `aqua_fine_calm`,
+  `aqua_line_density`, `aqua_line_press`, `aqua_line_tooth`, `aqua_line_lift`, `aqua_line_resist`): the picture's
+  thin dark structure (the rigging, the seams, a thin spar — the black-hat of the luma over the key's radius) is
+  closed out of the engine's picture and drawn by the dry graphite skeleton on the bare sheet before the washes as
+  its own `line` stage, traced along the structure tensor, only where the picture's mean slope over eight radii is
+  calm (the sky and the sails, not the sea's ripples); laid as graphite direct (`Canvas::pencil_line`) at the
+  densities of its tone to the key's power (the brush's deposit had landed a fifth of the nominal density); with a
+  **hand** (`Canvas::pencil_line_hand`, the header's `hand=`): the pressure along the line falling to a quarter at
+  the ends over eight radii and wobbling along the body, the dry graphite on the relief's peaks the lighter the
+  line, the lead lifting along long straight runs (a stay, a waterline) and hardly on a curve; the masking fluid
+  laid along every line darker than the wash that will cover it, so the pencil keeps its own tone (off by default —
+  it scratched the washes where the pencil was lighter).
+- **The polygon washes and the sheet's reserves** (the earlier sets, standing at zero or beside the engine):
+  `aqua` (the wash as the tool — value planes over the picture's range, lightest first, each cut into hue families,
+  every mass one wash), `aqua_reserve` (the lightest plane bare paper), `aqua_grade`, `aqua_detail`, `aqua_soft`,
+  `aqua_rim`, `aqua_bloom`, `aqua_lip`, `aqua_grain`, `aqua_grain_mid`, `aqua_grain_wet`, `aqua_mark`, `aqua_mass`,
+  `aqua_barrier`, `aqua_body`, `aqua_cut`, `aqua_ragged`, `aqua_tension`, `aqua_under`, `aqua_pool`, `aqua_charge`
+  (the flooded ground, the washes laid wet into wet, the brush's charge laid where it touches); and standing with
+  the engine: `aqua_paper` (the absolute paper gate — the lights above it never washed), `aqua_resist` (the masking
+  fluid over the lights, laid before the first wash, a wall to the engine's water, recorded for the replay).
+- Rolled back on review: the clustering of the touches (one touch per mass of alike debt) broke the structure into
+  blots and is gone from the code.
+- Nothing changes in the other media: the paint sheets of 7.15.0 render byte-identical.
+
 ## What's new in 7.15.0 — Pointillism: the picture laid as a field of small hard touches of pure pigment — the Poisson disc, the colour separated in the eye, the shadows and the sky of the divisionists
 
 ### `plakat paint`

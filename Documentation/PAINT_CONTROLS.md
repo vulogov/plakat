@@ -198,6 +198,32 @@ reserved paper.
   replay sees the same edges) — the painter's choice of where to work wet‑in‑wet and where wet‑on‑dry.
   `--technique wet-on-wet` floods wider and softer, `dry-on-dry` has no water to flow; the score records it
   (`flow=strength,radius,rim,grain,selective`) so a replay crosses the same water.
+- **The water engine** (7.16.0; `aqua 1` + `aqua_engine 1`, every `aqua_*` key a plan key, 0 in the profile — the
+  recommended plan is the block in `PAINT_EXAMPLES.md`): the picture laid **by a brush on water**. The parser gives
+  the brush's touches (a dab's place, radius, water and pigment, `J` records in the score) and the water decides the
+  shape: the sheet's state a grid of cells a 512th of the short side wide, dried after every session by a fixed-step
+  solver (`Canvas::aqua_settle`; the header's `engine=`) — the flow by the water's level, the wicking into dry paper,
+  the pinned rim's **tide line** (`aqua_evap`), the pigments mingling in a flooded pool (`aqua_pool`), the heavy ones
+  settling early into the hollows (`aqua_weight`), the dense charge's viscosity (`aqua_visc`); mass conserved, the
+  replay exact. **The sessions** (`aqua_planes` wet sessions, the last `aqua_crisp` share of them dry): the brush
+  halving from a tenth of the sheet, its water from flooded to dry, every touch on a jittered grid laying the glaze
+  its footprint owes toward the session's ceiling; the dry sessions land through the tooth under the brush's pressure
+  (`aqua_press`, `aqua_dry_boost`, `aqua_bias`) with **strokes along the structure** (`aqua_stroke`, `aqua_tip`,
+  `aqua_taper`, `aqua_taper_min`, `aqua_sweep`, `aqua_skip`). **The technique grips the solver** (`aqua_tech`):
+  wet-on-wet floods, wet-on-dry seals the dry paper to a hard edge, dry-on-dry lays every session dry on the
+  structure only. **The thick charge** (`aqua_thick`, `aqua_hold`, `aqua_sink`, `aqua_drift`): a dark mix is a thick
+  mix — less water, a concentration barrier in the solver, faster settling, a drift down the sheet — so a dark in a
+  wet passage keeps its core. **Economy and light** (`aqua_fade`, `aqua_vignette`, `aqua_light`, `aqua_light_dir`,
+  `aqua_grain_dir`, `aqua_spot_dry`): bare paper off the focus, the periphery left at the first tint, wet touches on
+  the lit edges and dry on the shadowed, the grain on the shadow side of every fibre, a hard dried edge under the
+  focus's accents. **The graphite skeleton** (`aqua_line`, `aqua_fine`, `aqua_fine_calm`, `aqua_line_density`,
+  `aqua_line_press`, `aqua_line_tooth`, `aqua_line_lift`, `aqua_line_resist`): the thin dark structure drawn as a dry
+  pencil line with a hand before the washes, its own `line` stage. **The reserves** (`aqua_paper`, `aqua_resist`,
+  `aqua_reserve`): the lights above the paper gate never washed, under a masking fluid the water cannot cross. The
+  polygon-wash keys of the earlier sets (`aqua_rim`, `aqua_bloom`, `aqua_grain*`, `aqua_mass`, `aqua_barrier`,
+  `aqua_body`, `aqua_cut`, `aqua_ragged`, `aqua_tension`, `aqua_under`, `aqua_charge`, `aqua_grade`, `aqua_soft`,
+  `aqua_loose`, `aqua_focus`, `aqua_mark`, `aqua_detail`) steer the wash path while the engine is off and are not read
+  by it; the full account per key is in `RELEASE_HISTORY.md` (7.16.0) and the field docs of `MediumProfile`.
 
 ```hjson
 medium: watercolour
@@ -934,7 +960,7 @@ hiding: 1.0
 | oil-direct    | 1.00 | 0.08  | 0.30   | 0.30    | 1.08   | 0.00      | 0.00      | 0.15  | 0.80 | 0.35   | 0.00    | continuous | pigment  | zorn |
 | oil-indirect  | 0.90 | 0.10  | 0.40   | 0.40    | 1.05   | 0.00      | 0.00      | 0.12  | 0.70 | 0.25   | 0.00    | continuous | pigment  | zorn |
 | gouache       | 1.00 | 0.05  | 0.80   | 0.15    | 0.85   | −0.05     | 0.00      | 0.00  | 0.50 | 0.30   | 0.00    | continuous | pigment  | split-primary |
-| watercolour   | 0.45 | 0.55  | 0.15   | 0.00    | 0.92   | +0.08     | 0.35      | 0.00  | 0.20 | 0.15   | 0.00    | continuous | reserved | limited-landscape |
+| watercolour   | 0.45 | 0.55  | 0.15   | 0.00    | 0.92   | +0.08     | 0.35      | 0.00  | 0.20 | 0.15   | 0.00    | continuous · with `aqua 1` + `aqua_engine 1` the picture laid by a brush on water, the sheet's drying solved on a grid (7.16.0) | reserved | limited-landscape |
 | ink-wash      | 0.40 | 0.70  | 0.90   | 0.00    | 0.90   | +0.05     | 0.22      | 0.00  | 0.10 | 0.10   | 0.20    | continuous | reserved | sumi |
 | line-and-wash | 0.32 | 0.50  | 0.00   | 0.00    | 1.70   | +0.08     | 0.20      | 0.00  | 0.20 | 0.10   | 0.40    | WASHES · the picture's own colours, each mass once from the source at wash scale, bloomed edges, wet modelling touches within, a coloured ink line; LUMINOUS (no family split / committed shadows, mild key) | reserved | limited-landscape |
 | early-book-illustration | 0.32 | 0.35 | 0.00 | 0.00 | 1.50 | +0.08 | 0.16 | 0.00 | 0.20 | 0.10 | 0.40 | PRINT · a thirties four-colour book plate: a black key drawn from the picture over four flat inks found in it, the lights paper, one screen in the shadows, the faces drawn by the pattern — the early colour‑book print | reserved | limited-landscape |
