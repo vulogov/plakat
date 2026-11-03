@@ -114,10 +114,13 @@ pub struct ScoreHeader {
     /// `aqua_line_lift`, 7.16.0 set 16): (press, tooth, lift) 0..1 for every `line` record laid direct. None = the
     /// plain pencil (old scores).
     pub hand: Option<(f32, f32, f32)>,
-    /// THE TECHNIQUE'S GRIP on the engine's drying (`Canvas::aqua_settle_tech`; see `MediumProfile::aqua_tech`,
-    /// 7.16.0 set 18): `(spread, seal)` — the water's permeability up by the spread (wet-on-wet), the solver's flow
-    /// into a dry cell down by the seal (wet-on-dry: the hard edge). None = neither (old scores).
-    pub tech: Option<(f32, f32)>,
+    /// THE TECHNIQUE'S GRIP on the engine's drying (`Canvas::aqua_settle_full`; see `MediumProfile::aqua_tech`,
+    /// 7.16.0 set 18): `(spread, seal, hold, sink, drift)` — the water's permeability up by the spread (wet-on-wet),
+    /// the solver's flow into a dry cell down by the seal (wet-on-dry: the hard edge); set 20 (`MediumProfile::
+    /// aqua_hold`, `aqua_sink`, `aqua_drift`): the concentration barrier, the thick charge's settling, the pigment's
+    /// drift down the sheet. In the text the first two always, the rest up to the last nonzero (a set-18/19 score has
+    /// two). None = none of them (old scores).
+    pub tech: Option<(f32, f32, f32, f32, f32)>,
     /// CANVAS WEAVE (see `Finish::weave`). 0 = none.
     pub weave: f32,
     /// CANVAS SAG (see `Finish::sag`). 0 = none.
@@ -380,7 +383,15 @@ impl StrokeScore {
             _ => ground,
         };
         let ground = match h.tech {
-            Some((a, b)) if a > 0.0 || b > 0.0 => format!("{ground} tech={},{}", fmt_f(a), fmt_f(b)),
+            Some((a, b, c, d, e)) if a > 0.0 || b > 0.0 || c > 0.0 || d > 0.0 || e > 0.0 => {
+                let tail = [c, d, e];
+                let last = tail.iter().rposition(|t| *t > 0.0).map(|i| i + 1).unwrap_or(0);
+                let mut s = format!("{ground} tech={},{}", fmt_f(a), fmt_f(b));
+                for t in &tail[..last] {
+                    s.push_str(&format!(",{}", fmt_f(*t)));
+                }
+                s
+            }
             _ => ground,
         };
         o.push_str(&format!(
@@ -510,7 +521,7 @@ impl StrokeScore {
                         pencil: get("pencil").parse().unwrap_or(0.0),
                         grain_dir: m.get("graindir").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 2).then(|| (p[0], p[1])) }),
                         hand: m.get("hand").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 3).then(|| (p[0], p[1], p[2])) }),
-                        tech: m.get("tech").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 2).then(|| (p[0], p[1])) }),
+                        tech: m.get("tech").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (2..=5).contains(&p.len()).then(|| (p[0], p[1], p.get(2).copied().unwrap_or(0.0), p.get(3).copied().unwrap_or(0.0), p.get(4).copied().unwrap_or(0.0))) }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -841,8 +852,8 @@ impl StrokeScore {
             if let Some((er, ee, ew, ep, ev, _, _)) = self.header.engine {
                 if crate::paint::painter::aqua_stage(self.header.stages.as_deref(), idx) {
                     let (gd, ga) = self.header.grain_dir.unwrap_or((0.0, 0.0));
-                    let (ts, tl) = self.header.tech.unwrap_or((0.0, 0.0));
-                    canvas.aqua_settle_tech(er, ee, ew, ep, ev, gd, ga, ts, tl);
+                    let (ts, tl, th, tk, td) = self.header.tech.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    canvas.aqua_settle_full(er, ee, ew, ep, ev, gd, ga, ts, tl, th, tk, td);
                 }
             }
             if self.header.bleed > 0.0 {
@@ -1221,6 +1232,26 @@ mod tests {
         bare.strokes.remove(0);
         assert_ne!(laid, bare.replay(64, 48).unwrap().to_image().into_raw(), "the fluid along the lines walls the touch's water");
         assert_eq!(parsed.replay(64, 48).unwrap().to_image().into_raw(), laid, "and replays exact from the text");
+    }
+
+    #[test]
+    fn the_techs_five_values_round_trip_and_a_set_18_score_reads_two() {
+        // Set 20: the header's `tech=` with the barrier, the sinking and the drift as its third to fifth values —
+        // written up to the last nonzero after the first two, read with two to five, a set-18 score's two values
+        // back with zeros, nothing written for all zeros.
+        let mut s = sample();
+        s.header.tech = Some((0.0, 0.0, 1.0, 0.6, 0.4));
+        let text = s.to_text();
+        assert!(text.contains(" tech=0,0,1,0.6,0.4"), "the five values: {}", text.lines().nth(1).unwrap_or(""));
+        assert_eq!(StrokeScore::parse(&text).unwrap().header.tech, Some((0.0, 0.0, 1.0, 0.6, 0.4)), "and back");
+        s.header.tech = Some((2.0, 0.0, 0.0, 0.0, 0.0));
+        let text = s.to_text();
+        assert!(text.contains(" tech=2,0") && !text.contains(" tech=2,0,"), "the trailing zeros not written: {}", text.lines().nth(1).unwrap_or(""));
+        assert_eq!(StrokeScore::parse(&text).unwrap().header.tech, Some((2.0, 0.0, 0.0, 0.0, 0.0)), "a set-18 score's two values");
+        s.header.tech = Some((0.0, 0.8, 0.0, 0.5, 0.0));
+        assert!(s.to_text().contains(" tech=0,0.8,0,0.5") && !s.to_text().contains(" tech=0,0.8,0,0.5,"), "up to the last nonzero");
+        s.header.tech = Some((0.0, 0.0, 0.0, 0.0, 0.0));
+        assert!(!s.to_text().contains(" tech="), "nothing for all zeros");
     }
 
     #[test]

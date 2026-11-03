@@ -683,6 +683,12 @@ pub struct PaintParams {
     pub aqua_line_lift: f32,
     /// AQUA TECH: the technique's grip on the water engine (see `MediumProfile::aqua_tech`).
     pub aqua_tech: f32,
+    /// AQUA THICK: a touch's water falling with the darkness of its charge (see `MediumProfile::aqua_thick`).
+    pub aqua_thick: f32,
+    /// AQUA HOLD / SINK / DRIFT: the solver's concentration barrier, the thick charge's settling, the pigment's drift (see `MediumProfile::aqua_hold`, `aqua_sink`, `aqua_drift`).
+    pub aqua_hold: f32,
+    pub aqua_sink: f32,
+    pub aqua_drift: f32,
     /// AQUA GRAIN DIR: the pigment settling on the relief's slopes turned from the light (see `MediumProfile::aqua_grain_dir`).
     pub aqua_grain_dir: f32,
     /// AQUA SPOT DRY: the sheet dried under the focus's high-contrast touches (see `MediumProfile::aqua_spot_dry`).
@@ -959,7 +965,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -3570,7 +3576,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let wet_k = p.aqua_wet.clamp(0.0, 1.0);
         score.header.engine = Some(((w.min(h) as f32 / 48.0 * (0.5 + wet_k)).max(1.0), p.aqua_evap.clamp(0.0, 1.0), p.aqua_weight.clamp(0.0, 1.0), p.aqua_pool.clamp(0.0, 1.0), p.aqua_visc.clamp(0.0, 1.0), p.aqua_dry_boost.clamp(0.0, 1.0), p.aqua_bias.clamp(0.0, 1.0)));
         // AQUA TECH (see `MediumProfile::aqua_tech`): the technique's grip on the engine's drying — wet-on-wet with the
-        // rim's evaporation and the viscosity down by the key, the reach up by it, the water's spread (twice the key)
+        // rim's evaporation down by the key (the viscosity kept — set 19: it is what holds a thick charge in the
+        // flood), the reach up by it, the water's spread (twice the key)
         // in the header's `tech=`; wet-on-dry (or no technique) with the dry paper sealed by the key; dry-on-dry none.
         let tech_k = p.aqua_tech.clamp(0.0, 1.0);
         if tech_k > 0.0 {
@@ -3579,13 +3586,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     if let Some(e) = score.header.engine.as_mut() {
                         e.0 *= 1.0 + tech_k;
                         e.1 *= 1.0 - tech_k;
-                        e.4 *= 1.0 - tech_k;
                     }
-                    score.header.tech = Some((2.0 * tech_k, 0.0));
+                    score.header.tech = Some((2.0 * tech_k, 0.0, 0.0, 0.0, 0.0));
                 }
                 WetTechnique::DryOnDry => {}
-                _ => score.header.tech = Some((0.0, tech_k)),
+                _ => score.header.tech = Some((0.0, tech_k, 0.0, 0.0, 0.0)),
             }
+        }
+        // AQUA HOLD / SINK / DRIFT (see `MediumProfile::aqua_hold`, `aqua_sink`, `aqua_drift`): the solver's
+        // concentration barrier, the thick charge's settling and the pigment's drift, the header's `tech=` third to
+        // fifth values for every technique.
+        let (hold_k, sink_k, drift_k) = (p.aqua_hold.clamp(0.0, 1.0), p.aqua_sink.clamp(0.0, 1.0), p.aqua_drift.clamp(0.0, 1.0));
+        if hold_k > 0.0 || sink_k > 0.0 || drift_k > 0.0 {
+            let (a, b) = score.header.tech.map(|t| (t.0, t.1)).unwrap_or((0.0, 0.0));
+            score.header.tech = Some((a, b, hold_k, sink_k, drift_k));
         }
         // AQUA GRAIN DIR (see `MediumProfile::aqua_grain_dir`): the directional grain of the engine's drying, with the
         // light's direction, in the header for the replay.
@@ -11599,6 +11613,8 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     // AQUA TECH (see `MediumProfile::aqua_tech`): dry-on-dry — the wet sessions cut to the key's complement (at 1
     // every session dry: no water on the sheet or the brush, no solver).
     let tech_k = p.aqua_tech.clamp(0.0, 1.0);
+    // AQUA THICK (see `MediumProfile::aqua_thick`): a touch's water falling with the darkness of its charge.
+    let thick_k = p.aqua_thick.clamp(0.0, 1.0);
     let crisp_from = if p.technique == WetTechnique::DryOnDry { (crisp_from as f32 * (1.0 - tech_k)).round() as usize } else { crisp_from };
     let stroke_k = p.aqua_stroke.clamp(0.0, 16.0);
     let press_k = p.aqua_press.clamp(0.0, 0.95);
@@ -12049,7 +12065,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // AQUA SPOT DRY: on the focus, at a step of the key's complement or more, the sheet under the touch is
                 // dried first and the touch laid without water — the dry brush over the dried underpainting.
                 let spot = !step_map.is_empty() && m >= 0.5 && step_map[at(cx, cy)] >= 1.0 - spot_k;
-                let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) };
+                // AQUA THICK: a dark mix is a thick mix — the water × (1 − key × darkness), the darkness 1 − exp(−the
+                // charge's log debt), the mass as the debt decides.
+                let thick = 1.0 - thick_k * (1.0 - (-dmag(&want)).exp());
+                let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) * thick };
                 if spot {
                     canvas.aqua_dry_spot(&dabs, r_s, r_end);
                 }
@@ -12099,7 +12118,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
 /// body fluctuating), the dry graphite on the relief's peaks the lighter the debt, the lead lifting along long
 /// straight runs; the header's `hand` for the replay.
 /// (The engine's SET 18 — `MediumProfile::aqua_tech`: the technique's grip on the engine — is in `aqua_engine_pass`,
-/// the header's `tech=` and `Canvas::aqua_settle_tech`; the records are plain touches.)
+/// the header's `tech=` and `Canvas::aqua_settle_tech`; SET 19 — `MediumProfile::aqua_thick`: the thick charge —
+/// in `aqua_engine_pass`, the touch's water in its record; SET 20 — `MediumProfile::aqua_hold`, `aqua_sink`,
+/// `aqua_drift`: the thick charge's physics in the solver, `Canvas::aqua_settle_full` from the header's `tech=`
+/// third to fifth values; the records are plain touches.)
 fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, focus: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
     let (w, h) = (input.width(), input.height());
     let key = p.aqua_line.clamp(0.0, 1.0);
@@ -17935,7 +17957,7 @@ mod aqua_tests {
     #[test]
     fn the_technique_grips_the_engine_and_the_three_part() {
         // Set 18 on the sky over the ground, each technique at the key against itself without it: no token without
-        // the key; wet-on-wet floods — the header's reach up, its evaporation and viscosity down, the spread in the
+        // the key; wet-on-wet floods — the header's reach up, its evaporation down, the viscosity kept, the spread in the
         // text, the wet session's touches fewer on the wider grid; wet-on-dry seals — the engine as it was, the seal
         // in the text, no clear water laid before a session; dry-on-dry lays every session dry — no token, no water
         // in any touch, fewer touches off the ridges (at 0.8); the key changes each sheet, each replays byte-exact from the
@@ -17969,13 +17991,13 @@ mod aqua_tests {
             let (n1, b1) = (touches(&r, "aqua-1").len(), touches(&base, "aqua-1").len());
             match tech {
                 WetTechnique::WetOnWet => {
-                    assert!(re.0 > be.0 && re.1 < be.1 && re.4 < be.4, "wet-on-wet: the reach up, the evaporation and the viscosity down: {re:?} vs {be:?}");
-                    assert_eq!(r.score.header.tech, Some((2.0, 0.0)), "the spread in the header");
+                    assert!(re.0 > be.0 && re.1 < be.1 && re.4 == be.4, "wet-on-wet: the reach up, the evaporation down, the viscosity kept: {re:?} vs {be:?}");
+                    assert_eq!(r.score.header.tech, Some((2.0, 0.0, 0.0, 0.0, 0.0)), "the spread in the header");
                     assert!(head.contains(" tech=2,0"), "the token: {head}");
                     assert!(n1 > 0 && n1 < b1, "the wet session's touches fewer on the wider grid: {n1} vs {b1}");
                 }
                 WetTechnique::WetOnDry => {
-                    assert_eq!((re, r.score.header.tech), (be, Some((0.0, 1.0))), "wet-on-dry: the engine as it was, the seal in the header");
+                    assert_eq!((re, r.score.header.tech), (be, Some((0.0, 1.0, 0.0, 0.0, 0.0))), "wet-on-dry: the engine as it was, the seal in the header");
                     assert!(head.contains(" tech=0,1"), "the token: {head}");
                     assert!(clear(&base) > 0 && clear(&r) == 0, "the sheet not wetted: {} clear touches vs {}", clear(&r), clear(&base));
                 }
@@ -17992,6 +18014,80 @@ mod aqua_tests {
             sheets.push(painted);
         }
         assert!(sheets[0] != sheets[1] && sheets[1] != sheets[2] && sheets[0] != sheets[2], "the three techniques part");
+    }
+
+    #[test]
+    fn the_thick_charge_carries_less_water_the_darker_it_is() {
+        // Set 19 on the sky over the ground, wet-on-wet: the first session's touches align one to one with and
+        // without the key (the same sheet under them); with it every loaded touch carries less water, the darkest
+        // charge (the largest densities) keeps a smaller share of its water than the lightest, the clear water before
+        // the session is untouched; the sheet differs and replays byte-exact from the text.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_visc = 1.0;
+        p.technique = WetTechnique::WetOnWet;
+        let base = paint_from_image(&img, &p);
+        p.aqua_thick = 1.0;
+        let thick = paint_from_image(&img, &p);
+        let first = |r: &PaintResult| -> Vec<(f32, f32, bool)> { r.score.strokes.iter().filter(|s| s.inject && s.stage == "aqua-1").map(|s| (s.wet, s.mix.iter().map(|m| m.1).sum::<f32>(), s.mix.is_empty())).collect() };
+        let (b1, t1) = (first(&base), first(&thick));
+        assert_eq!(b1.len(), t1.len(), "the first session's touches align");
+        let mut ratios: Vec<(f32, f32)> = Vec::new();
+        for (b, t) in b1.iter().zip(&t1) {
+            assert_eq!(b.1, t.1, "the same charge");
+            if b.2 {
+                assert_eq!(b.0, t.0, "the clear water untouched");
+            } else if b.0 > 0.0 {
+                assert!(t.0 < b.0, "a loaded touch carries less water: {} vs {}", t.0, b.0);
+                ratios.push((b.1, t.0 / b.0));
+            }
+        }
+        assert!(ratios.len() >= 4, "loaded touches: {}", ratios.len());
+        let darkest = ratios.iter().max_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).unwrap();
+        let lightest = ratios.iter().min_by(|a, b| a.0.partial_cmp(&b.0).unwrap()).unwrap();
+        assert!(darkest.1 < lightest.1, "the darker the thicker: {:.2} of the water at {:.2} vs {:.2} at {:.2}", darkest.1, darkest.0, lightest.1, lightest.0);
+        let painted = thick.canvas.to_image().into_raw();
+        assert_ne!(painted, base.canvas.to_image().into_raw(), "the thick charge changes the sheet");
+        assert_eq!(StrokeScore::parse(&thick.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact from the text");
+    }
+
+    #[test]
+    fn the_thick_charges_physics_reach_the_header_and_replay() {
+        // Set 20 on the sky over the ground, no technique named: the keys at zero write no `tech=`; the barrier, the
+        // sinking and the drift reach the header as its third to fifth values with the first two zero, change the
+        // sheet, and replay byte-exact from the text; with the technique's grip the first two values stay its own.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_visc = 1.0;
+        let base = paint_from_image(&img, &p);
+        assert!(base.score.header.tech.is_none() && !base.score.to_text().contains(" tech="), "no token without the keys");
+        p.aqua_hold = 1.0;
+        p.aqua_sink = 0.6;
+        p.aqua_drift = 0.4;
+        let r = paint_from_image(&img, &p);
+        let text = r.score.to_text();
+        assert_eq!(r.score.header.tech, Some((0.0, 0.0, 1.0, 0.6, 0.4)), "the three in the header");
+        assert!(text.contains(" tech=0,0,1,0.6,0.4"), "the token: {}", text.lines().find(|l| l.contains("engine=")).unwrap_or(""));
+        let painted = r.canvas.to_image().into_raw();
+        assert_ne!(painted, base.canvas.to_image().into_raw(), "the physics change the sheet");
+        assert_eq!(StrokeScore::parse(&text).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact from the text");
+        p.technique = WetTechnique::WetOnDry;
+        p.aqua_tech = 1.0;
+        let both = paint_from_image(&img, &p);
+        assert_eq!(both.score.header.tech, Some((0.0, 1.0, 1.0, 0.6, 0.4)), "the grip's seal with the physics");
+        assert_eq!(StrokeScore::parse(&both.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), both.canvas.to_image().into_raw(), "and replays");
     }
 
     #[test]

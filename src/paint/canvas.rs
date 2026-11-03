@@ -2269,6 +2269,20 @@ impl Canvas {
     /// the brush's footprint and its rim pins and dries first — the hard edge). (0, 0) = `aqua_settle_lit` to the bit.
     #[allow(clippy::too_many_arguments)]
     pub fn aqua_settle_tech(&mut self, reach: f32, evap: f32, weight: f32, pool: f32, visc: f32, grain_dir: f32, light_dir: f32, spread: f32, seal: f32) {
+        self.aqua_settle_full(reach, evap, weight, pool, visc, grain_dir, light_dir, spread, seal, 0.0, 0.0, 0.0);
+    }
+
+    /// `aqua_settle_tech` with THE THICK CHARGE'S PHYSICS (`hold`, `sink`, `drift` 0..1; 7.16.0 set 20; see
+    /// `MediumProfile::aqua_hold`, `aqua_sink`, `aqua_drift`): a cell's CONCENTRATION c = its suspended pigment over
+    /// its water (the viscosity's measure); the flow of water and the mingling of pigment between two cells damped
+    /// by exp(−8 × hold × (c_hi − c_lo) / (c_hi + c_lo)) — the skin of a dense paint against clean water; a cell's
+    /// settling rate up by 1 + 9 × sink × 4c / (1 + 4c) (the flow crosses a cell in ~5 steps, the settling takes
+    /// hundreds: a tenfold rate is what competes) — the thick charge lands before it drifts; each step a
+    /// flooded cell gives 0.05 × drift × the wetness of the wet cell below it (over 0.3) of its suspended pigment
+    /// to that cell, the heavy pigments by their weight less — the mark creeps down the tilted sheet. (0, 0, 0) =
+    /// `aqua_settle_tech` to the bit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aqua_settle_full(&mut self, reach: f32, evap: f32, weight: f32, pool: f32, visc: f32, grain_dir: f32, light_dir: f32, spread: f32, seal: f32, hold: f32, sink: f32, drift: f32) {
         let Some(st) = self.aqua.take() else {
             return;
         };
@@ -2309,6 +2323,10 @@ impl Canvas {
         let steps = ((3.0 * rc * rc).round() as usize).clamp(24, 400);
         let perm = 0.2f32 * (1.0 + spread.max(0.0));
         let wick = 0.3f32 * (1.0 - seal.clamp(0.0, 1.0));
+        // THE THICK CHARGE'S PHYSICS (see `aqua_settle_full`): the barrier, the sinking, the drift.
+        let (hold_k, sink_k, drift_k) = (hold.clamp(0.0, 1.0), sink.clamp(0.0, 1.0), drift.clamp(0.0, 1.0));
+        let (hold_on, sink_on, drift_on) = (hold_k > 0.0, sink_k > 0.0, drift_k > 0.0);
+        let mut conc = if hold_on || sink_on { vec![0f32; cells] } else { Vec::new() };
         let e0 = 1.6 / steps as f32;
         let ek = evap.clamp(0.0, 1.0);
         let pool_k = pool.clamp(0.0, 1.0);
@@ -2336,6 +2354,12 @@ impl Canvas {
                     vk[q] = 1.0 / (1.0 + vk4 * m / (area * water[q].max(0.05)));
                 }
             }
+            if !conc.is_empty() {
+                for q in 0..cells {
+                    let m: f32 = mass[q * n..(q + 1) * n].iter().sum();
+                    conc[q] = m / (area * water[q].max(0.05));
+                }
+            }
             for q in 0..cells {
                 if wall[q] {
                     continue;
@@ -2350,6 +2374,13 @@ impl Canvas {
                         continue;
                     }
                     let v = if vk_on { vk[q].min(vk[nb]) } else { 1.0 };
+                    // THE CONCENTRATION BARRIER: the pair damped by the concentration step between the two cells.
+                    let v = if hold_on {
+                        let (hi, lo) = (conc[q].max(conc[nb]), conc[q].min(conc[nb]));
+                        v * (-8.0 * hold_k * (hi - lo) / (hi + lo + 1e-3)).exp()
+                    } else {
+                        v
+                    };
                     if wi > 0.3 && wj > 0.3 {
                         let wm = wi.min(wj);
                         let pk = pool_k * ((wm - 0.6) / 0.35).clamp(0.0, 1.0);
@@ -2379,6 +2410,21 @@ impl Canvas {
                         let mv = mass[src * n + c] * share * (1.0 - 0.6 * wt[c]);
                         dm[src * n + c] -= mv;
                         dm[dst * n + c] += mv;
+                    }
+                }
+            }
+            // THE PIGMENT'S DRIFT: a flooded cell's suspended pigment creeping to the wet cell below it.
+            if drift_on {
+                for q in 0..cells {
+                    let y = q / cw;
+                    if y + 1 >= ch || wall[q] || wall[q + cw] || water[q] < 0.3 || water[q + cw] < 0.3 {
+                        continue;
+                    }
+                    let share = 0.05 * drift_k * ((water[q + cw] - 0.3) / 0.7).clamp(0.0, 1.0);
+                    for c in 0..n {
+                        let mv = mass[q * n + c] * share * (1.0 - 0.6 * wt[c]);
+                        dm[q * n + c] -= mv;
+                        dm[(q + cw) * n + c] += mv;
                     }
                 }
             }
@@ -2425,8 +2471,10 @@ impl Canvas {
                         drop_sum += relief[q] - relief[nb];
                     }
                 }
+                // THE THICK CHARGE SINKS: the settling rate up with the cell's concentration.
+                let sink_m = if sink_on { 1.0 + 9.0 * sink_k * (4.0 * conc[q] / (1.0 + 4.0 * conc[q])) } else { 1.0 };
                 for c in 0..n {
-                    let rate = ((0.006 + 0.06 * wt[c] * (0.25 + hollow)) * rate_k / (wv + 0.1)).min(1.0);
+                    let rate = ((0.006 + 0.06 * wt[c] * (0.25 + hollow)) * rate_k / (wv + 0.1) * sink_m).min(1.0);
                     let d = mass[q * n + c] * rate;
                     let slide = if drop_sum > 0.0 { d * 0.6 * wt[c] * (drop_sum / slope_ref).min(1.0) } else { 0.0 };
                     settled[q * n + c] += d - slide;
@@ -4270,6 +4318,67 @@ mod flow_tests {
         }
         assert!(outside(&sealed) < 1e-3 * total(&sealed), "sealed: none beyond the footprint: {}", outside(&sealed));
         assert!(outside(&base) > 0.0 && outside(&spread) > outside(&base), "the spread carries more beyond the footprint: {} vs {} (sealed {})", outside(&spread), outside(&base), outside(&sealed));
+    }
+
+    #[test]
+    fn the_thick_charge_holds_its_skin_sinks_first_and_drifts_down_the_sheet() {
+        // Set 20: a 96² sheet flooded by a clear dab of 30, then a thick dab of a dye (radius 12, a fifth of the
+        // water, 0.8) at its centre, the viscosity on. (0, 0, 0) is `aqua_settle_tech` to the bit; the barrier (hold
+        // 1) lands less pigment beyond the footprint than the base; the sinking (sink 1) a sixth less; the drift (1) moves the
+        // landed pigment's centroid down the sheet; the mass kept in each.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let clear = vec![0f32; pal.pigments.len()];
+        let lay = |c: &mut Canvas| {
+            c.aqua_inject(&[[48.0, 48.0]], 30.0, 0.0, 1.0, &clear, 0.0, 0.0, 0.0);
+            c.aqua_inject(&[[48.0, 48.0]], 12.0, 0.0, 0.2, &load, 0.0, 0.0, 0.0);
+        };
+        let run = |hold: f32, sink: f32, drift: f32| -> Canvas {
+            let mut c = fresh();
+            lay(&mut c);
+            c.aqua_settle_full(12.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, hold, sink, drift);
+            c
+        };
+        let total = |c: &Canvas| -> f32 { (0..c.h).flat_map(|y| (0..c.w).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let outside = |c: &Canvas| -> f32 {
+            (0..c.h)
+                .flat_map(|y| (0..c.w).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let (dx, dy) = (x as f32 + 0.5 - 48.0, y as f32 + 0.5 - 48.0);
+                    dx * dx + dy * dy > 14.0 * 14.0
+                })
+                .map(|(x, y)| c.conc_at(x, y)[0])
+                .sum()
+        };
+        let centroid_y = |c: &Canvas| -> f32 {
+            let (mut sy, mut sm) = (0f32, 0f32);
+            for y in 0..c.h {
+                for x in 0..c.w {
+                    let m = c.conc_at(x, y)[0];
+                    sy += m * (y as f32 + 0.5);
+                    sm += m;
+                }
+            }
+            sy / sm.max(1e-6)
+        };
+        let base = run(0.0, 0.0, 0.0);
+        let mut tech = fresh();
+        lay(&mut tech);
+        tech.aqua_settle_tech(12.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(tech.to_image().into_raw(), base.to_image().into_raw(), "(0, 0, 0) is the tech settling to the bit");
+        let (held, sunk, drifted) = (run(1.0, 0.0, 0.0), run(0.0, 1.0, 0.0), run(0.0, 0.0, 1.0));
+        let expect = 0.8 * std::f32::consts::PI * 144.0 * 0.5;
+        for (name, c) in [("base", &base), ("held", &held), ("sunk", &sunk), ("drifted", &drifted)] {
+            assert!((total(c) - expect).abs() < 1e-2 * expect, "{name}: the mass kept: {} vs {expect}", total(c));
+        }
+        assert!(outside(&base) > 0.05 * total(&base), "the base drifts beyond the footprint: {} of {}", outside(&base), total(&base));
+        assert!(outside(&held) < 0.5 * outside(&base), "the barrier holds the skin: {} vs {}", outside(&held), outside(&base));
+        // (At 1 a sixth less pigment beyond the footprint: the flow crosses a cell in ~5 steps and the settling takes
+        // tens even tenfold — the sinking is the barrier's complement, not a wall.)
+        assert!(outside(&sunk) < 0.9 * outside(&base), "the thick charge sinks first: {} vs {}", outside(&sunk), outside(&base));
+        assert!(centroid_y(&drifted) > centroid_y(&base) + 0.5, "the drift moves the pigment down the sheet: {:.2} vs {:.2}", centroid_y(&drifted), centroid_y(&base));
     }
 
     #[test]

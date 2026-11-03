@@ -1051,8 +1051,9 @@ pub struct MediumProfile {
     /// until now `--technique` reached the engine only as the brush's water (wet-on-wet 1.2, wet-on-dry 1, dry-on-dry
     /// 0.5) and the sheet's wetting before a session (1, 0.7, 0), the solver's own rates the same for all three, so
     /// the three pictures were alike to a few percent. By the key the technique rules the solver and the parser.
-    /// WET-ON-WET: the rim's evaporation and the pigment's viscosity down by the key (no pinned edge, no charge
-    /// holding its shape), the water's reach up by it and its permeability up by twice it (the `tech=` header's
+    /// WET-ON-WET: the rim's evaporation down by the key (no pinned edge; the pigment's viscosity KEPT — set 19: the
+    /// concentration's viscosity of `aqua_visc` is what holds a thick charge in the flood, set 18 cut it and the darks
+    /// drowned the sails), the water's reach up by it and its permeability up by twice it (the `tech=` header's
     /// spread — the water crosses the gaps), the brush's water up by it, the subject's silhouette no drier than the
     /// ground by it, and a wet session's touches on a grid wider by it, each touch the mass of its wider cell: sparse
     /// flooded touches, the water filling the gaps between them, the colours blooming into each other.
@@ -1065,6 +1066,40 @@ pub struct MediumProfile {
     /// the structure and in the zones of the highest contrast only. No technique named: the classic (wet-on-dry).
     /// The other media untouched at 0.
     pub aqua_tech: f32,
+    /// AQUA THICK (0..1, 0 = one water for every charge; the water engine, 7.16.0 set 19): THE THICK CHARGE — a
+    /// painter never pours black water into a flooded sheet: a dark mix is a thick mix with little free water, a tint
+    /// is nearly all water. The parser paid its dark debt at the session's water whatever the charge, so in wet-on-wet
+    /// the hull's and the masts' darks went into the flood with a tint's water and the water carried them over the
+    /// sails as dark blooms. By the key a touch's water falls with the darkness of its charge: water × (1 − key ×
+    /// darkness), the darkness 1 − exp(−the charge's log debt, luma-weighted) — 0 for nothing, ~0.1 for a tint, ~0.8
+    /// for a near-black; the pigment's mass as before (the debt decides it). A thick charge into a wet sheet adds
+    /// little water, its concentration in the cell is high, and the concentration's viscosity (`aqua_visc`) holds it:
+    /// the core stays dark and dense, only the rim softens — the soft deep shadow of wet-on-wet, not a brown cloud.
+    /// Every technique and every session alike; the clear water before a session untouched. The other media
+    /// untouched at 0.
+    pub aqua_thick: f32,
+    /// AQUA HOLD (0..1, 0 = none; the water engine's solver, 7.16.0 set 20): THE CONCENTRATION BARRIER — the skin of
+    /// a thick charge. A thick charge laid into a flooded sheet kept its core (`aqua_thick`, `aqua_visc`) but its rim
+    /// still diffused into the clean water as soft blots beside every mast; in the sheet the surface tension of a dense
+    /// paint blocks its boundary against clean water. In the solver the flow of water and the mingling of pigment
+    /// between two cells are damped by exp(−8 × key × the concentration step between them), the step (c_hi − c_lo) /
+    /// (c_hi + c_lo), a cell's concentration its suspended pigment over its water: a dark charge against clean water
+    /// (a step of 1) passes next to nothing at 1, two alike cells pass as before, a tint next to a tint as before.
+    /// In the header's `tech=` (third value) for every technique. The other media untouched at 0.
+    pub aqua_hold: f32,
+    /// AQUA SINK (0..1, 0 = none; the solver, 7.16.0 set 20): THE THICK CHARGE SINKS — the blots beside the darks are
+    /// pigment that drifted before the water dried; a dense paint's particles land first. A cell's settling rate up by
+    /// 1 + 9 × key × 4c / (1 + 4c), c its concentration (the viscosity's measure): a thick charge lands up to ten
+    /// times as fast (the flow crosses a cell in ~5 steps, the settling takes hundreds — a tenfold rate is what
+    /// competes) and is out of the flow, a tint settles as before. In the header's `tech=` (fourth value). The
+    /// other media untouched at 0.
+    pub aqua_sink: f32,
+    /// AQUA DRIFT (0..1, 0 = none; the solver, 7.16.0 set 20): THE PIGMENT'S DRIFT — a thick mark in a wet sheet creeps
+    /// one way, down the tilted sheet, not into a symmetric blot. Each step a flooded cell (0.3 of water or more) gives
+    /// 0.05 × key × the wetness of the cell below it (over 0.3, full at 1) of its suspended pigment to that cell, the
+    /// heavy pigments by their weight less (× 1 − 0.6 × weight), a dry or damp cell below takes nothing; the mass
+    /// conserved. In the header's `tech=` (fifth value). The other media untouched at 0.
+    pub aqua_drift: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -2079,7 +2114,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2392,7 +2427,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2705,7 +2740,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3059,7 +3094,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3381,7 +3416,7 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3698,7 +3733,7 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4011,7 +4046,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4327,7 +4362,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4643,7 +4678,7 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4959,7 +4994,7 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5278,7 +5313,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -5594,7 +5629,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5912,7 +5947,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6225,7 +6260,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6538,7 +6573,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6857,7 +6892,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7177,7 +7212,7 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7495,7 +7530,7 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
