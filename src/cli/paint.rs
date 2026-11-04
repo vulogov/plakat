@@ -1931,6 +1931,9 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_hold = plan.medium.aqua_hold;
     params.aqua_sink = plan.medium.aqua_sink;
     params.aqua_drift = plan.medium.aqua_drift;
+    params.aqua_sight = plan.medium.aqua_sight;
+    params.aqua_sight_reserve = plan.medium.aqua_sight_reserve;
+    params.aqua_sight_ceiling = plan.medium.aqua_sight_ceiling;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2960,6 +2963,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_hold = m.aqua_hold;
         params.aqua_sink = m.aqua_sink;
         params.aqua_drift = m.aqua_drift;
+        params.aqua_sight = m.aqua_sight;
+        params.aqua_sight_reserve = m.aqua_sight_reserve;
+        params.aqua_sight_ceiling = m.aqua_sight_ceiling;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3264,6 +3270,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_hold { params.aqua_hold = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sink { params.aqua_sink = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_drift { params.aqua_drift = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight { params.aqua_sight = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_reserve { params.aqua_sight_reserve = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_ceiling { params.aqua_sight_ceiling = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
@@ -3742,6 +3751,29 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 });
             }
         }
+    }
+    // THE SIGHT (see `MediumProfile::aqua_sight`; Cargo feature `aqua-sight`): the semantic saliency map for the water
+    // engine's focus — the matte, the near depth, the faces and the contrast fused (`paint::sight`). Watercolour only;
+    // the map never enters the score. `PLAKAT_PAINT_MASKS=<dir>` dumps its maps as `sight_*.png`.
+    #[cfg(feature = "aqua-sight")]
+    if params.aqua_sight > 0.0 && params.medium == "watercolour" {
+        match crate::paint::sight::build(&a.input, &img, params.face_mask.as_deref()).await {
+            Ok((maps, notes)) => {
+                for n in &notes {
+                    found!(style("·").yellow(), "sight: {n}");
+                }
+                found!(style("·").dim(), "sight: {} fused — {}% of the frame salient, the focus toward it by {:.2}", maps.sources.join(" + "), maps.salient_percent(), params.aqua_sight);
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    maps.dump(std::path::Path::new(&dir));
+                }
+                params.sight = Some(maps.saliency);
+            }
+            Err(e) => found!(style("·").yellow(), "sight: failed ({e}) — the focus from the gradients"),
+        }
+    }
+    #[cfg(not(feature = "aqua-sight"))]
+    if params.aqua_sight > 0.0 && params.medium == "watercolour" {
+        found!(style("·").yellow(), "sight: this build has no `aqua-sight` feature — aqua_sight ignored (cargo build --features aqua-sight)");
     }
     // NIB PEOPLE (see `MediumProfile::nib_people`): every person found, joined to the figure.
     if params.nib > 0.0 && params.nib_figure > 0.0 && params.nib_people > 0.0 {

@@ -1100,6 +1100,40 @@ pub struct MediumProfile {
     /// heavy pigments by their weight less (× 1 − 0.6 × weight), a dry or damp cell below takes nothing; the mass
     /// conserved. In the header's `tech=` (fifth value). The other media untouched at 0.
     pub aqua_drift: f32,
+    /// AQUA SIGHT (0..1, 0 = off; the water engine's brain, 7.17.0 set 1; Cargo feature `aqua-sight`): THE SIGHT — the
+    /// engine's focus blended toward a SEMANTIC SALIENCY MAP of the picture (`paint::sight`: U²-Net's salient-object
+    /// matte, Depth-Anything-V2's near tier, the faces and the centre-weighted contrast field fused as a noisy-OR),
+    /// where before it was the subject's matte only when the plan had found a face and, for every other picture, the
+    /// top third of the gradient energy — a landscape painted by where the pixels were busy, not by what they were.
+    /// The focus is lerped toward the map by the key (1 = the map alone), and through it the touch grid's density (0.42
+    /// off the focus), the brush's radius, the touches' water, the spot-drying, `aqua_fade`, the attention ellipse and
+    /// the graphite skeleton's gate all follow the sight. The engine itself (`Canvas::aqua_*`) is untouched and the map
+    /// never enters the score (the replay is exact without it). In a build without the feature the key is ignored with
+    /// a note. The other media untouched at 0.
+    pub aqua_sight: f32,
+    /// AQUA SIGHT RESERVE (0..1, 0 = off; 7.17.0 set 2): THE PAPER OFF THE SIGHT — a watercolourist does not paint the
+    /// whole sheet; what the picture is not about is left as the sheet itself. Off the engine's focus (the sight at
+    /// `aqua_sight` > 0, the old focus otherwise, feathered) the paper gate FALLS: a pixel is bare where its luma (at
+    /// wash scale) is at or above 1 − key × (1 − focus) × (1 − mid), the mid the middle of the picture's own range, so
+    /// at the key 1 everything lighter than the mid-tone off the focus is paper, on the focus nothing changes and
+    /// between them the gate slides with the focus's feather (a lost edge where the sight fades, a found one where it
+    /// stops). The candidate is opened (a 150th of the short side) and only shapes at least a 24th of the short side
+    /// across are kept — the paper comes as the sky, the wall, the lit ground, never as flecks — and a face is never
+    /// reserved. A bare pixel owes nothing, so no touch of paint is aimed at it; the water still runs into it from
+    /// its neighbours as it would on the sheet. `PLAKAT_PAINT_MASKS` dumps `aqua_sight_reserve.png`. Never in the
+    /// score; the other media untouched at 0.
+    pub aqua_sight_reserve: f32,
+    /// AQUA SIGHT CEILING (0..1, 0 = off; 7.17.0 set 2): THE PERIPHERY AS A TINT — the parser paid every pixel's debt
+    /// toward the picture's full value whatever its importance, so the sea and the sky were worked as hard as the
+    /// ship. Off the focus the session's ceiling is held back toward the ground: the ceiling's exponent `a` (the
+    /// session's share of the log-distance from the ground to the target) becomes a × (1 − key × (1 − focus)), so at
+    /// the last session a pixel with no focus reaches ground^key × target^(1 − key) — at 0.5 the geometric mean, half
+    /// its darkness in log space, a tint; at 1 it stays the sheet. On the focus the ceiling is the target as before.
+    /// The drawing after the washes is held off the focus by the same share, key × (1 − focus) of its cells, so the
+    /// fine brushes do not restate the periphery's tint toward the photo.
+    /// Composes with `aqua_fade` (the faint targets off the focus) and `aqua_vignette` (the attention ellipse) in the
+    /// debt. Never in the score; the other media untouched at 0.
+    pub aqua_sight_ceiling: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -2114,7 +2148,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2427,7 +2461,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2740,7 +2774,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3094,7 +3128,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3416,7 +3450,7 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3733,7 +3767,7 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4046,7 +4080,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4362,7 +4396,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4678,7 +4712,7 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4994,7 +5028,7 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5313,7 +5347,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -5629,7 +5663,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5947,7 +5981,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6260,7 +6294,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6573,7 +6607,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6892,7 +6926,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7212,7 +7246,7 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7530,7 +7564,7 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

@@ -28,6 +28,8 @@ pub mod plan;
 pub mod pigment;
 pub mod report;
 pub mod sheet;
+#[cfg(feature = "aqua-sight")]
+pub mod sight;
 pub mod score;
 pub mod seam;
 pub mod spec;

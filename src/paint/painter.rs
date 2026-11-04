@@ -689,6 +689,12 @@ pub struct PaintParams {
     pub aqua_hold: f32,
     pub aqua_sink: f32,
     pub aqua_drift: f32,
+    /// AQUA SIGHT: the engine's focus blended toward the semantic saliency map `sight` (see `MediumProfile::aqua_sight`).
+    pub aqua_sight: f32,
+    /// AQUA SIGHT RESERVE: off the focus the paper gate falls to the mid-tone (see `MediumProfile::aqua_sight_reserve`).
+    pub aqua_sight_reserve: f32,
+    /// AQUA SIGHT CEILING: off the focus the ceiling held toward the ground (see `MediumProfile::aqua_sight_ceiling`).
+    pub aqua_sight_ceiling: f32,
     /// AQUA GRAIN DIR: the pigment settling on the relief's slopes turned from the light (see `MediumProfile::aqua_grain_dir`).
     pub aqua_grain_dir: f32,
     /// AQUA SPOT DRY: the sheet dried under the focus's high-contrast touches (see `MediumProfile::aqua_spot_dry`).
@@ -960,12 +966,17 @@ pub struct PaintParams {
     /// The subject's SILHOUETTE alone — the matte and the segmenter's precise mask, without the detectors'
     /// boxes (a clothing box) that `subject_mask` unions in. Read by `ma_flow`; `None`: `subject_mask`.
     pub silhouette_mask: Option<Vec<f32>>,
+    /// THE SIGHT (7.17.0; `paint::sight`, Cargo feature `aqua-sight`): the semantic saliency map of the picture, `w × h`
+    /// in [0, 1] — the salient-object matte, the near depth, the faces and the contrast field fused. Read by the water
+    /// engine's brain (`aqua_engine_pass`, `aqua_focus_mask`) through `aqua_sight` only; never in the score. `None`: the
+    /// focus as before (the silhouette, else the gradient energy's top third).
+    pub sight: Option<Vec<f32>>,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None, sight: None }
     }
 }
 
@@ -3690,7 +3701,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     } else {
         p.reserve
     };
-    let protect_all: Option<Vec<bool>> = match reserve_eff {
+    let mut protect_all: Option<Vec<bool>> = match reserve_eff {
         Some(rt) => {
             let mut m: Vec<bool> = input
                 .pixels()
@@ -3813,13 +3824,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let mut book: Option<BookPlan> = None;
     // AQUA MASS (see `aqua_pass`): the deep shadows' mass, where the drawing after the washes holds back.
     let mut aqua_dark: Option<Vec<bool>> = None;
+    // AQUA SIGHT RESERVE (see `MediumProfile::aqua_sight_reserve`): the paper off the sight, handed out of the engine.
+    let mut sight_reserve: Option<Vec<bool>> = None;
+    // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): the engine's feathered focus, handed out.
+    let mut sight_focus: Option<Vec<f32>> = None;
     // AQUA FOCUS (see `MediumProfile::aqua_focus`): the picture's FOCUS — the detected subject and the faces, or,
     // nothing detected, the most salient third of the sheet. Off it the planes merge and the drawing is withheld.
     // (AQUA LINE, AQUA LOOSE and AQUA UNDER read the same focus.)
     let aqua_focus_mask: Option<Vec<bool>> = (aqua_on && (p.aqua_focus > 0.0 || p.aqua_line > 0.0 || p.aqua_loose > 0.0 || p.aqua_under > 0.0)).then(|| {
         let n = (w * h) as usize;
         let face = |i: usize| p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.35;
-        match p.subject_mask.as_deref().filter(|m| m.len() == n && m.iter().any(|v| *v > 0.5)) {
+        let base: Vec<bool> = match p.subject_mask.as_deref().filter(|m| m.len() == n && m.iter().any(|v| *v > 0.5)) {
             Some(sm) => (0..n).map(|i| sm[i] > 0.5 || face(i)).collect(),
             None => {
                 let s = saliency_field(input);
@@ -3828,6 +3843,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let thr = sorted[((sorted.len() as f32 - 1.0) * 0.7) as usize];
                 (0..n).map(|i| s[i] >= thr || face(i)).collect()
             }
+        };
+        // THE SIGHT (see `MediumProfile::aqua_sight`): the mask lerped toward the saliency map by the key and cut at
+        // one half — the skeleton and the line pass drawn where the sight looks.
+        match p.sight.as_deref().filter(|m| p.aqua_sight > 0.0 && m.len() == n) {
+            Some(sm) => {
+                let k = p.aqua_sight.clamp(0.0, 1.0);
+                base.iter().zip(sm).map(|(b, s)| {
+                    let b = if *b { 1.0 } else { 0.0 };
+                    b + k * (s.clamp(0.0, 1.0) - b) >= 0.5
+                }).collect()
+            }
+            None => base,
         }
     });
     let passes: Vec<PassSpec> = if p.density {
@@ -3845,7 +3872,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             book = Some(plan);
         } else if aqua_on {
             aqua_dark = if engine_on {
-                aqua_engine_pass(&mut canvas, &mut score, source, n_stages_total, aqua_line_stage, p, protect_all.as_deref(), aqua_focus_mask.as_deref(), &mut placed, &mut k, progress)
+                aqua_engine_pass(&mut canvas, &mut score, source, n_stages_total, aqua_line_stage, p, protect_all.as_deref(), aqua_focus_mask.as_deref(), &mut sight_reserve, &mut sight_focus, &mut placed, &mut k, progress)
             } else {
                 aqua_pass(&mut canvas, &mut score, source, n_stages_total, aqua_line_stage, p, protect_all.as_deref(), aqua_focus_mask.as_deref(), &mut placed, &mut k, progress)
             };
@@ -3872,6 +3899,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     } else {
         passes
     };
+    // AQUA SIGHT RESERVE: the paper off the sight joins the protected shapes — the drawing's paths stop at it and
+    // the restate gate lays no mark on it.
+    if let Some(sr) = sight_reserve.as_deref() {
+        protect_all = Some(match protect_all.as_deref() {
+            Some(pa) if pa.len() == sr.len() => pa.iter().zip(sr).map(|(a, b)| *a || *b).collect(),
+            _ => sr.to_vec(),
+        });
+    }
     // THE BOLE (see `MediumProfile::bole`): a new painting's imprimatura laid by local tone before the
     // block-in, as wash cells in the score — its own stage, crossed as every pass boundary is.
     let bole_stage = if p.bole > 0.0 && p.from_scratch && p.ground.is_some() && !p.density && !p.luminous && !wc_brush && !passes.is_empty() {
@@ -4208,6 +4243,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // restated the specks the flat wash had just covered — the mark's own bar staying the fine passes'.)
         let aqua_dark_ref: Option<&[bool]> = aqua_dark.as_deref();
         let aqua_focus_ref: Option<&[bool]> = aqua_focus_mask.as_deref();
+        let sight_reserve_ref: Option<&[bool]> = sight_reserve.as_deref();
+        let sight_focus_ref: Option<&[f32]> = sight_focus.as_deref();
         let structure: Option<Vec<f32>> = if (wc_wash || aqua_on) && ((fine && struct_bar > 0.0) || (aqua_on && aqua_dark_ref.is_some())) {
             let lm = luma_map(&reference);
             let st = local_range(&lm, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize);
@@ -4698,6 +4735,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // AQUA PAPER (see `MediumProfile::aqua_paper`): the lights above the gate take no mark — bare sheet.
                 if aqua_on && p.aqua_paper > 0.0 && tluma >= p.aqua_paper {
                     return None;
+                }
+                // AQUA SIGHT RESERVE (see `MediumProfile::aqua_sight_reserve`): the paper off the sight takes no mark.
+                if sight_reserve_ref.is_some_and(|m| m.get(region_i).copied().unwrap_or(false)) {
+                    return None;
+                }
+                // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): off the focus the drawing after the
+                // washes is withheld by key × (1 − focus), by the cell — the periphery's tint is not restated toward
+                // the photo.
+                if let Some(f) = sight_focus_ref {
+                    let off = p.aqua_sight_ceiling.clamp(0.0, 1.0) * (1.0 - f.get(region_i).copied().unwrap_or(1.0).clamp(0.0, 1.0));
+                    if off > 0.0 && jitter(p.seed ^ 0x51C7_CE11, region_i as u64) + 0.5 < off {
+                        return None;
+                    }
                 }
                 // AQUA FOCUS (see `MediumProfile::aqua_focus`): off the focus the drawing is withheld by the key's
                 // share — by the cell, so the marks that land are whole strokes, not a thinned stipple.
@@ -10202,7 +10252,7 @@ fn saliency_field(input: &RgbImage) -> Vec<f32> {
 /// saliency centre-bias — lifts the compact, central, high-contrast region (a portrait's eyes/glasses) above
 /// the peripheral mass, so the crisp detail tier fires where the eye goes and the rest stays a loose wash.
 /// Generic (no face model, no scene assumption): just centre-weighted contrast. Normalised to [0,1].
-fn focal_field(input: &RgbImage) -> Vec<f32> {
+pub(crate) fn focal_field(input: &RgbImage) -> Vec<f32> {
     let (w, h) = (input.width(), input.height());
     let sal = saliency_field(input);
     let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
@@ -11602,7 +11652,7 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
 /// spread, and from the second session on the debt off it let go by the key (`MediumProfile::aqua_line_resist`,
 /// `aqua_light`, `aqua_light_dir`, `aqua_vignette`). At 0, set 13.
 #[allow(clippy::too_many_arguments)]
-fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_stages_total: usize, line_off: usize, p: &PaintParams, protect: Option<&[bool]>, focus_line: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) -> Option<Vec<bool>> {
+fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_stages_total: usize, line_off: usize, p: &PaintParams, protect: Option<&[bool]>, focus_line: Option<&[bool]>, sight_reserve_out: &mut Option<Vec<bool>>, sight_focus_out: &mut Option<Vec<f32>>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) -> Option<Vec<bool>> {
     let (w, h) = (source.width() as usize, source.height() as usize);
     if w == 0 || h == 0 {
         return None;
@@ -11630,6 +11680,8 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let light_k = p.aqua_light.clamp(0.0, 1.0);
     let vig_k = p.aqua_vignette.clamp(0.0, 1.0);
     let spot_k = p.aqua_spot_dry.clamp(0.0, 1.0);
+    let reserve_k = p.aqua_sight_reserve.clamp(0.0, 1.0);
+    let ceil_k = p.aqua_sight_ceiling.clamp(0.0, 1.0);
     let long = w.max(h) as f32;
     let r_wash = (long * 0.007).max(2.0);
     let input = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
@@ -11655,6 +11707,17 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 let thr = sorted[((sorted.len() as f32 - 1.0) * 0.7) as usize];
                 s.iter().map(|v| if *v >= thr { 1.0 } else { 0.0 }).collect()
             }
+        };
+        // THE SIGHT (see `MediumProfile::aqua_sight`): the focus lerped toward the semantic saliency map by the key —
+        // the map alone at 1 — before the feathering, so the grid, the brush, the water, the spot-drying, the fade,
+        // the attention ellipse and the skeleton's gate all follow what the sight found and not where the pixels
+        // were busy. At 0 or without a map: as before.
+        let base: Vec<f32> = match p.sight.as_deref().filter(|m| p.aqua_sight > 0.0 && m.len() == w * h) {
+            Some(sm) => {
+                let k = p.aqua_sight.clamp(0.0, 1.0);
+                base.iter().zip(sm).map(|(b, s)| b + k * (s.clamp(0.0, 1.0) - b)).collect()
+            }
+            None => base,
         };
         let rb = (long / 60.0).round().max(1.0) as i32;
         box_blur(&box_blur(&base, w as u32, h as u32, rb), w as u32, h as u32, rb)
@@ -11687,6 +11750,31 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     } else {
         Vec::new()
     };
+    // AQUA SIGHT RESERVE (see `MediumProfile::aqua_sight_reserve`): off the focus the paper gate falls — a pixel bare
+    // where its luma reaches 1 − key × (1 − focus) × (1 − the mid of the picture's range); opened and kept as shapes
+    // (a 24th of the short side across), never a face. Bare = no debt; the water still runs into it.
+    let sight_paper: Option<Vec<bool>> = (reserve_k > 0.0).then(|| {
+        let (lo, hi) = aqua_range(&luma);
+        let mid = lo + 0.5 * (hi - lo);
+        let face = |i: usize| p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.3;
+        let m: Vec<bool> = (0..w * h).map(|i| !face(i) && luma[i] >= 1.0 - reserve_k * (1.0 - focus[i].clamp(0.0, 1.0)) * (1.0 - mid)).collect();
+        let short = w.min(h);
+        let r = (short / 150).max(3);
+        let opened = dilate_bool(&erode_bool(&m, w, h, r), w, h, r);
+        let min_side = (short / 24).max(8);
+        let m = keep_large_regions(&opened, w, h, min_side * min_side);
+        if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+            let g = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if m[y as usize * w + x as usize] { 255 } else { 0 }]));
+            let _ = g.save(std::path::Path::new(&dir).join("aqua_sight_reserve.png"));
+        }
+        m
+    });
+    // …and handed out: the drawing after the washes keeps off it too (the restate gate, the paths' guard).
+    *sight_reserve_out = sight_paper.clone();
+    // AQUA SIGHT CEILING: the feathered focus handed out — the drawing after the washes is held off the focus by
+    // the key's share too, else it restated the periphery's tint toward the photo.
+    *sight_focus_out = (ceil_k > 0.0).then(|| focus.clone());
+    let paper = |i: usize| paper(i) || sight_paper.as_ref().is_some_and(|m| m[i]);
     let (tech_water, prewet_mul) = match p.technique {
         WetTechnique::WetOnWet => (1.2, 1.0),
         WetTechnique::DryOnDry => (0.5, 0.0),
@@ -11840,6 +11928,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 if paper(i) {
                     return d;
                 }
+                // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): off the focus the session's ceiling held
+                // back toward the ground — the exponent × (1 − key × (1 − focus)) — so the periphery ends as a tint.
+                let a = if ceil_k > 0.0 { a * (1.0 - ceil_k * (1.0 - focus[i].clamp(0.0, 1.0))) } else { a };
                 for c in 0..3 {
                     let ceil = ground[c].max(0.002).powf(1.0 - a) * lin[i][c].max(0.002).powf(a);
                     d[c] = (ceil / under[i][c].max(0.002)).ln().min(0.0);
@@ -18055,6 +18146,97 @@ mod aqua_tests {
         let painted = thick.canvas.to_image().into_raw();
         assert_ne!(painted, base.canvas.to_image().into_raw(), "the thick charge changes the sheet");
         assert_eq!(StrokeScore::parse(&thick.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact from the text");
+    }
+
+    #[test]
+    fn the_sight_steers_the_engines_focus_and_at_zero_changes_nothing() {
+        // 7.17.0 set 1 on the sky over the ground, the engine on: a sight map (the left half salient) at the key 0
+        // leaves the score and the sheet byte-identical; at the key 1 the left half takes a larger share of the loaded
+        // touches (the grid off the focus thinned to 0.42), the sheet differs and replays byte-exact from the text.
+        let (w, h) = (96u32, 64u32);
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        let base = paint_from_image(&img, &p);
+        let left: Vec<f32> = (0..w * h).map(|i| if i % w < w / 2 { 1.0 } else { 0.0 }).collect();
+        p.sight = Some(left);
+        let zero = paint_from_image(&img, &p);
+        assert_eq!(zero.score.to_text(), base.score.to_text(), "the map at the key 0 changes nothing");
+        assert_eq!(zero.canvas.to_image().into_raw(), base.canvas.to_image().into_raw(), "…nor the sheet");
+        p.aqua_sight = 1.0;
+        let seen = paint_from_image(&img, &p);
+        let left_share = |r: &PaintResult| -> f32 {
+            let loaded: Vec<&StrokeRecord> = r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty()).collect();
+            let l = loaded.iter().filter(|s| s.spline.first().map_or(false, |d| d[0] < w as f32 / 2.0)).count();
+            l as f32 / loaded.len().max(1) as f32
+        };
+        let (b, s) = (left_share(&base), left_share(&seen));
+        assert!(s > b + 0.1, "the salient half takes more of the loaded touches: {s:.2} vs {b:.2}");
+        let painted = seen.canvas.to_image().into_raw();
+        assert_ne!(painted, base.canvas.to_image().into_raw(), "the sight changes the sheet");
+        assert_eq!(StrokeScore::parse(&seen.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "replays byte-exact from the text");
+    }
+
+    #[test]
+    fn the_sights_reserve_leaves_the_periphery_light_as_paper_and_its_ceiling_holds_it_to_a_tint() {
+        // 7.17.0 set 2: a mid-light sky over a dark ground, no reserve of the plan's own, the engine on, the sight the
+        // left half. The reserve at 1: the sky off the sight (top right, lighter than the mid-tone) takes no loaded
+        // touch while the ground under it (dark) is still painted and the sky on the sight keeps its touches. The
+        // ceiling at 1 (the reserve off): the whole right half owes nothing and takes no loaded touch, and at 0.5 it
+        // ends lighter than before. Each replays byte-exact from the text.
+        let (w, h) = (96u32, 64u32);
+        let img = RgbImage::from_fn(w, h, |_, y| if y < h / 2 { image::Rgb([150, 170, 210]) } else { image::Rgb([70, 60, 40]) });
+        let mut p = aqua_params(w);
+        p.aqua_detail = 0.0;
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_reserve = 0.0;
+        p.aqua_detail = 0.5;
+        p.aqua_sight = 1.0;
+        p.sight = Some((0..w * h).map(|i| if i % w < w / 2 { 1.0 } else { 0.0 }).collect());
+        let base = paint_from_image(&img, &p);
+        let count = |r: &PaintResult, f: &dyn Fn(f32, f32) -> bool| -> usize {
+            r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty()).filter(|s| s.spline.first().map_or(false, |d| f(d[0], d[1]))).count()
+        };
+        let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
+        let top_right = |x: f32, y: f32| x >= hw && y < hh;
+        let bottom_right = |x: f32, y: f32| x >= hw && y >= hh;
+        let top_left = |x: f32, y: f32| x < hw && y < hh;
+        let right = |x: f32, _y: f32| x >= hw;
+        assert!(count(&base, &top_right) >= 10, "the base paints the sky off the sight: {}", count(&base, &top_right));
+        p.aqua_sight_reserve = 1.0;
+        let reserved = paint_from_image(&img, &p);
+        assert!(count(&reserved, &top_right) * 3 < count(&base, &top_right), "the sky off the sight is bare: {} vs {}", count(&reserved, &top_right), count(&base, &top_right));
+        assert!(count(&reserved, &bottom_right) * 2 > count(&base, &bottom_right), "the dark ground off the sight is still painted: {} vs {}", count(&reserved, &bottom_right), count(&base, &bottom_right));
+        assert!(count(&reserved, &top_left) * 2 > count(&base, &top_left), "the sky on the sight keeps its touches: {} vs {}", count(&reserved, &top_left), count(&base, &top_left));
+        let marks = |r: &PaintResult, f: &dyn Fn(f32, f32) -> bool| -> usize {
+            r.score.strokes.iter().filter(|s| !s.inject && !s.mix.is_empty() && s.stage.starts_with("restate")).filter(|s| s.spline.first().map_or(false, |d| f(d[0], d[1]))).count()
+        };
+        assert!(marks(&base, &top_right) >= 5, "the base draws after the washes on the sky off the sight: {}", marks(&base, &top_right));
+        assert!(marks(&reserved, &top_right) * 3 < marks(&base, &top_right), "the drawing after the washes keeps off the reserve: {} vs {}", marks(&reserved, &top_right), marks(&base, &top_right));
+        let painted = reserved.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&reserved.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the reserve replays byte-exact");
+        p.aqua_sight_reserve = 0.0;
+        p.aqua_sight_ceiling = 1.0;
+        let held = paint_from_image(&img, &p);
+        assert!(count(&held, &right) * 3 < count(&base, &right), "at the ceiling 1 the periphery owes nothing: {} vs {}", count(&held, &right), count(&base, &right));
+        assert!(marks(&held, &right) * 3 < marks(&base, &right), "…and the drawing after the washes is held off it: {} vs {}", marks(&held, &right), marks(&base, &right));
+        p.aqua_sight_ceiling = 0.5;
+        let tint = paint_from_image(&img, &p);
+        let right_luma = |r: &PaintResult| -> f32 {
+            let l = luma_map(&r.canvas.to_image());
+            let v: Vec<f32> = (0..(w * h) as usize).filter(|i| (i % w as usize) as f32 >= hw).map(|i| l[i]).collect();
+            v.iter().sum::<f32>() / v.len() as f32
+        };
+        assert!(right_luma(&tint) > right_luma(&base) + 0.02, "at the ceiling 0.5 the periphery is a tint: {:.3} vs {:.3}", right_luma(&tint), right_luma(&base));
+        let painted = tint.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&tint.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the ceiling replays byte-exact");
     }
 
     #[test]
