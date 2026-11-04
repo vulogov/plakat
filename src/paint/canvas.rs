@@ -58,6 +58,9 @@ pub struct AquaState {
     relief: Vec<f32>,
     /// The masking fluid's cells.
     wall: Vec<bool>,
+    /// THE CAPILLARY SEAM (7.17.0 set 5; `Canvas::add_capillary_seam`): per cell its share 0..1 — across a seam the
+    /// water and the pigment pass at 5% at 1, and a seam cell dries as the puddle's rim does. Empty = none.
+    seam: Vec<f32>,
 }
 
 /// The paint over a box of the canvas (see `Canvas::snapshot_paint`).
@@ -128,6 +131,10 @@ pub struct Canvas {
     /// THE LINES' WALLS (`add_resist_lines`): at the engine's cells, every cell a skeleton line crosses, however
     /// little of its area the fluid covers — the line a wall to the engine's water. Empty = none.
     line_wall: Vec<bool>,
+    /// THE CAPILLARY SEAM (7.17.0 set 5; `add_capillary_seam`): at the engine's cells, every cell a seam line crosses,
+    /// its share 0..1 — no fluid, no wall: the engine's water crosses it slowed and dries along it, the pigment it
+    /// carries pinned there. Empty = none.
+    seam: Vec<f32>,
     /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
     /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
     /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
@@ -212,7 +219,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), line_wall: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), line_wall: Vec::new(), seam: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -345,6 +352,61 @@ impl Canvas {
                     let (ex, ey) = (a[0] + dx * t - px, a[1] + dy * t - py);
                     if ex * ex + ey * ey <= r2 {
                         self.line_wall[qy * cw + qx] = true;
+                    }
+                }
+            }
+            prev = Some(b);
+        }
+    }
+
+    /// THE CAPILLARY SEAM (7.17.0 set 5; see `MediumProfile::aqua_sight_barrier`): a seam laid ALONG `paths`
+    /// (NaN-separated polylines) at the engine's cells — every cell a line crosses (its centre within `radius`, or
+    /// within 0.71 of a cell so a diagonal leaves no gap) takes `k` (0..1) where it had less — no masking fluid, no
+    /// wall: in the solver (`aqua_settle_full`) the flow of water and the mingling of pigment between TWO seam cells
+    /// — across the seam's band, two to three cells wide at the radius — fall to 1 − 0.95 × the pair's share (5%
+    /// across a seam at 1), the open sheet feeding the band's outer cell as it does; and a seam cell DRIES AS THE
+    /// PUDDLE'S RIM does (its edge share raised to the seam's, by `evap`): the water is slowed at the seam and drawn
+    /// into its drying band, and the pigment it carries lands there — the dark line a wash leaves where it meets a
+    /// drier passage, the capillary edge along a hull's waterline — and a seam cell SETTLES its pigment up to tenfold
+    /// as fast, so what the band draws in lands before the mingling carries it back out. Laid once, read by every
+    /// session after (the masking fluid over the lights, `set_resist_rings`, leaves it). `k` ≤ 0 or no path = no-op.
+    pub fn add_capillary_seam(&mut self, paths: &[[f32; 2]], radius: f32, k: f32) {
+        let k = k.clamp(0.0, 1.0);
+        if k <= 0.0 || paths.is_empty() {
+            return;
+        }
+        let (w, h) = (self.w as usize, self.h as usize);
+        let cs = self.aqua_cell();
+        let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
+        if self.seam.len() != cw * ch {
+            self.seam = vec![0.0; cw * ch];
+        }
+        let reach = radius.max(0.5).max(0.71 * cs as f32);
+        let r2 = reach * reach;
+        let csf = cs as f32;
+        let mut prev: Option<[f32; 2]> = None;
+        for pt in paths {
+            if !(pt[0].is_finite() && pt[1].is_finite()) {
+                prev = None;
+                continue;
+            }
+            let (a, b) = (prev.unwrap_or(*pt), *pt);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            let cx0 = ((a[0].min(b[0]) - reach) / csf).floor().max(0.0) as usize;
+            let cx1 = (((a[0].max(b[0]) + reach) / csf).ceil().max(0.0) as usize).min(cw - 1);
+            let cy0 = ((a[1].min(b[1]) - reach) / csf).floor().max(0.0) as usize;
+            let cy1 = (((a[1].max(b[1]) + reach) / csf).ceil().max(0.0) as usize).min(ch - 1);
+            for qy in cy0..=cy1 {
+                for qx in cx0..=cx1 {
+                    let (px, py) = ((qx * cs) as f32 + csf * 0.5, (qy * cs) as f32 + csf * 0.5);
+                    let t = if l2 > 1e-9 { (((px - a[0]) * dx + (py - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (a[0] + dx * t - px, a[1] + dy * t - py);
+                    if ex * ex + ey * ey <= r2 {
+                        let q = qy * cw + qx;
+                        if self.seam[q] < k {
+                            self.seam[q] = k;
+                        }
                     }
                 }
             }
@@ -560,6 +622,16 @@ impl Canvas {
     #[inline]
     pub fn resist_at(&self, p: usize) -> f32 {
         if self.resist.is_empty() { 0.0 } else { self.resist[p] }
+    }
+
+    /// The capillary seam's share at row-major pixel `p` (its engine cell's; 0 where none).
+    pub fn seam_at(&self, p: usize) -> f32 {
+        if self.seam.is_empty() {
+            return 0.0;
+        }
+        let (w, cs) = (self.w as usize, self.aqua_cell());
+        let cw = w.div_ceil(cs);
+        self.seam.get((p / w / cs) * cw + (p % w) / cs).copied().unwrap_or(0.0)
     }
 
     /// The inside of `rings` as a pixel mask (scanline, even-odd, pixel centres); `None` for fewer than three points.
@@ -2027,7 +2099,9 @@ impl Canvas {
                 .collect();
             let gw = self.grain_wet.clamp(0.0, 1.0);
             let relief = Self::box_blur_f(&relief, cw, ch, ((2.0 * gs / cs as f32) * gw).round().max(1.0) as usize);
-            self.aqua = Some(AquaState { cs, cw, ch, water: vec![0.0; cells], mass: vec![0.0; cells * n], relief, wall });
+            // THE CAPILLARY SEAM (set 5): the seam's cells as laid (`add_capillary_seam`), none when none.
+            let seam = if self.seam.len() == cells { self.seam.clone() } else { Vec::new() };
+            self.aqua = Some(AquaState { cs, cw, ch, water: vec![0.0; cells], mass: vec![0.0; cells * n], relief, wall, seam });
         }
         self.aqua.as_mut().unwrap()
     }
@@ -2291,7 +2365,7 @@ impl Canvas {
         }
         let (w, h, n) = (self.w as usize, self.h as usize, self.n);
         let px = w * h;
-        let AquaState { cs, cw, ch, mut water, mut mass, relief, wall } = st;
+        let AquaState { cs, cw, ch, mut water, mut mass, relief, wall, seam } = st;
         let cells = cw * ch;
         let rc = reach.max(1.0) / cs as f32;
         let gs = self.grain_scale.max(1.0);
@@ -2326,6 +2400,8 @@ impl Canvas {
         // THE THICK CHARGE'S PHYSICS (see `aqua_settle_full`): the barrier, the sinking, the drift.
         let (hold_k, sink_k, drift_k) = (hold.clamp(0.0, 1.0), sink.clamp(0.0, 1.0), drift.clamp(0.0, 1.0));
         let (hold_on, sink_on, drift_on) = (hold_k > 0.0, sink_k > 0.0, drift_k > 0.0);
+        // THE CAPILLARY SEAM (7.17.0 set 5; see `add_capillary_seam`): none laid = the solver as it was, to the bit.
+        let seam_on = seam.len() == cells;
         let mut conc = if hold_on || sink_on { vec![0f32; cells] } else { Vec::new() };
         let e0 = 1.6 / steps as f32;
         let ek = evap.clamp(0.0, 1.0);
@@ -2381,6 +2457,10 @@ impl Canvas {
                     } else {
                         v
                     };
+                    // THE CAPILLARY SEAM: between two seam cells — across the seam's band — the pair's flow and mingling
+                    // down by the band's share, 5% at 1; into the band from the open sheet the water runs as it does,
+                    // so the drying band draws the water and its pigment in and pins it (a cell of the band is painted).
+                    let v = if seam_on { v * (1.0 - 0.95 * seam[q].min(seam[nb])) } else { v };
                     if wi > 0.3 && wj > 0.3 {
                         let wm = wi.min(wj);
                         let pk = pool_k * ((wm - 0.6) / 0.35).clamp(0.0, 1.0);
@@ -2451,6 +2531,10 @@ impl Canvas {
                     // rim: it dries at the base rate, so the wash's halo creeps outward instead of dying as it
                     // forms; the rim of the puddle proper dries fast and pins.)
                     let edge = if wv >= 0.3 { 1.0 - wet_nb / nbs.max(1.0) } else { 0.0 };
+                    // THE CAPILLARY SEAM: a seam cell dries as the puddle's rim does, by its share, while it is a puddle —
+                    // its level falls, the open sheet feeds it water and pigment, the pigment pins as it dries out; damp
+                    // (under 0.3) it dries at the base rate as any damp cell, so the band does not vanish before it is fed.
+                    let edge = if seam_on && wv >= 0.3 { edge.max(seam[q]) } else { edge };
                     wv -= e0 * (1.0 + 4.0 * ek * edge);
                 }
                 if wv <= 1e-6 {
@@ -2473,6 +2557,9 @@ impl Canvas {
                 }
                 // THE THICK CHARGE SINKS: the settling rate up with the cell's concentration.
                 let sink_m = if sink_on { 1.0 + 9.0 * sink_k * (4.0 * conc[q] / (1.0 + 4.0 * conc[q])) } else { 1.0 };
+                // THE CAPILLARY SEAM: a seam cell's settling rate up to tenfold by its share — the pigment the drying band
+                // draws in lands before the mingling carries it back out (the capillary edge is a deposit, not a stain).
+                let sink_m = if seam_on { sink_m * (1.0 + 9.0 * seam[q]) } else { sink_m };
                 for c in 0..n {
                     let rate = ((0.006 + 0.06 * wt[c] * (0.25 + hollow)) * rate_k / (wv + 0.1) * sink_m).min(1.0);
                     let d = mass[q * n + c] * rate;
@@ -4410,6 +4497,41 @@ mod flow_tests {
         both.set_resist_rings(&[[4.0, 4.0], [20.0, 4.0], [20.0, 20.0], [4.0, 20.0]], 1.0, 0.0);
         both.add_resist_lines(&[[48.0, 4.0], [48.0, 92.0]], 1.5, 1.0);
         assert!(both.resist_at(10 * 96 + 10) >= 0.999 && both.resist_at(48 * 96 + 48) >= 0.999, "the lines added to the fluid laid before");
+    }
+
+    #[test]
+    fn the_capillary_seam_slows_the_water_and_pins_the_pigment_along_it() {
+        // 7.17.0 set 5: the line-wall test's sheet with a capillary seam down the middle instead of the fluid — no
+        // masking fluid on the seam (the sheet bare of resist there), the pigment carried past the seam's place less
+        // than on the open sheet, and the pigment landed on the seam's outer cell more than twice what the open
+        // sheet's same cell takes (the water drawn into the drying band pins what it carries — the capillary edge);
+        // a seam at 0 is no seam — the open sheet to the bit.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let band = |c: &Canvas, x0: u32, x1: u32| -> f32 { (0..96u32).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let run = |k: f32| -> Canvas {
+            let mut c = fresh();
+            c.add_capillary_seam(&[[48.0, 4.0], [48.0, 92.0]], 1.5, k);
+            c.aqua_inject(&[[48.0, 48.0]], 40.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+            c.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+            c.aqua_settle(16.0, 1.0, 0.8, 1.0, 0.0);
+            c
+        };
+        let (open, seamed) = (run(0.0), run(1.0));
+        assert!(seamed.seam_at(48 * 96 + 48) >= 0.999 && seamed.seam_at(48 * 96 + 40) <= 0.0 && seamed.resist_at(48 * 96 + 48) <= 0.0 && open.seam_at(48 * 96 + 48) <= 0.0, "the seam on the line, none beside it, no fluid on it, none at 0");
+        let (past_open, past_seamed) = (band(&open, 52, 96), band(&seamed, 52, 96));
+        assert!(past_open > 0.0 && past_seamed < 0.8 * past_open, "the seam slows the water: {past_seamed} vs {past_open}");
+        // (The band's outer cell, the one the open sheet feeds, takes the deposit: the peak column across the band.)
+        let peak = |c: &Canvas| (44..50u32).map(|x| band(c, x, x + 1)).fold(0f32, f32::max);
+        let (on_open, on_seamed) = (peak(&open), peak(&seamed));
+        assert!(on_seamed > 2.0 * on_open, "the pigment pins along the seam: {on_seamed} vs {on_open}");
+        let mut plain = fresh();
+        plain.aqua_inject(&[[48.0, 48.0]], 40.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+        plain.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+        plain.aqua_settle(16.0, 1.0, 0.8, 1.0, 0.0);
+        assert_eq!(open.to_image().into_raw(), plain.to_image().into_raw(), "a seam at 0 is the open sheet to the bit");
     }
 
     #[test]

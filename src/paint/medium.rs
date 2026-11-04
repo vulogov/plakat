@@ -1134,6 +1134,44 @@ pub struct MediumProfile {
     /// Composes with `aqua_fade` (the faint targets off the focus) and `aqua_vignette` (the attention ellipse) in the
     /// debt. Never in the score; the other media untouched at 0.
     pub aqua_sight_ceiling: f32,
+    /// AQUA SIGHT CLASS (0..1, 0 = off; 7.17.0 set 3; Cargo feature `aqua-sight`): THE CLASSES — SegFormer-B0 (ADE20k,
+    /// `pipelines::segformer`) folded into the painter's eight classes (`sight::PainterClass`: sky, water, ground,
+    /// foliage, built, thing, animal, person), each with a salience of its own and a technique. In the sight the class
+    /// is a cue (its salience × its confidence, into the noisy-OR — a ship's sails are salient for being a ship,
+    /// whatever the matte saw of them) and a damping on the fused map by the key, 1 − key × confidence × (1 −
+    /// salience), so the sea's waves and the sky's clouds are the sea and the sky however busy. In the engine the
+    /// class's WATER steers the touch: the sky and the water (+1) one wet wash — the brush up to twice as wide by the
+    /// key (the grid with it, the touches fewer and larger) and the touch's water up to twice; the foliage (−½) and
+    /// the built (−⅕) a drier brush; a thing, a person, an animal the brush as it is. No graphite skeleton over a
+    /// wash class. Never in the score; without the feature the key is ignored; the other media untouched at 0.
+    pub aqua_sight_class: f32,
+    /// AQUA SIGHT GRADIENT (0..1, 0 = off; 7.17.0 sets 4–5): THE BASE LAID ONCE — a wash class's BASE is the picture's
+    /// LOW-PASS within the class (the source blurred over a tenth of the sheet, the blur weighted by the class's wash
+    /// and taken within each class on its own, so the ship does not bleed into the sea's colour nor the sea into the
+    /// sky's): the sea darker and warmer near, lighter and cooler at the horizon, no waves. By key × wash the FIRST session lays the base at the LAST session's ceiling, in one wash;
+    /// from the second session on the base counts as PAID — the debt is read against the darker of the sheet and the
+    /// base, whatever the flood made of it — so the touches that come back owe only the picture's own darks over the
+    /// base (a wave's shadow, the hull's reflection), never the base's tone again, and the drawing after the washes
+    /// returns to a wash class only where the picture's HIGH-PASS (its contrast against the low-pass, in stops) rises
+    /// from a fiftieth of a stop toward a fifth, withheld by key × wash × the rest by the cell: a flat sky is laid and
+    /// left, a crest is drawn.
+    /// (Set 4 mixed the low-pass into every session's target and held the later sessions off a wash class outright —
+    /// the sea came out as one pale flat wash with no waves.) Off the wash classes nothing changes. Never in the
+    /// score; at 0 as before.
+    pub aqua_sight_gradient: f32,
+    /// AQUA SIGHT BARRIER (0..1, 0 = off; 7.17.0 sets 4–5): THE CAPILLARY EDGE — a wet wash meets no resistance where
+    /// the water meets the ship, and the sea and the hull run into one shapeless mass. By the key a CAPILLARY SEAM
+    /// (`Canvas::add_capillary_seam`; the solver's one addition for the sight — no masking fluid, no wall) is laid at
+    /// the first session's start, after the masking fluid over the lights, along every boundary between a wash class
+    /// (the wash at one half or more, its mass opened by a 600th of the long side so a rope or a stair of the class
+    /// map's cells is no shore) and what is not one, a line of a 400th of the sheet's long side at the key's share:
+    /// across the seam the solver's flow of water and mingling of pigment fall to 1 − 0.95 × the share, and a seam
+    /// cell dries as the puddle's rim does — the water is slowed at the hull and drawn into the drying seam, the
+    /// pigment it carries lands along it: the dark line a wash leaves at a drier passage, the waterline's own edge.
+    /// (Set 4 laid the masking fluid there: a light rim, and the walled cells bare of the wash in blocks.) The sheet's
+    /// own edges and the boundary between two wash classes (the horizon) take none. One record with `seam` at the
+    /// first session's stage, so the replay is exact; at 0 no seam, the solver to the bit as before.
+    pub aqua_sight_barrier: f32,
     /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
     /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
     /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
@@ -2148,7 +2186,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2461,7 +2499,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -2774,7 +2812,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3128,7 +3166,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3450,7 +3488,7 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -3767,7 +3805,7 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4080,7 +4118,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4396,7 +4434,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -4712,7 +4750,7 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5028,7 +5066,7 @@ pub const DURER: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5347,7 +5385,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.8,
     verdaccio: 0.6,
     dishes: 5.0,
@@ -5663,7 +5701,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -5981,7 +6019,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6294,7 +6332,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6607,7 +6645,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -6926,7 +6964,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7246,7 +7284,7 @@ pub const PALETTE_KNIFE: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,
@@ -7564,7 +7602,7 @@ pub const POINTILLISM: MediumProfile = MediumProfile {
     aqua_line_density: 0.0,
     aqua_grain_dir: 0.0,
     aqua_spot_dry: 0.0,
-    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0,
+    aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0,
     hatch: 0.0,
     verdaccio: 0.0,
     dishes: 0.0,

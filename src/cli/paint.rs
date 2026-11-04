@@ -1934,6 +1934,9 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_sight = plan.medium.aqua_sight;
     params.aqua_sight_reserve = plan.medium.aqua_sight_reserve;
     params.aqua_sight_ceiling = plan.medium.aqua_sight_ceiling;
+    params.aqua_sight_class = plan.medium.aqua_sight_class;
+    params.aqua_sight_gradient = plan.medium.aqua_sight_gradient;
+    params.aqua_sight_barrier = plan.medium.aqua_sight_barrier;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2966,6 +2969,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_sight = m.aqua_sight;
         params.aqua_sight_reserve = m.aqua_sight_reserve;
         params.aqua_sight_ceiling = m.aqua_sight_ceiling;
+        params.aqua_sight_class = m.aqua_sight_class;
+        params.aqua_sight_gradient = m.aqua_sight_gradient;
+        params.aqua_sight_barrier = m.aqua_sight_barrier;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3273,6 +3279,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_sight { params.aqua_sight = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_reserve { params.aqua_sight_reserve = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_ceiling { params.aqua_sight_ceiling = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_class { params.aqua_sight_class = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_gradient { params.aqua_sight_gradient = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_barrier { params.aqua_sight_barrier = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
@@ -3757,16 +3766,27 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // the map never enters the score. `PLAKAT_PAINT_MASKS=<dir>` dumps its maps as `sight_*.png`.
     #[cfg(feature = "aqua-sight")]
     if params.aqua_sight > 0.0 && params.medium == "watercolour" {
-        match crate::paint::sight::build(&a.input, &img, params.face_mask.as_deref()).await {
+        // AQUA SIGHT CLASSES: the plan's class table (see `PaintPlan::aqua_sight_classes`).
+        let tune: Vec<(String, Option<f32>, Option<f32>)> = layer_plan
+            .as_ref()
+            .and_then(|pl| pl.aqua_sight_classes.as_ref())
+            .map(|m| m.iter().map(|(n, t)| (n.clone(), t.salience, t.water)).collect())
+            .unwrap_or_default();
+        match crate::paint::sight::build(&a.input, &img, params.face_mask.as_deref(), params.aqua_sight_class, &tune).await {
             Ok((maps, notes)) => {
                 for n in &notes {
                     found!(style("·").yellow(), "sight: {n}");
                 }
                 found!(style("·").dim(), "sight: {} fused — {}% of the frame salient, the focus toward it by {:.2}", maps.sources.join(" + "), maps.salient_percent(), params.aqua_sight);
+                if let Some(c) = &maps.classes {
+                    found!(style("·").dim(), "sight: the classes — {}", c.summary());
+                }
                 if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
                     maps.dump(std::path::Path::new(&dir));
                 }
                 params.sight = Some(maps.saliency);
+                params.sight_class = maps.classes.as_ref().map(|c| c.class.clone());
+                params.sight_wash = maps.wash;
             }
             Err(e) => found!(style("·").yellow(), "sight: failed ({e}) — the focus from the gradients"),
         }
