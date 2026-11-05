@@ -705,6 +705,12 @@ pub struct PaintParams {
     pub aqua_sight_debt: f32,
     /// AQUA SIGHT SESSIONS: the sessions and the fine brushes by the sight's bar (see `MediumProfile::aqua_sight_sessions`).
     pub aqua_sight_sessions: f32,
+    /// AQUA SIGHT WET: off the sight every touch wet, the sheet wetted before the dry sessions (see `MediumProfile::aqua_sight_wet`).
+    pub aqua_sight_wet: f32,
+    /// AQUA SIGHT BLEED: the base's low-pass across the wash classes, the seam after the base (see `MediumProfile::aqua_sight_bleed`).
+    pub aqua_sight_bleed: f32,
+    /// AQUA SIGHT LUMINOUS: the share of the base's tone the first wash withholds (see `MediumProfile::aqua_sight_luminous`).
+    pub aqua_sight_luminous: f32,
     /// AQUA GRAIN DIR: the pigment settling on the relief's slopes turned from the light (see `MediumProfile::aqua_grain_dir`).
     pub aqua_grain_dir: f32,
     /// AQUA SPOT DRY: the sheet dried under the focus's high-contrast touches (see `MediumProfile::aqua_spot_dry`).
@@ -992,7 +998,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0, aqua_sight_debt: 0.0, aqua_sight_sessions: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None, sight: None, sight_wash: None, sight_class: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0, aqua_sight_debt: 0.0, aqua_sight_sessions: 0.0, aqua_sight_wet: 0.0, aqua_sight_bleed: 0.0, aqua_sight_luminous: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None, sight: None, sight_wash: None, sight_class: None }
     }
 }
 
@@ -4276,7 +4282,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let sight_hp: Option<Vec<f32>> = match sight_wash_ref.filter(|_| p.aqua_sight_gradient > 0.0) {
             Some(wm) => {
                 let lin: Vec<color::LinRgb> = reference.pixels().map(|px| color::srgb_to_linear(px.0)).collect();
-                let low = sight_wash_lowpass(&lin, wm, p.sight_class.as_deref(), w as usize, h as usize, (w.max(h) as f32 / 10.0).round().max(1.0) as i32, 1.0);
+                let low = sight_wash_lowpass(&lin, wm, p.sight_class.as_deref(), w as usize, h as usize, (w.max(h) as f32 / 10.0).round().max(1.0) as i32, 1.0, p.aqua_sight_bleed.clamp(0.0, 1.0));
                 let lum = |c: &color::LinRgb| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
                 Some(lin.iter().zip(&low).map(|(a, b)| (lum(a).max(1e-3) / lum(b).max(1e-3)).ln().abs()).collect())
             }
@@ -11716,7 +11722,7 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
 /// on its own — the sky's blur the sky's, the sea's the sea's, the horizon a step and not a green band smeared up
 /// into the sky — mixed into every pixel by `k × wash`: the sea's hue runs from the horizon to the near edge with
 /// no waves; off the wash classes the picture as it is. `wash` must be `w × h`; a `class` of another length is ignored.
-pub(crate) fn sight_wash_lowpass(lin: &[color::LinRgb], wash: &[f32], class: Option<&[u8]>, w: usize, h: usize, radius: i32, k: f32) -> Vec<color::LinRgb> {
+pub(crate) fn sight_wash_lowpass(lin: &[color::LinRgb], wash: &[f32], class: Option<&[u8]>, w: usize, h: usize, radius: i32, k: f32, bleed: f32) -> Vec<color::LinRgb> {
     let k = k.clamp(0.0, 1.0);
     if k <= 0.0 || wash.len() != w * h || lin.len() != w * h {
         return lin.to_vec();
@@ -11738,18 +11744,33 @@ pub(crate) fn sight_wash_lowpass(lin: &[color::LinRgb], wash: &[f32], class: Opt
         }
         None => vec![None],
     };
-    let mut out = lin.to_vec();
-    for id in ids {
-        let mg: Vec<f32> = (0..w * h).map(|i| if id.is_none_or(|id| class.is_some_and(|c| c[i] == id)) { m[i] } else { 0.0 }).collect();
-        let mb = blur2(&mg);
-        let ch: Vec<Vec<f32>> = (0..3).map(|c| blur2(&lin.iter().zip(&mg).map(|(l, mv)| l[c] * mv).collect::<Vec<f32>>())).collect();
-        for i in 0..w * h {
-            let g = k * mg[i];
-            if g <= 0.0 || mb[i] <= 1e-4 {
-                continue;
+    let pass = |ids: &[Option<u8>]| -> Vec<color::LinRgb> {
+        let mut out = lin.to_vec();
+        for id in ids {
+            let mg: Vec<f32> = (0..w * h).map(|i| if id.is_none_or(|id| class.is_some_and(|c| c[i] == id)) { m[i] } else { 0.0 }).collect();
+            let mb = blur2(&mg);
+            let ch: Vec<Vec<f32>> = (0..3).map(|c| blur2(&lin.iter().zip(&mg).map(|(l, mv)| l[c] * mv).collect::<Vec<f32>>())).collect();
+            for i in 0..w * h {
+                let g = k * mg[i];
+                if g <= 0.0 || mb[i] <= 1e-4 {
+                    continue;
+                }
+                for c in 0..3 {
+                    out[i][c] = lin[i][c] + g * (ch[c][i] / mb[i] - lin[i][c]);
+                }
             }
+        }
+        out
+    };
+    let mut out = pass(&ids);
+    // AQUA SIGHT BLEED (see `MediumProfile::aqua_sight_bleed`): by the key the low-pass CROSSES the wash classes — the
+    // sky's base runs into the water's at the horizon as the one wash they are, the class map's staircase no edge.
+    let bleed = bleed.clamp(0.0, 1.0);
+    if bleed > 0.0 && class.is_some() && ids.len() > 1 {
+        let all = pass(&[None]);
+        for i in 0..w * h {
             for c in 0..3 {
-                out[i][c] = lin[i][c] + g * (ch[c][i] / mb[i] - lin[i][c]);
+                out[i][c] += bleed * (all[i][c] - out[i][c]);
             }
         }
     }
@@ -11791,6 +11812,13 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let wash: Option<&[f32]> = p.sight_wash.as_deref().filter(|m| class_k > 0.0 && m.len() == w * h);
     let grad_k = p.aqua_sight_gradient.clamp(0.0, 1.0);
     let barrier_k = p.aqua_sight_barrier.clamp(0.0, 1.0);
+    // AQUA SIGHT WET / BLEED / LUMINOUS (set 8; see `MediumProfile::aqua_sight_wet`, `aqua_sight_bleed`,
+    // `aqua_sight_luminous`): the sight forbids DRYNESS off itself, not the small brushes; the base's low-pass crosses
+    // the wash classes and the seam waits for the base to be laid; the first wash withholds a share of the base's tone.
+    let swet_k = p.aqua_sight_wet.clamp(0.0, 1.0);
+    let bleed_k = p.aqua_sight_bleed.clamp(0.0, 1.0);
+    let lum_k = p.aqua_sight_luminous.clamp(0.0, 1.0);
+    let seam_s = if bleed_k > 0.0 { 1.min(sessions - 1) } else { 0 };
     let ceil_k = p.aqua_sight_ceiling.clamp(0.0, 1.0);
     let long = w.max(h) as f32;
     let r_wash = (long * 0.007).max(2.0);
@@ -11807,7 +11835,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     // the second on the base counts as PAID — the debt is read against the darker of the sheet and the base (the
     // cap in the session's debt below) — so the later touches owe only the picture's own darks over the base.
     let lin_low: Option<Vec<color::LinRgb>> = match (grad_k > 0.0, wash) {
-        (true, Some(wm)) => Some(sight_wash_lowpass(&lin, wm, p.sight_class.as_deref(), w, h, (long / 10.0).round().max(1.0) as i32, 1.0)),
+        (true, Some(wm)) => Some(sight_wash_lowpass(&lin, wm, p.sight_class.as_deref(), w, h, (long / 10.0).round().max(1.0) as i32, 1.0, bleed_k)),
         _ => None,
     };
     let grad_at = |i: usize| -> f32 { match (wash, lin_low.is_some()) { (Some(wm), true) => grad_k * wm[i].clamp(0.0, 1.0), _ => 0.0 } };
@@ -12003,53 +12031,60 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: first, spline: rings, w0: feather_res, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(kr), seam: None });
                 }
             }
-            // AQUA SIGHT BARRIER (see `MediumProfile::aqua_sight_barrier`): the CAPILLARY SEAM along every boundary between a
-            // wash class and what is not one (`Canvas::add_capillary_seam` — no fluid, no wall: the solver's water crosses it
-            // slowed and dries along it, the pigment pinned there), laid at the first session's start after the masking fluid
-            // over the lights, as one record with `seam` at its stage; the sheet's edges and the boundary of two wash classes
-            // take none. The shore is the wash's MASS: what is not a wash opened by a 600th of the long side, so a rope or a
-            // stair of the class map's cells is no shore — a mast is.
-            if barrier_k > 0.0 && *placed < p.budget {
-                if let Some(wm) = wash {
-                    let ro = (long / 600.0).round().max(1.0) as usize;
-                    let solid: Vec<bool> = (0..w * h).map(|i| wm[i] < 0.5).collect();
-                    let solid = dilate_bool(&erode_bool(&solid, w, h, ro), w, h, ro);
-                    let is_wash = |i: usize| !solid[i];
-                    let mut paths: Vec<[f32; 2]> = Vec::new();
-                    for y in 0..h {
-                        for x in 0..w {
-                            let i = y * w + x;
-                            if x + 1 < w && is_wash(i) != is_wash(i + 1) {
-                                if !paths.is_empty() {
-                                    paths.push([f32::NAN, f32::NAN]);
-                                }
-                                paths.push([x as f32 + 1.0, y as f32]);
-                                paths.push([x as f32 + 1.0, y as f32 + 1.0]);
-                            }
-                            if y + 1 < h && is_wash(i) != is_wash(i + w) {
-                                if !paths.is_empty() {
-                                    paths.push([f32::NAN, f32::NAN]);
-                                }
-                                paths.push([x as f32, y as f32 + 1.0]);
-                                paths.push([x as f32 + 1.0, y as f32 + 1.0]);
-                            }
-                        }
-                    }
-                    if !paths.is_empty() {
-                        let radius = (long / 400.0).max(1.5);
-                        canvas.add_capillary_seam(&paths, radius, barrier_k);
-                        *k += 1;
-                        *placed += 1;
-                        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: Some(barrier_k) });
-                    }
-                }
-            }
             if line_off > 0 {
                 aqua_line_pass(canvas, score, source, p, focus_line, placed, k);
                 score.cross_passes(canvas, 0, 1, n_stages_total);
             }
         }
+        // AQUA SIGHT BARRIER (see `MediumProfile::aqua_sight_barrier`): the CAPILLARY SEAM along every boundary between a
+        // wash class and what is not one (`Canvas::add_capillary_seam` — no fluid, no wall: the solver's water crosses it
+        // slowed and dries along it, the pigment pinned there), laid at the first session's start after the masking fluid
+        // over the lights (under `aqua_sight_bleed` at the SECOND session's start, the base laid across the shore first), as one record with `seam` at its stage; the sheet's edges and the boundary of two wash classes
+        // take none. The shore is the wash's MASS: what is not a wash opened by a 600th of the long side, so a rope or a
+        // stair of the class map's cells is no shore — a mast is.
+        if barrier_k > 0.0 && s == seam_s && *placed < p.budget {
+            if let Some(wm) = wash {
+                let ro = (long / 600.0).round().max(1.0) as usize;
+                let solid: Vec<bool> = (0..w * h).map(|i| wm[i] < 0.5).collect();
+                let solid = dilate_bool(&erode_bool(&solid, w, h, ro), w, h, ro);
+                let is_wash = |i: usize| !solid[i];
+                let mut paths: Vec<[f32; 2]> = Vec::new();
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = y * w + x;
+                        if x + 1 < w && is_wash(i) != is_wash(i + 1) {
+                            if !paths.is_empty() {
+                                paths.push([f32::NAN, f32::NAN]);
+                            }
+                            paths.push([x as f32 + 1.0, y as f32]);
+                            paths.push([x as f32 + 1.0, y as f32 + 1.0]);
+                        }
+                        if y + 1 < h && is_wash(i) != is_wash(i + w) {
+                            if !paths.is_empty() {
+                                paths.push([f32::NAN, f32::NAN]);
+                            }
+                            paths.push([x as f32, y as f32 + 1.0]);
+                            paths.push([x as f32 + 1.0, y as f32 + 1.0]);
+                        }
+                    }
+                }
+                if !paths.is_empty() {
+                    let radius = (long / 400.0).max(1.5);
+                    canvas.add_capillary_seam(&paths, radius, barrier_k);
+                    *k += 1;
+                    *placed += 1;
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 && s == 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: Some(barrier_k) });
+                }
+            }
+        }
         let t = if sessions > 1 { s as f32 / (sessions - 1) as f32 } else { 1.0 };
+        // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): a session's DRYNESS — 0 over the wet sessions
+        // (every pixel's), the dry sessions from `crisp_from` on at 1/n_dry .. 1 — and the bar the sight must reach for
+        // a dry session to touch, key × dryness³; the pixel's own LADDER is the sessions the bar leaves it: a pixel
+        // the dry sessions will never reach climbs to its ceiling in the wet ones.
+        let dry_u = |j: usize| if j >= crisp_from { (j + 1 - crisp_from) as f32 / (sessions - crisp_from).max(1) as f32 } else { 0.0 };
+        let u = dry_u(s);
+        let n_open = |i: usize| (0..sessions).filter(|&j| { let du = dry_u(j); du <= 0.0 || sal(i) >= sess_k * du * du * du }).count().max(1);
         let r = (long / 10.0 / (1u32 << s.min(20)) as f32).max(4.0);
         // AQUA CRISP: a dry session — no water on the brush, none on the sheet (every session's drying leaves the
         // sheet bone dry and a dry session adds none), so the touch lands at the pixel through the tooth.
@@ -12058,6 +12093,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         // THE SHEET WETTED before the session: clear water on a grid of 1.5 radii (a mean of the session's prewet
         // share), the subject's silhouette drier.
         let pre = if crisp { 0.0 } else { water * prewet_mul * (1.0 - t) };
+        // AQUA SIGHT WET (see `MediumProfile::aqua_sight_wet`): before a DRY session the sheet off the sight is wetted
+        // as before the first wet one, by key × (1 − S) at the point — the small brushes work into puddles there.
+        let pre = if crisp && swet_k > 0.0 { water_mul * prewet_mul * swet_k } else { pre };
         // AQUA SPOT DRY (see `MediumProfile::aqua_spot_dry`): from the second wet session on, the value's step across
         // the brush's width on the picture's own range — the contrast a touch sits on.
         let step_map: Vec<f32> = if spot_k > 0.0 && s > 0 && !crisp {
@@ -12080,7 +12118,11 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     }
                     let (cx, cy) = ((i as f32 + 0.5) * rp, (j as f32 + 0.5) * rp);
                     let m = focus[at(cx, cy)];
-                    let wv = pre / 1.5708 * (1.0 - 0.6 * m * (1.0 - relax)) * (1.0 + lit(cx, cy).min(0.0));
+                    let pw = if crisp { 1.0 - sal(at(cx, cy)) } else { 1.0 };
+                    if pw < 0.05 {
+                        continue;
+                    }
+                    let wv = pw * pre / 1.5708 * (1.0 - 0.6 * m * (1.0 - relax)) * (1.0 + lit(cx, cy).min(0.0));
                     canvas.aqua_inject(&[[cx, cy]], rp, 0.0, wv, &clear, press_k, boost_k, bias_k);
                     record(score, placed, k, &stage, vec![[cx, cy]], rp, 0.0, 0.0, false, wv, &clear);
                 }
@@ -12095,6 +12137,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 if paper(i) {
                     return d;
                 }
+                // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): the pixel's own ladder — its ceiling
+                // rises over the sessions the bar leaves it, so what the dry sessions never reach is at its tone by
+                // the last wet one, and what they do reach climbs the whole ladder as before.
+                let a = if sess_k > 0.0 { let n = n_open(i); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else { a };
                 // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): off the focus the session's ceiling held
                 // back toward the ground — the exponent × (1 − key × (1 − focus)) — so the periphery ends as a tint.
                 let a = if ceil_k > 0.0 { a * (1.0 - ceil_k * (1.0 - focus[i].clamp(0.0, 1.0))) } else { a };
@@ -12105,18 +12151,23 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // over it — a wave's shadow, the hull's reflection — never the base's tone again.
                 let g = grad_at(i);
                 let a_last = if ceil_k > 0.0 { 1.0 - ceil_k * (1.0 - focus[i].clamp(0.0, 1.0)) } else { 1.0 };
-                // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): the first session lays what is off the
-                // sight at the LAST session's ceiling, by key × (1 − S) — the periphery's broad wet wash is its tone at
-                // once, not a quarter of it, since the later sessions are the subject's and never come back to it.
-                let a = if sess_k > 0.0 && s == 0 { a + sess_k * (1.0 - sal(i)) * (a_last - a) } else { a };
                 for c in 0..3 {
                     let ceil = ground[c].max(0.002).powf(1.0 - a) * lin[i][c].max(0.002).powf(a);
                     let mut dc = (ceil / under[i][c].max(0.002)).ln().min(0.0);
                     if g > 0.0 {
                         let low = lin_low.as_ref().map_or(lin[i][c], |m| m[i][c]).max(0.002);
                         let dg = if s == 0 {
+                            // AQUA SIGHT LUMINOUS: the first wash withholds key of the base's tone (in stops) — a
+                            // luminous underpainting, the rest owed to the sessions after.
                             let base = ground[c].max(0.002).powf(1.0 - a_last) * low.powf(a_last);
-                            (base / under[i][c].max(0.002)).ln().min(0.0)
+                            (base / under[i][c].max(0.002)).ln().min(0.0) * (1.0 - lum_k)
+                        } else if (sess_k > 0.0 && s < crisp_from) || swet_k > 0.0 || lum_k > 0.0 {
+                            // AQUA SIGHT SESSIONS: under the sessions key a WET session washes the base again — a wash
+                            // the flood left short of its tone is glazed toward it, as a painter's second wash does —
+                            // and the base counts as paid against the DRY brushes alone, which the bar keeps off it.
+                            // Under the wet or the luminous key every session pays the base's rest: the touches off
+                            // the sight are wet and bloom, so the base is glazed, never restated.
+                            dc
                         } else {
                             let base = ground[c].max(0.002).powf(1.0 - a) * low.powf(a);
                             (ceil / under[i][c].max(0.002).min(base)).ln().min(0.0)
@@ -12190,10 +12241,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     continue;
                 }
                 let m = focus[at(cx, cy)];
-                // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): a session at progress t touches only
-                // where the sight reaches key × t³ — the broad wet sessions nearly everywhere (the background's shapes
-                // are theirs), the last dry one the most salient alone.
-                if sess_k > 0.0 && t > 0.0 && sal(at(cx, cy)) < sess_k * t * t * t {
+                // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): a DRY session touches only where the
+                // sight reaches key × its dryness³ — the wet sessions everywhere (the background is theirs), the first
+                // dry one off the faintest ground alone, the last the most salient alone.
+                if sess_k > 0.0 && u > 0.0 && sal(at(cx, cy)) < sess_k * u * u * u {
                     continue;
                 }
                 // AQUA SIGHT CLASS: on a wash class the brush up to twice as wide by the key (the grid with it).
@@ -12367,6 +12418,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // charge's log debt), the mass as the debt decides.
                 let thick = 1.0 - thick_k * (1.0 - (-dmag(&want)).exp());
                 // AQUA SIGHT CLASS: the touch's water by the class — a wet wash up to twice, a dry brush down to a quarter.
+                // AQUA SIGHT WET: off the sight the touch's water raised toward the first session's by key × (1 − S) —
+                // a dry session's touch there is wet-on-wet, laid into the puddle and left to bloom.
+                let water = water + swet_k * (1.0 - sal(at(cx, cy))) * (water_mul - water).max(0.0);
                 let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) * thick * (1.0 + class_k * wc).max(0.25) };
                 if spot {
                     canvas.aqua_dry_spot(&dabs, r_s, r_end);
@@ -18509,7 +18563,7 @@ mod aqua_tests {
         let g = color::srgb_to_linear([70, 60, 40]);
         let lin: Vec<color::LinRgb> = (0..w * h).map(|i| if i / w < h / 2 { if (i % w / 8) % 2 == 0 { a } else { b } } else { g }).collect();
         let wash: Vec<f32> = (0..w * h).map(|i| if i / w < h / 2 { 1.0 } else { 0.0 }).collect();
-        let out = sight_wash_lowpass(&lin, &wash, None, w, h, 10, 1.0);
+        let out = sight_wash_lowpass(&lin, &wash, None, w, h, 10, 1.0, 0.0);
         let step = (b[2] - a[2]).abs();
         for y in [4usize, 16, 30] {
             // (Clear of the sheet's sides, where the box clamps to the edge pixel.)
@@ -18519,19 +18573,23 @@ mod aqua_tests {
             assert!(lo >= a[2].min(b[2]) - 1e-3 && hi <= a[2].max(b[2]) + 1e-3, "row {y} within the blues, no brown: {lo} {hi}");
         }
         assert!(out[40 * w..].iter().zip(&lin[40 * w..]).all(|(o, l)| o == l), "the ground untouched");
-        assert_eq!(sight_wash_lowpass(&lin, &wash, None, w, h, 10, 0.0), lin, "at 0 nothing changes");
-        assert_eq!(sight_wash_lowpass(&lin, &wash[..10], None, w, h, 10, 1.0), lin, "a wash of the wrong length changes nothing");
+        assert_eq!(sight_wash_lowpass(&lin, &wash, None, w, h, 10, 0.0, 0.0), lin, "at 0 nothing changes");
+        assert_eq!(sight_wash_lowpass(&lin, &wash[..10], None, w, h, 10, 1.0, 0.0), lin, "a wash of the wrong length changes nothing");
         // Set 5: two flat wash classes, the sky (rows 0..16) over the water (16..32), both washed: without a class
         // map the rows by their boundary mix the two colours; with it each class's low-pass is its own flat colour
         // to the row, and a class map of the wrong length is ignored.
         let two: Vec<color::LinRgb> = (0..w * h).map(|i| if i / w < 16 { a } else if i / w < h / 2 { b } else { g }).collect();
         let class: Vec<u8> = (0..w * h).map(|i| if i / w < 16 { 0 } else { 1 }).collect();
-        let mixed = sight_wash_lowpass(&two, &wash, None, w, h, 10, 1.0);
-        let apart = sight_wash_lowpass(&two, &wash, Some(&class), w, h, 10, 1.0);
+        let mixed = sight_wash_lowpass(&two, &wash, None, w, h, 10, 1.0, 0.0);
+        let apart = sight_wash_lowpass(&two, &wash, Some(&class), w, h, 10, 1.0, 0.0);
         let at = |o: &[color::LinRgb], y: usize| o[y * w + 48][2];
         assert!((at(&mixed, 14) - a[2]).abs() > 0.02 * (b[2] - a[2]).abs() && (at(&mixed, 18) - b[2]).abs() > 0.02 * (b[2] - a[2]).abs(), "without the classes the horizon smears: {} {}", at(&mixed, 14), at(&mixed, 18));
         assert!((at(&apart, 14) - a[2]).abs() < 1e-4 && (at(&apart, 18) - b[2]).abs() < 1e-4 && (at(&apart, 2) - a[2]).abs() < 1e-4 && (at(&apart, 30) - b[2]).abs() < 1e-4, "with the classes each stays its own: {} {}", at(&apart, 14), at(&apart, 18));
-        assert_eq!(sight_wash_lowpass(&two, &wash, Some(&class[..5]), w, h, 10, 1.0), mixed, "a class map of the wrong length is ignored");
+        assert_eq!(sight_wash_lowpass(&two, &wash, Some(&class[..5]), w, h, 10, 1.0, 0.0), mixed, "a class map of the wrong length is ignored");
+        // Set 8: the bleed — at 1 the classes' low-pass is the one wash's (the horizon smears), at ½ halfway.
+        assert_eq!(sight_wash_lowpass(&two, &wash, Some(&class), w, h, 10, 1.0, 1.0), mixed, "at the bleed 1 the low-pass crosses the classes");
+        let half = sight_wash_lowpass(&two, &wash, Some(&class), w, h, 10, 1.0, 0.5);
+        assert!((at(&half, 14) - 0.5 * (at(&apart, 14) + at(&mixed, 14))).abs() < 1e-5, "at ½ halfway: {} vs {} / {}", at(&half, 14), at(&apart, 14), at(&mixed, 14));
     }
 
     #[test]
@@ -18575,6 +18633,16 @@ mod aqua_tests {
         assert!(marks(&graded, false) > 0, "…the ground is drawn still");
         let painted = graded.canvas.to_image().into_raw();
         assert_eq!(StrokeScore::parse(&graded.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the gradient replays byte-exact");
+        // Set 8: the luminous base — at ½ the first session's sky charge is half the base-at-once run's, and the
+        // flat sky is touched again by the sessions after (the rest owed); replays byte-exact.
+        p.aqua_sight_luminous = 0.5;
+        let lum = paint_from_image(&flat, &p);
+        let c_l = charge(&touches(&lum, "aqua-1", true));
+        assert!(c_l < 0.7 * c_g && c_l > 0.3 * c_g, "the first wash withholds half the base: {c_l} vs {c_g}");
+        assert!(!touches(&lum, "aqua-2", true).is_empty() || !touches(&lum, "aqua-3", true).is_empty(), "the sky owes the rest to the sessions after");
+        let painted = lum.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&lum.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the luminous base replays byte-exact");
+        p.aqua_sight_luminous = 0.0;
         p.aqua_sight_gradient = 0.0;
         let base_s = paint_from_image(&striped, &p);
         p.aqua_sight_gradient = 1.0;
@@ -18603,6 +18671,19 @@ mod aqua_tests {
         assert_ne!(seamed.canvas.to_image().into_raw(), base_s.canvas.to_image().into_raw(), "the seam changes the sheet");
         let painted = seamed.canvas.to_image().into_raw();
         assert_eq!(StrokeScore::parse(&seamed.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the barrier replays byte-exact");
+        // Set 8: under the bleed the seam waits for the base — one record at the second session's stage, after the
+        // first session's touches, the seam on the shore still; replays byte-exact.
+        p.aqua_sight_bleed = 1.0;
+        let late = paint_from_image(&striped, &p);
+        let rec = late.score.strokes.iter().find(|s| s.seam.is_some()).expect("a seam record under the bleed");
+        assert_eq!(rec.stage, "aqua-2", "the seam at the second session");
+        let first_touch = late.score.strokes.iter().position(|s| s.inject).unwrap();
+        let rec_at = late.score.strokes.iter().position(|s| s.seam.is_some()).unwrap();
+        assert!(rec_at > first_touch, "…after the base's touches");
+        assert!(late.canvas.seam_at(shore) >= 0.999, "the seam on the shore still");
+        let painted = late.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&late.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the late seam replays byte-exact");
+        p.aqua_sight_bleed = 0.0;
     }
 
     #[test]
@@ -18648,6 +18729,26 @@ mod aqua_tests {
         assert!(marks(&gated, "block-in").iter().any(|s| s.iter().all(|d| !in_box(d, 0.0))), "the block-in draws outside still");
         let painted = gated.canvas.to_image().into_raw();
         assert_eq!(StrokeScore::parse(&gated.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the sessions replay byte-exact");
+        // Set 8: the wet details — the sessions bar off, the wet key at 1: the DRY session (the third) touches outside
+        // the box still, its touches there WET (the base's dry) and the sheet there wetted first (clear-water records
+        // at its stage outside the box, none inside, none in the base run), its touches inside the box dry as before;
+        // replays byte-exact.
+        p.aqua_sight_sessions = 0.0;
+        p.aqua_sight_wet = 1.0;
+        let wet = paint_from_image(&img, &p);
+        // (Inside strictly: a touch centred in the box's 4-px margin stands on S = 0 and is wet by right.)
+        let dry_touches = |r: &PaintResult, inside: bool| -> Vec<StrokeRecord> { r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty() && s.stage == "aqua-3" && in_box(&centre(s), if inside { -1.0 } else { 4.0 }) == inside).cloned().collect() };
+        let (out_w, in_w) = (dry_touches(&wet, false), dry_touches(&wet, true));
+        assert!(!out_w.is_empty() && out_w.iter().all(|s| s.wet > 0.0), "the dry session's touches off the sight are wet: {} touches, {} dry", out_w.len(), out_w.iter().filter(|s| s.wet <= 0.0).count());
+        assert!(dry_touches(&base, false).iter().all(|s| s.wet <= 0.0), "…where the base's are dry");
+        assert!(!in_w.is_empty() && in_w.iter().all(|s| s.wet <= 0.0), "…and on the sight dry as before: {} touches, {} wet", in_w.len(), in_w.iter().filter(|s| s.wet > 0.0).count());
+        let clear = |r: &PaintResult| -> Vec<[f32; 2]> { r.score.strokes.iter().filter(|s| s.inject && s.mix.is_empty() && s.stage == "aqua-3").map(centre).collect() };
+        let cw = clear(&wet);
+        assert!(cw.iter().any(|c| !in_box(c, 4.0)) && cw.iter().all(|c| !in_box(c, -4.0)), "the sheet wetted before the dry session off the sight alone: {} records, {} inside", cw.len(), cw.iter().filter(|c| in_box(c, -4.0)).count());
+        assert!(clear(&base).is_empty(), "…none in the base run");
+        let painted = wet.canvas.to_image().into_raw();
+        assert_eq!(StrokeScore::parse(&wet.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the wet details replay byte-exact");
+        p.aqua_sight_wet = 0.0;
         p.aqua_sight_sessions = 0.0;
         p.aqua_sight_debt = 1.0;
         let eased = paint_from_image(&img, &p);

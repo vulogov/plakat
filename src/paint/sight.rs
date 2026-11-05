@@ -44,9 +44,15 @@
 //! the flow slowed, the seam drying as a rim, the pigment pinned along it) instead of the masking fluid's wall.
 //!
 //! Set 6 (the painter's `aqua_sight_debt`, `aqua_sight_sessions`): the COMPOSITION by the sight — off the sight the
-//! later sessions' debt is let go (the background a broad understated wash), and a session touches only where the
-//! sight reaches key × its progress, the drawing after the washes only where it reaches key × the brush's fineness:
+//! later sessions' debt is let go (the background a broad understated wash), and a DRY session touches only where the
+//! sight reaches key × its dryness³ (the wet sessions everywhere, glazing the background to its ceiling), the drawing
+//! after the washes only where it reaches key × the brush's fineness³:
 //! the finish's contrast between the subject and its ground leads the eye.
+//!
+//! Set 8 (the painter's `aqua_sight_wet`, `aqua_sight_bleed`, `aqua_sight_luminous`): the sight forbids DRYNESS off
+//! itself, not the small brushes — off the sight every touch is wet-on-wet into a wetted sheet and blooms; the base's
+//! low-pass crosses the wash classes and the seam waits for the base; the first wash withholds a share of the base's
+//! tone, a luminous underpainting the later sessions glaze.
 
 use anyhow::{Context, Result};
 use image::{GrayImage, RgbImage};
