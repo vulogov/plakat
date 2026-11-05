@@ -11838,7 +11838,8 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let swet_k = p.aqua_sight_wet.clamp(0.0, 1.0);
     let bleed_k = p.aqua_sight_bleed.clamp(0.0, 1.0);
     let lum_k = p.aqua_sight_luminous.clamp(0.0, 1.0);
-    let seam_s = if bleed_k > 0.0 { 1.min(sessions - 1) } else { 0 };
+    // (Under the gestalt planner the seam is laid before the FLOOD — the shapes' edges are the flood's edges.)
+    let seam_s = if p.aqua_gestalt > 0.0 { 0 } else if bleed_k > 0.0 { 1.min(sessions - 1) } else { 0 };
     // AQUA SIGHT WHITES / STROKES / ACCENT (set 10; see `MediumProfile::aqua_sight_whites`, `aqua_sight_strokes`,
     // `aqua_sight_accent`): the small lights saved under the fluid before the first wash; a wash class's wet sessions
     // laid as strokes along its own direction in bands with the paper between; a thick charge into a wash's dark.
@@ -12114,7 +12115,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     // decides is in the touch records, so the replay is exact; at 0 the grid as before, to the bit.
     use crate::paint::gestalt;
     let gestalt_k = p.aqua_gestalt.clamp(0.0, 1.0);
-    let lin_low_g: Option<Vec<color::LinRgb>> = (gestalt_k > 0.0).then(|| sight_wash_lowpass(&lin, &vec![1.0f32; w * h], p.sight_class.as_deref(), w, h, (long / 10.0).round().max(1.0) as i32, 1.0, bleed_k));
+    // (The background's base at the brush's scale — a twentieth of the sheet, within its own class, no bleed across
+    // the classes: the sea's colour the sea's and the sky's the sky's at the horizon, the band's own local colour
+    // along it; set 12's tenth-of-the-sheet base with the bleed had merged the sea into the sky.)
+    let lin_low_g: Option<Vec<color::LinRgb>> = (gestalt_k > 0.0).then(|| sight_wash_lowpass(&lin, &vec![1.0f32; w * h], p.sight_class.as_deref(), w, h, (long / 20.0).round().max(1.0) as i32, 1.0, 0.0));
     let gestalt: Option<gestalt::Gestalt> = lin_low_g.as_ref().map(|lowm| {
         let ly = |c: &color::LinRgb| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         let lum_lin: Vec<f32> = lin.iter().map(ly).collect();
@@ -12123,7 +12127,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         let whites_b: Option<Vec<bool>> = whites.as_ref().map(|m| m.iter().map(|v| *v > 0).collect());
         let sal_vec: Vec<f32> = (0..w * h).map(|i| sal(i)).collect();
         let radii: Vec<f32> = (0..sessions).map(|s| (long / 10.0 / (1u32 << s.min(20)) as f32).max(4.0)).collect();
-        gestalt::plan(&gestalt::GestaltInput { w, h, sal: &sal_vec, luma: &lum_lin, low_luma: &low_luma, focus: &focus, class: p.sight_class.as_deref().filter(|c| c.len() == w * h), wash, paper: &paper_vec, whites: whites_b.as_deref(), sessions, crisp_from, radii: &radii, class_k, abstraction: p.aqua_abstraction_focus.clamp(0.0, 1.0), negative: p.aqua_negative_space.clamp(0.0, 1.0), budget: p.aqua_budget.max(0.0).round() as usize, strokes_k, seed: p.seed })
+        gestalt::plan(&gestalt::GestaltInput { w, h, sal: &sal_vec, luma: &lum_lin, low_luma: &low_luma, focus: &focus, class: p.sight_class.as_deref().filter(|c| c.len() == w * h), wash, paper: &paper_vec, whites: whites_b.as_deref(), sessions, crisp_from, radii: &radii, abstraction: p.aqua_abstraction_focus.clamp(0.0, 1.0), negative: p.aqua_negative_space.clamp(0.0, 1.0), budget: p.aqua_budget.max(0.0).round() as usize, strokes_k, seed: p.seed })
     });
     if let Some(g) = &gestalt {
         // The drawing after the washes on the focus alone: the periphery and the negative space are handed out as
@@ -12134,6 +12138,8 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
             let _ = z.save(std::path::Path::new(&dir).join("aqua_gestalt_zone.png"));
             let ng = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if g.negative[y as usize * w + x as usize] { 255 } else { 0 }]));
             let _ = ng.save(std::path::Path::new(&dir).join("aqua_gestalt_negative.png"));
+            let sh = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([match g.shape[y as usize * w + x as usize] { 0 => 0u8, 1 => 255, id => (id.wrapping_mul(73) % 180) as u8 + 50 }]));
+            let _ = sh.save(std::path::Path::new(&dir).join("aqua_gestalt_shape.png"));
         }
     }
     let paper = |i: usize| paper(i) || gestalt.as_ref().is_some_and(|g| g.negative[i]);
@@ -12267,28 +12273,34 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         // take none. The shore is the wash's MASS: what is not a wash opened by a 600th of the long side, so a rope or a
         // stair of the class map's cells is no shore — a mast is.
         if barrier_k > 0.0 && s == seam_s && *placed < p.budget {
-            // (THE GESTALT PLANNER: the seam along the FOCUS's boundary alone — the background's washes mingle free.)
+            // (THE GESTALT PLANNER, set 14: the seam along the edges of the LARGE SHAPES — the hill against the sky,
+            // the sea against the sky, the figure against the ground — a shape of a hundredth of the sheet and over;
+            // a tree's crown within the hill takes none, its wash mingles with the hill's.)
             let solid_raw: Option<Vec<bool>> = match (&gestalt, wash) {
-                (Some(g), _) => Some(g.zone.iter().map(|z| *z == 2).collect()),
+                (Some(_), _) => None,
                 (None, Some(wm)) => Some((0..w * h).map(|i| wm[i] < 0.5).collect()),
                 _ => None,
             };
-            if let Some(solid) = solid_raw {
-                let ro = (long / 600.0).round().max(1.0) as usize;
-                let solid = dilate_bool(&erode_bool(&solid, w, h, ro), w, h, ro);
-                let is_wash = |i: usize| !solid[i];
+            let shape_edge: Option<Box<dyn Fn(usize, usize) -> bool>> = gestalt.as_ref().map(|g| {
+                let min_area = (w * h / 100) as u32;
+                let big = move |id: u32| id >= 1 && g.shape_size.get(id as usize).copied().unwrap_or(0) >= min_area;
+                Box::new(move |i: usize, j: usize| g.shape[i] != g.shape[j] && big(g.shape[i]) && big(g.shape[j])) as Box<dyn Fn(usize, usize) -> bool>
+            });
+            if solid_raw.is_some() || shape_edge.is_some() {
+                let solid = solid_raw.map(|solid| { let ro = (long / 600.0).round().max(1.0) as usize; dilate_bool(&erode_bool(&solid, w, h, ro), w, h, ro) });
+                let differs = |i: usize, j: usize| match (&shape_edge, &solid) { (Some(f), _) => f(i, j), (None, Some(sl)) => sl[i] != sl[j], _ => false };
                 let mut paths: Vec<[f32; 2]> = Vec::new();
                 for y in 0..h {
                     for x in 0..w {
                         let i = y * w + x;
-                        if x + 1 < w && is_wash(i) != is_wash(i + 1) {
+                        if x + 1 < w && differs(i, i + 1) {
                             if !paths.is_empty() {
                                 paths.push([f32::NAN, f32::NAN]);
                             }
                             paths.push([x as f32 + 1.0, y as f32]);
                             paths.push([x as f32 + 1.0, y as f32 + 1.0]);
                         }
-                        if y + 1 < h && is_wash(i) != is_wash(i + w) {
+                        if y + 1 < h && differs(i, i + w) {
                             if !paths.is_empty() {
                                 paths.push([f32::NAN, f32::NAN]);
                             }
@@ -12325,6 +12337,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         // AQUA SIGHT WET (see `MediumProfile::aqua_sight_wet`): before a DRY session the sheet off the sight is wetted
         // as before the first wet one, by key × (1 − S) at the point — the small brushes work into puddles there.
         let pre = if crisp && swet_k > 0.0 { water_mul * prewet_mul * swet_k } else { pre };
+        // THE GESTALT PLANNER'S GLAZES (set 13): after the flood every session is laid WET-ON-DRY — no water on the
+        // sheet before it, the brush the session's — a half-transparent layer that holds its shape over what the
+        // flood left light.
+        let pre = if gestalt.is_some() && s > 0 { 0.0 } else { pre };
         // AQUA SPOT DRY (see `MediumProfile::aqua_spot_dry`): from the second wet session on, the value's step across
         // the brush's width on the picture's own range — the contrast a touch sits on.
         let step_map: Vec<f32> = if spot_k > 0.0 && s > 0 && !crisp {
@@ -12338,7 +12354,13 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
             Vec::new()
         };
         if pre > 0.02 && *placed < p.budget {
-            let rp = r * 1.5;
+            // THE GESTALT PLANNER'S SHAPES (set 14): the sheet is wetted WITHIN A SHAPE and never across its edge —
+            // the water's dabs half the brush on a grid of the same pitch (the same water per area as the open
+            // grid's dabs of one and a half radii), a dab whose rim leaves its shape not laid: the hill is wet inside
+            // and dry against the sky, so the flood's edge there is the wash's own hard edge, the horizon between
+            // two wet shapes a line, the figure's edge against the ground kept.
+            let shaped = gestalt.as_ref().map(|g| &g.shape);
+            let rp = if shaped.is_some() { (r * 0.5).max(1.0) } else { r * 1.5 };
             let (nx, ny) = ((w as f32 / rp).ceil() as usize, (h as f32 / rp).ceil() as usize);
             for j in 0..ny {
                 for i in 0..nx {
@@ -12346,6 +12368,20 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                         break;
                     }
                     let (cx, cy) = ((i as f32 + 0.5) * rp, (j as f32 + 0.5) * rp);
+                    if let Some(sh) = shaped {
+                        let id = sh[at(cx, cy)];
+                        if id == 0 {
+                            continue;
+                        }
+                        let within = (0..8).all(|q| {
+                            let a = q as f32 * std::f32::consts::FRAC_PI_4;
+                            let (x, y) = (cx + rp * a.cos(), cy + rp * a.sin());
+                            x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 || sh[at(x, y)] == id
+                        });
+                        if !within {
+                            continue;
+                        }
+                    }
                     let m = focus[at(cx, cy)];
                     let pw = if crisp { 1.0 - sal(at(cx, cy)) } else { 1.0 };
                     if pw < 0.05 {
@@ -12369,7 +12405,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): the pixel's own ladder — its ceiling
                 // rises over the sessions the bar leaves it, so what the dry sessions never reach is at its tone by
                 // the last wet one, and what they do reach climbs the whole ladder as before.
-                let a = if sess_k > 0.0 { let n = n_open(i); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else if let Some(g) = &gestalt { let n = gestalt::zone_sessions(g.zone[i], sessions, crisp_from); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else { a };
+                let a = if sess_k > 0.0 { let n = n_open(i); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else if let Some(g) = &gestalt { let n = g.sessions[i] as usize; if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else { a };
                 // THE GESTALT PLANNER: the background owes its low-pass BASE alone — its details nothing.
                 let tgt: &color::LinRgb = match (&gestalt, &lin_low_g) { (Some(g), Some(m)) if g.zone[i] == 0 => &m[i], _ => &lin[i] };
                 // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): off the focus the session's ceiling held
@@ -12482,6 +12518,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 let m = focus[at(cx, cy)];
                 let wc = wash.map_or(0.0, |wm| wm[at(cx, cy)].clamp(-1.0, 1.0));
                 let r_s = st.radius;
+                // (The samples a sixth of the STROKE's radius apart — a tree's crown laid with a brush of its
+                // half-width is read at its own scale, not the session's.)
+                let stride = ((r_s / 6.0).round() as usize).max(1);
                 samples.clear();
                 for d in &st.path {
                     let x0 = (d[0] - r_s).floor().max(0.0) as usize;
@@ -12561,50 +12600,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) * thick * (1.0 + class_k * wc).max(0.25) };
                 touches.push((st.path.clone(), r_s, r_end, wv, dab, spot, sweep_rec));
             }
-            // THE REHEARSAL: a wet session is laid first on a copy of the sheet and dried as the session dries
-            // (the engine's settling, the stage's crossing), the share of the session's debt the drying left paid
-            // is measured over the pixels the session owes (a least-squares gain, all three channels), and the
-            // charge of every touch is raised by its inverse — at most fourfold, the rehearsal twice at most and
-            // not at all when the sheet pays nine tenths — before the sheet itself is touched. The brain knows its
-            // tool: the open grid had six sessions and the drawing after them to pay what a wet flood left short;
-            // the background has its one. The records carry the charge as laid, so the replay is exact.
-            let mut gain_dbg = Vec::new();
-            if s < crisp_from && !touches.is_empty() {
-                let owed: Vec<usize> = (0..w * h).filter(|&i| gestalt::zone_sessions(g.zone[i], sessions, crisp_from) > s && dmag(&debt[i]) > 0.02).collect();
-                for _round in 0..2 {
-                    if owed.is_empty() {
-                        break;
-                    }
-                    let mut probe = canvas.clone();
-                    for (path, r_s, r_end, wv, dab, spot, sweep_rec) in &touches {
-                        if *spot {
-                            probe.aqua_dry_spot(path, *r_s, *r_end);
-                        }
-                        probe.aqua_inject_with(path, *r_s, *r_end, *wv, dab, press_k, boost_k, bias_k, *sweep_rec);
-                    }
-                    score.cross_passes(&mut probe, line_off + s, line_off + s + 1, n_stages_total);
-                    let (mut num, mut den) = (0f64, 0f64);
-                    for &i in &owed {
-                        let after = probe.linear_at((i % w) as u32, (i / w) as u32);
-                        for c in 0..3 {
-                            let paid = (after[c].max(0.002) / under[i][c].max(0.002)).ln().min(0.0) as f64;
-                            num += paid * debt[i][c] as f64;
-                            den += (debt[i][c] as f64).powi(2);
-                        }
-                    }
-                    let gain = if den > 0.0 { (num / den) as f32 } else { 1.0 };
-                    gain_dbg.push(gain);
-                    if !(gain > 0.0) || gain >= 0.9 {
-                        break;
-                    }
-                    let up = (1.0 / gain).min(4.0);
-                    for t in &mut touches {
-                        for v in &mut t.4 {
-                            *v *= up;
-                        }
-                    }
-                }
-            }
+            // (Set 12 had REHEARSED a wet session on a copy of the sheet and raised the charge by the measured
+            // shortfall of the drying — the engine pays about half of a wet charge in stops — and got saturation
+            // and mud for it. Set 13: the flood's lightness is the watercolour's own; what it leaves is closed by
+            // the GLAZES after it, wet-on-dry, where the ladder owes.)
             for (path, r_s, r_end, wv, dab, spot, sweep_rec) in touches {
                 if *placed >= p.budget {
                     break;
@@ -12619,7 +12618,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 }
             }
             if dbg {
-                eprintln!("gestalt laying {stage}: planned {} few-samples {} no-debt {} no-load {} laid {} rehearsal gains {:?}", dcnt[0], dcnt[1], dcnt[2], dcnt[3], dcnt[4], gain_dbg);
+                eprintln!("gestalt laying {stage}: planned {} few-samples {} no-debt {} no-load {} laid {}", dcnt[0], dcnt[1], dcnt[2], dcnt[3], dcnt[4]);
             }
         } else {
         'grid: for j in 0..ny {
@@ -19259,11 +19258,20 @@ mod aqua_tests {
         assert_ne!(g.canvas.to_image().into_raw(), base.canvas.to_image().into_raw(), "the planner paints otherwise");
         let first = touches(&g, "aqua-1");
         assert!(first.iter().any(|s| !in_box(&s.spline[0], 0.5)) && first.iter().any(|s| in_box(&s.spline[0], 0.5)), "the first flood over the background and the focus: {}", first.len());
+        // (Set 13–14: the glaze — aqua-2 — goes over the background's shapes too; the dry brush after it stays on
+        // the focus; no water is laid before either. The flood's water is laid within a shape: no clear-water dab
+        // of aqua-1 straddles the horizon or the box's edge.)
         for st in ["aqua-2", "aqua-3"] {
             let t = touches(&g, st);
             assert!(!t.is_empty(), "{st} touches the focus");
-            assert!(t.iter().all(|s| s.spline.iter().all(|d| in_box(d, 0.5))), "{st} on the focus alone: {} of {} outside", t.iter().filter(|s| !s.spline.iter().all(|d| in_box(d, 0.5))).count(), t.len());
+            assert!(t.iter().any(|s| s.spline.iter().all(|d| in_box(d, 0.5))), "{st} on the focus");
+            assert!(st == "aqua-2" || t.iter().all(|s| s.spline.iter().all(|d| in_box(d, 0.5))), "{st} on the focus alone: {} of {} outside", t.iter().filter(|s| !s.spline.iter().all(|d| in_box(d, 0.5))).count(), t.len());
+            assert!(g.score.strokes.iter().filter(|s| s.inject && s.mix.is_empty() && s.stage == st).count() == 0, "{st} wet-on-dry: no water before it");
         }
+        assert!(touches(&g, "aqua-2").iter().any(|s| !s.spline.iter().any(|d| in_box(d, 0.5))), "aqua-2 glazes the background's shapes");
+        let water: Vec<&StrokeRecord> = g.score.strokes.iter().filter(|s| s.inject && s.mix.is_empty() && s.stage == "aqua-1").collect();
+        assert!(!water.is_empty(), "the sheet wetted before the flood");
+        assert!(water.iter().all(|s| { let (x, y, rp) = (s.spline[0][0], s.spline[0][1], s.w0); let side = |yy: f32| yy < h as f32 / 2.0; let ib = in_box(&[x, y], 0.0); side(y - rp) == side(y + rp) && [[x - rp, y], [x + rp, y], [x, y - rp], [x, y + rp]].iter().all(|d| in_box(d, 0.0) == ib) }), "no water dab straddles the horizon or the focus's edge");
         assert!(g.score.strokes.iter().all(|s| s.resist.is_none()), "no fluid under the planner");
         assert!(first.iter().any(|s| s.spline.len() >= 3 && s.taper > 0.0), "the flood's strokes polylines, run dry toward the ends");
         replay_exact(&g, "the planner");

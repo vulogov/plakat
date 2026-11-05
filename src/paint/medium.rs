@@ -1264,22 +1264,37 @@ pub struct MediumProfile {
     /// the whole sheet on every session and laid a touch wherever the sheet owed the picture a darkening: a dense,
     /// even, grid-shaped reading of the photograph, the same finish everywhere whatever a passage was worth; the sight
     /// keys of sets 1–11 damped that reading. Under this key the parser is replaced: the sheet is cut by the sight's
-    /// saliency (bent by `aqua_abstraction_focus`) into the FOCUS (above 0.7: every session, wet to dry, and the
-    /// drawing after the washes), the MIDDLE GROUND (0.3 to 0.7: the wet sessions only, three at most — no small
-    /// brush, no dry brush) and the BACKGROUND (0.3 and under: ONE session, the first flood, owing the picture's
-    /// low-pass base alone — its details nothing); a pixel's ladder of ceilings runs over the sessions its zone
-    /// allows. The strokes are POLYLINES along the picture's structure (the tensor's isophote where coherent, the
-    /// class's own direction where not; the focus four radii each way, the middle ground six, the background twelve),
-    /// on a background wash in abutting BANDS across the class's direction (`aqua_sight_strokes` the water's
-    /// unevenness along a band), each claiming the pixels under its CORE (half the radius about the path; the brush's
-    /// spread beyond it is the wet edge the neighbours share) — its mass, the engine's debt per area exactly as a
-    /// grid cell's, over its dabs by their tapered radii and the sweep's share — and a stroke over claimed ground not
-    /// laid; the brush lifts off at the ends (`aqua_taper`) and runs dry toward them (`aqua_sweep`). A wet session is
-    /// REHEARSED: laid on a copy of the sheet and dried as the session dries, the share of its debt the drying left
-    /// paid measured (a least-squares gain over the pixels the session owes), and every touch's charge raised by the
-    /// inverse — at most fourfold, twice over at most, not at all when the sheet pays nine tenths — before the sheet
-    /// itself is touched: the grid had six sessions and the drawing after them to pay what a wet flood left short
-    /// (the engine's drying pays about half of a charge), the background has its one. The capillary seam (`aqua_sight_barrier`) is laid along
+    /// saliency (bent by `aqua_abstraction_focus`) into the FOCUS (above 0.4), the MIDDLE GROUND (0.15 to 0.4) and
+    /// the BACKGROUND (0.15 and under), and within its zone every pixel's LADDER — the sessions that touch it — is
+    /// CONTINUOUS in the picture's local contrast at the brush's window against the sheet's ninth decile (set 13):
+    /// the background the first flood, and a glaze where the contrast is over half; the middle ground the flood and
+    /// the wide brushes after it up to three by the contrast; the focus the flood, the glazes and the first dry brush
+    /// everywhere, the finer dry brushes by the contrast — a flat hull is glazed and left, its rigging is drawn. The
+    /// background owes its low-pass base at the brush's scale within its own class (no bleed across the classes:
+    /// the sea's colour the sea's at the horizon). THE GLAZES: the first session is the wet flood on the wetted
+    /// sheet, every session after it is laid WET-ON-DRY — no water before it, the brush the session's — a
+    /// half-transparent layer that holds its shape over what the flood left light: the engine's wet laying pays
+    /// about half of a charge in stops, and that lightness is the watercolour's own, closed by the layers after, not
+    /// forced into the puddle (set 12 had rehearsed each wet session on a copy and raised the charge by the measured
+    /// shortfall: saturation and mud). The strokes are POLYLINES along the picture's structure (the tensor's isophote
+    /// where coherent, the class's own direction where not; the focus four radii each way, the middle ground six,
+    /// the background twelve), on a background wash in long abutting BANDS that follow the form (a turn of 60°
+    /// allowed) — within SHAPES (set 14): off the focus the connected regions of one class, the sky, the hill, the
+    /// sea, a tree, the focus a shape of its own; the sheet is wetted WITHIN a shape (the water's dabs half the
+    /// brush on a grid of the same pitch, a dab whose rim leaves its shape not laid) and never across its edge, so
+    /// the hill is wet inside and dry against the sky and the flood's edge there is the wash's own hard edge; a
+    /// shape the brush does not fit across is laid as one stroke a session along its own axis with the brush of
+    /// its half-width (a tree's crown a stroke, never discs); the background's ladder two washes, the flood and a
+    /// glaze over the whole shape, a third where the contrast rises (a turn of 60°
+    /// allowed; `aqua_sight_strokes` the water's unevenness along a band), each claiming the pixels under its CORE
+    /// (half the radius about the path; the brush's spread beyond it is the wet edge the neighbours share) — its
+    /// mass, the engine's debt per area exactly as a grid cell's, over its dabs by their tapered radii and the
+    /// sweep's share — and a stroke over claimed ground not laid; the brush lifts off at the ends (`aqua_taper`) and
+    /// runs dry toward them (`aqua_sweep`). NO DAUB (set 13): a wet session's stroke is a movement, never a disc — a
+    /// stroke the structure cuts short of two radii is traced again straight along its class's direction, and if the
+    /// boundary cuts that short too the brush narrows to half the run (a tree smaller than the session's brush
+    /// takes the brush that fits it, down to a quarter of the session's), under that nothing is laid there; the dry
+    /// brushes keep their short tick. The capillary seam (`aqua_sight_barrier`) is laid along
     /// the focus's boundary alone, the background's washes mingling free; `aqua_sight_whites` cuts its lights from the
     /// debt instead of masking them; the class table's `weight` (set 11) settles the foliage as a granulating pigment.
     /// The drawing after the washes stays on the focus. The engine (the solver) is untouched; every stroke is a touch
