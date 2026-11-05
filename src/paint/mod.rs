@@ -27,6 +27,7 @@ pub mod palette;
 pub mod plan;
 pub mod pigment;
 pub mod report;
+pub(crate) mod gestalt;
 pub mod sheet;
 #[cfg(feature = "aqua-sight")]
 pub mod sight;

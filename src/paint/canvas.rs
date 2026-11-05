@@ -61,6 +61,9 @@ pub struct AquaState {
     /// THE CAPILLARY SEAM (7.17.0 set 5; `Canvas::add_capillary_seam`): per cell its share 0..1 — across a seam the
     /// water and the pigment pass at 5% at 1, and a seam cell dries as the puddle's rim does. Empty = none.
     seam: Vec<f32>,
+    /// THE HEAVY CELLS (7.17.0 set 11; `Canvas::add_heavy_cells`): per cell its share 0..1 — every lane settles on the
+    /// cell as if weighted by it (the plan's class table, a granulating pigment for the foliage). Empty = none.
+    heavy: Vec<f32>,
 }
 
 /// The paint over a box of the canvas (see `Canvas::snapshot_paint`).
@@ -135,6 +138,9 @@ pub struct Canvas {
     /// its share 0..1 — no fluid, no wall: the engine's water crosses it slowed and dries along it, the pigment it
     /// carries pinned there. Empty = none.
     seam: Vec<f32>,
+    /// THE HEAVY CELLS (7.17.0 set 11; `add_heavy_cells`): at the engine's cells, every cell a run crosses, the share
+    /// 0..1 of a heavy pigment every lane settles by there. Empty = none.
+    heavy: Vec<f32>,
     /// WET MARKS (see `BrushConfig::smear`): the tick of the knife mark that last laid each pixel (0 = dry, and
     /// empty until a smearing knife lays), and the count of such marks so far; a pixel's wetness decays by
     /// `e^(−Δticks / WET_TAU)` and the drying between passes ages every stamp (see `dry`).
@@ -219,7 +225,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), line_wall: Vec::new(), seam: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, seep: false, ln_r: Vec::new(), clip: None, age: Vec::new(), cloth_seed: 0, grain_scale: 1.0, grain_bell: 0.0, grain_wet: 0.0, rim_barrier: 0.0, dry_edge: 0.0, rim_tension: 0.0, resist: Vec::new(), line_wall: Vec::new(), seam: Vec::new(), heavy: Vec::new(), laid: Vec::new(), tick: 0, blade: Vec::new(), blade_at: (0.0, 0.0, 0.0), aqua: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -296,6 +302,19 @@ impl Canvas {
     /// the pool, the pigment pins along its edges, the line keeps its own tone (bare of wash at 1, tinted by the
     /// rest under it). `k` ≤ 0 or no path = no-op.
     pub fn add_resist_lines(&mut self, paths: &[[f32; 2]], radius: f32, k: f32) {
+        self.add_resist_impl(paths, radius, k, true);
+    }
+
+    /// THE SOFT FLUID (7.17.0 set 11; see `MediumProfile::aqua_sight_whites`): the masking fluid along `paths` as
+    /// `add_resist_lines` lays it — the share `k` on every pixel within `radius` — but NO WALL at the engine's cells:
+    /// the water runs over the light as over the open sheet and the pigment lands, and the fluid lifts its share of
+    /// what landed when the pass is laid down (`set_resist_rings`) — a light kept at 1 − k of the wash's tone, its
+    /// shape the pixels' and not the cells'. Replayed from a record with `resist` and `hold`.
+    pub fn add_resist_soft(&mut self, paths: &[[f32; 2]], radius: f32, k: f32) {
+        self.add_resist_impl(paths, radius, k, false);
+    }
+
+    fn add_resist_impl(&mut self, paths: &[[f32; 2]], radius: f32, k: f32, wall: bool) {
         let k = k.clamp(0.0, 1.0);
         if k <= 0.0 || paths.is_empty() {
             return;
@@ -308,7 +327,7 @@ impl Canvas {
         let b2 = band * band;
         let cs = self.aqua_cell();
         let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
-        if self.line_wall.len() != cw * ch {
+        if wall && self.line_wall.len() != cw * ch {
             self.line_wall = vec![false; cw * ch];
         }
         let reach = band.max(0.71 * cs as f32);
@@ -339,7 +358,11 @@ impl Canvas {
                     }
                 }
             }
-            // The cells the line crosses: walls.
+            // The cells the line crosses: walls (none for the soft fluid).
+            if !wall {
+                prev = Some(b);
+                continue;
+            }
             let csf = cs as f32;
             let cx0 = ((a[0].min(b[0]) - reach) / csf).floor().max(0.0) as usize;
             let cx1 = (((a[0].max(b[0]) + reach) / csf).ceil().max(0.0) as usize).min(cw - 1);
@@ -412,6 +435,69 @@ impl Canvas {
             }
             prev = Some(b);
         }
+    }
+
+    /// THE HEAVY CELLS (7.17.0 set 11; see `PaintPlan::aqua_sight_classes`, the class's `weight`): a HEAVY PIGMENT
+    /// chosen for a passage — the watercolourist's granulating earth for the foliage — laid as a share `k` (0..1) on
+    /// every engine cell a run of `paths` crosses (NaN-separated polylines, the cell's centre within `radius` or
+    /// within 0.71 of a cell), where it had less. In the solver (`aqua_settle_full`) every lane on a heavy cell
+    /// settles AS IF WEIGHTED by `weight + share × (1 − weight)` whatever its masstone's chroma: its diffusion
+    /// against its gradient falls, the water carries less of it, it lands faster and in the tooth's hollows and slides
+    /// into them — the cauliflower of a granulating green, not the flat stain of a dye. Laid once, read by every
+    /// session after. `k` ≤ 0 or no path = no-op; none laid = the solver to the bit.
+    pub fn add_heavy_cells(&mut self, paths: &[[f32; 2]], radius: f32, k: f32) {
+        let k = k.clamp(0.0, 1.0);
+        if k <= 0.0 || paths.is_empty() {
+            return;
+        }
+        let (w, h) = (self.w as usize, self.h as usize);
+        let cs = self.aqua_cell();
+        let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
+        if self.heavy.len() != cw * ch {
+            self.heavy = vec![0.0; cw * ch];
+        }
+        let reach = radius.max(0.5).max(0.71 * cs as f32);
+        let r2 = reach * reach;
+        let csf = cs as f32;
+        let mut prev: Option<[f32; 2]> = None;
+        for pt in paths {
+            if !(pt[0].is_finite() && pt[1].is_finite()) {
+                prev = None;
+                continue;
+            }
+            let (a, b) = (prev.unwrap_or(*pt), *pt);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = dx * dx + dy * dy;
+            let cx0 = ((a[0].min(b[0]) - reach) / csf).floor().max(0.0) as usize;
+            let cx1 = (((a[0].max(b[0]) + reach) / csf).ceil().max(0.0) as usize).min(cw - 1);
+            let cy0 = ((a[1].min(b[1]) - reach) / csf).floor().max(0.0) as usize;
+            let cy1 = (((a[1].max(b[1]) + reach) / csf).ceil().max(0.0) as usize).min(ch - 1);
+            for qy in cy0..=cy1 {
+                for qx in cx0..=cx1 {
+                    let (px, py) = ((qx * cs) as f32 + csf * 0.5, (qy * cs) as f32 + csf * 0.5);
+                    let t = if l2 > 1e-9 { (((px - a[0]) * dx + (py - a[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (a[0] + dx * t - px, a[1] + dy * t - py);
+                    if ex * ex + ey * ey <= r2 {
+                        let q = qy * cw + qx;
+                        if self.heavy[q] < k {
+                            self.heavy[q] = k;
+                        }
+                    }
+                }
+            }
+            prev = Some(b);
+        }
+    }
+
+    /// The heavy cells' share at a pixel (`add_heavy_cells`); 0 where none.
+    pub fn heavy_at(&self, p: usize) -> f32 {
+        if self.heavy.is_empty() {
+            return 0.0;
+        }
+        let w = self.w as usize;
+        let cs = self.aqua_cell();
+        let cw = w.div_ceil(cs);
+        self.heavy.get((p / w / cs) * cw + (p % w) / cs).copied().unwrap_or(0.0)
     }
 
     /// THE PENCIL LAID DIRECT (7.16.0 set 15; see `MediumProfile::aqua_line_density`): the skeleton's line as
@@ -2101,7 +2187,9 @@ impl Canvas {
             let relief = Self::box_blur_f(&relief, cw, ch, ((2.0 * gs / cs as f32) * gw).round().max(1.0) as usize);
             // THE CAPILLARY SEAM (set 5): the seam's cells as laid (`add_capillary_seam`), none when none.
             let seam = if self.seam.len() == cells { self.seam.clone() } else { Vec::new() };
-            self.aqua = Some(AquaState { cs, cw, ch, water: vec![0.0; cells], mass: vec![0.0; cells * n], relief, wall, seam });
+            // THE HEAVY CELLS (set 11): as laid (`add_heavy_cells`), none when none.
+            let heavy = if self.heavy.len() == cells { self.heavy.clone() } else { Vec::new() };
+            self.aqua = Some(AquaState { cs, cw, ch, water: vec![0.0; cells], mass: vec![0.0; cells * n], relief, wall, seam, heavy });
         }
         self.aqua.as_mut().unwrap()
     }
@@ -2365,7 +2453,7 @@ impl Canvas {
         }
         let (w, h, n) = (self.w as usize, self.h as usize, self.n);
         let px = w * h;
-        let AquaState { cs, cw, ch, mut water, mut mass, relief, wall, seam } = st;
+        let AquaState { cs, cw, ch, mut water, mut mass, relief, wall, seam, heavy } = st;
         let cells = cw * ch;
         let rc = reach.max(1.0) / cs as f32;
         let gs = self.grain_scale.max(1.0);
@@ -2402,6 +2490,11 @@ impl Canvas {
         let (hold_on, sink_on, drift_on) = (hold_k > 0.0, sink_k > 0.0, drift_k > 0.0);
         // THE CAPILLARY SEAM (7.17.0 set 5; see `add_capillary_seam`): none laid = the solver as it was, to the bit.
         let seam_on = seam.len() == cells;
+        // THE HEAVY CELLS (7.17.0 set 11; see `add_heavy_cells`): on a heavy cell every lane's weight is raised toward 1 by
+        // the cell's share, whatever its masstone — the weight the lane settles by at the cell; none laid = the lanes'
+        // own weights, to the bit.
+        let heavy_on = heavy.len() == cells;
+        let wt_q = |c: usize, q: usize| -> f32 { if heavy_on { wt[c] + heavy[q] * (1.0 - wt[c]) } else { wt[c] } };
         let mut conc = if hold_on || sink_on { vec![0f32; cells] } else { Vec::new() };
         let e0 = 1.6 / steps as f32;
         let ek = evap.clamp(0.0, 1.0);
@@ -2465,7 +2558,8 @@ impl Canvas {
                         let wm = wi.min(wj);
                         let pk = pool_k * ((wm - 0.6) / 0.35).clamp(0.0, 1.0);
                         for c in 0..n {
-                            let dk = (0.1 * (1.0 - wt[c]) + 0.3 * pk * (1.0 - 0.5 * wt[c])) * v;
+                            let wq = wt_q(c, q).max(wt_q(c, nb));
+                            let dk = (0.1 * (1.0 - wq) + 0.3 * pk * (1.0 - 0.5 * wq)) * v;
                             if dk <= 0.0 {
                                 continue;
                             }
@@ -2487,7 +2581,7 @@ impl Canvas {
                     dw[dst] += amt;
                     let share = amt / water[src].max(1e-6) * if dry_dst { wick } else { 1.0 };
                     for c in 0..n {
-                        let mv = mass[src * n + c] * share * (1.0 - 0.6 * wt[c]);
+                        let mv = mass[src * n + c] * share * (1.0 - 0.6 * wt_q(c, src));
                         dm[src * n + c] -= mv;
                         dm[dst * n + c] += mv;
                     }
@@ -2502,7 +2596,7 @@ impl Canvas {
                     }
                     let share = 0.05 * drift_k * ((water[q + cw] - 0.3) / 0.7).clamp(0.0, 1.0);
                     for c in 0..n {
-                        let mv = mass[q * n + c] * share * (1.0 - 0.6 * wt[c]);
+                        let mv = mass[q * n + c] * share * (1.0 - 0.6 * wt_q(c, q));
                         dm[q * n + c] -= mv;
                         dm[(q + cw) * n + c] += mv;
                     }
@@ -2561,9 +2655,10 @@ impl Canvas {
                 // draws in lands before the mingling carries it back out (the capillary edge is a deposit, not a stain).
                 let sink_m = if seam_on { sink_m * (1.0 + 9.0 * seam[q]) } else { sink_m };
                 for c in 0..n {
-                    let rate = ((0.006 + 0.06 * wt[c] * (0.25 + hollow)) * rate_k / (wv + 0.1) * sink_m).min(1.0);
+                    let wq = wt_q(c, q);
+                    let rate = ((0.006 + 0.06 * wq * (0.25 + hollow)) * rate_k / (wv + 0.1) * sink_m).min(1.0);
                     let d = mass[q * n + c] * rate;
-                    let slide = if drop_sum > 0.0 { d * 0.6 * wt[c] * (drop_sum / slope_ref).min(1.0) } else { 0.0 };
+                    let slide = if drop_sum > 0.0 { d * 0.6 * wq * (drop_sum / slope_ref).min(1.0) } else { 0.0 };
                     settled[q * n + c] += d - slide;
                     if slide > 0.0 {
                         for (nb, dr) in downs {
@@ -2634,7 +2729,7 @@ impl Canvas {
         } else {
             Vec::new()
         };
-        let wgt_of = |c: usize| -> Vec<f32> { (0..px).map(|p| { let b = gate[p] * (1.0 + wt[c] * ((hollow_px[p] - h_mean) / (2.0 * h_dev)).clamp(-1.0, 1.0)).max(0.0); if gd > 0.0 { b * (1.0 + gd * shade[p]) } else { b } }).collect() };
+        let wgt_of = |c: usize| -> Vec<f32> { (0..px).map(|p| { let wp = if heavy_on { wt_q(c, (p / w / cs) * cw + (p % w) / cs) } else { wt[c] }; let b = gate[p] * (1.0 + wp * ((hollow_px[p] - h_mean) / (2.0 * h_dev)).clamp(-1.0, 1.0)).max(0.0); if gd > 0.0 { b * (1.0 + gd * shade[p]) } else { b } }).collect() };
         let mut wgt: Vec<Vec<f32>> = Vec::with_capacity(n);
         let mut wgt_mean: Vec<Vec<f32>> = Vec::with_capacity(n);
         for c in 0..n {
@@ -4532,6 +4627,39 @@ mod flow_tests {
         plain.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
         plain.aqua_settle(16.0, 1.0, 0.8, 1.0, 0.0);
         assert_eq!(open.to_image().into_raw(), plain.to_image().into_raw(), "a seam at 0 is the open sheet to the bit");
+    }
+
+    #[test]
+    fn the_heavy_cells_hold_the_pigment_where_it_lands() {
+        // 7.17.0 set 11: the seam test's sheet — a clear puddle and a loaded dab of a DYE (the weight 0) at its side —
+        // with every cell heavy at 1 against the open sheet: the pigment carried past the dab's reach less than half
+        // what the dye travels (the diffusion gone, the flow carrying 40%, the settling fast), what lands within the
+        // dab's own band more; a sheet with the heavy cells at 0 is the open sheet to the bit; the share read back.
+        let pal = palette::EARTH;
+        let fresh = || Canvas::white(96, 96, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[0] = 0.8;
+        let band = |c: &Canvas, x0: u32, x1: u32| -> f32 { (0..96u32).flat_map(|y| (x0..x1).map(move |x| (x, y))).map(|(x, y)| c.conc_at(x, y)[0]).sum() };
+        let rows: Vec<[f32; 2]> = (0..96u32).flat_map(|r| [[0.5, r as f32 + 0.5], [95.5, r as f32 + 0.5], [f32::NAN, f32::NAN]]).collect();
+        let run = |k: f32| -> Canvas {
+            let mut c = fresh();
+            c.add_heavy_cells(&rows, 0.5, k);
+            c.aqua_inject(&[[48.0, 48.0]], 40.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+            c.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+            c.aqua_settle(16.0, 1.0, 0.0, 1.0, 0.0);
+            c
+        };
+        let (open, heavy) = (run(0.0), run(1.0));
+        assert!(heavy.heavy_at(48 * 96 + 48) >= 0.999 && open.heavy_at(48 * 96 + 48) <= 0.0, "the share read back, none at 0");
+        let (far_open, far_heavy) = (band(&open, 52, 96), band(&heavy, 52, 96));
+        assert!(far_open > 0.0 && far_heavy < 0.5 * far_open, "the heavy pigment travels less: {far_heavy} vs {far_open}");
+        let (near_open, near_heavy) = (band(&open, 22, 46), band(&heavy, 22, 46));
+        assert!(near_heavy > near_open, "…and lands where the dab laid it: {near_heavy} vs {near_open}");
+        let mut plain = fresh();
+        plain.aqua_inject(&[[48.0, 48.0]], 40.0, 0.0, 1.0, &vec![0f32; pal.pigments.len()], 0.0, 0.0, 0.0);
+        plain.aqua_inject(&[[34.0, 48.0]], 12.0, 0.0, 1.0, &load, 0.0, 0.0, 0.0);
+        plain.aqua_settle(16.0, 1.0, 0.0, 1.0, 0.0);
+        assert_eq!(open.to_image().into_raw(), plain.to_image().into_raw(), "the heavy cells at 0 are the open sheet to the bit");
     }
 
     #[test]

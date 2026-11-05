@@ -53,6 +53,23 @@
 //! itself, not the small brushes — off the sight every touch is wet-on-wet into a wetted sheet and blooms; the base's
 //! low-pass crosses the wash classes and the seam waits for the base; the first wash withholds a share of the base's
 //! tone, a luminous underpainting the later sessions glaze.
+//!
+//! Set 10 (the painter's `aqua_sight_whites`, `aqua_sight_strokes`, `aqua_sight_accent`): the background as a hand
+//! and water, not a blur — the small lights saved under the masking fluid before the first wash (the far town), a
+//! wash class's wet sessions laid as strokes along its own direction in bands with the paper between, a thick
+//! charge dropped into a wash's dark while the puddle is wet.
+//!
+//! Set 11: the whites SOFT and BY THE CLASSES (the fluid's share by the light's contrast, no wall at the cells, the
+//! built, the things and the people only — a lit blade of grass is no light to save); the class table gains a WEIGHT
+//! (`ClassMap::heavy`, the plan's `aqua_sight_classes: { foliage: { weight: 1 } }`), the heavy pigment's share handed
+//! to the painter as `PaintParams::sight_heavy` and laid on the engine's cells (`Canvas::add_heavy_cells`), so the
+//! foliage settles as a granulating earth does; the bands wider by the key with the paper between them and the water
+//! uneven along them.
+//!
+//! Set 12 (`paint::gestalt`, the painter's `aqua_gestalt`, `aqua_budget`, `aqua_abstraction_focus`,
+//! `aqua_negative_space`): the grid of debt replaced by a planner that reads the sight first — the sheet cut into
+//! the focus, the middle ground and the background, the background flooded once from its base, the negative space
+//! left as paper, the strokes polylines along the structure within a budget.
 
 use anyhow::{Context, Result};
 use image::{GrayImage, RgbImage};
@@ -202,6 +219,9 @@ pub struct ClassMap {
     pub salience: [f32; 8],
     /// The classes' water, in `CLASSES` order (`PainterClass::water` unless tuned).
     pub water: [f32; 8],
+    /// The classes' WEIGHT (7.17.0 set 11), in `CLASSES` order: the share of a heavy, granulating pigment chosen for the
+    /// class, 0..1 — 0 for every class unless the plan tunes it (`Canvas::add_heavy_cells`).
+    pub weight: [f32; 8],
 }
 
 /// The table's defaults, in `CLASSES` order.
@@ -276,7 +296,7 @@ pub fn collapse_classes(probs: &[f32], labels: &[String], gw: usize, gh: usize, 
         class[i] = best as u8;
         conf[i] = bv.clamp(0.0, 1.0);
     }
-    Some(ClassMap { class, conf, salience: default_salience(), water: default_water() })
+    Some(ClassMap { class, conf, salience: default_salience(), water: default_water(), weight: [0.0; 8] })
 }
 
 /// The class map SNAPPED TO THE PICTURE'S EDGES: SegFormer's grid is a 128th of the picture, its boundary a
@@ -359,14 +379,14 @@ pub fn collapse_classes_guided(probs: &[f32], labels: &[String], gw: usize, gh: 
         class[i] = best as u8;
         conf[i] = if wsum > 0.0 { (bv / wsum).clamp(0.0, 1.0) } else { 0.0 };
     }
-    Some(ClassMap { class, conf, salience: default_salience(), water: default_water() })
+    Some(ClassMap { class, conf, salience: default_salience(), water: default_water(), weight: [0.0; 8] })
 }
 
 impl ClassMap {
-    /// The table tuned from the plan: `(class name, salience, water)`, each value optional, a name the table does not
-    /// know ignored, the values clamped (the salience to `[0, 1]`, the water to `[−1, 1]`).
-    pub fn tune(&mut self, overrides: &[(String, Option<f32>, Option<f32>)]) {
-        for (name, sal, wat) in overrides {
+    /// The table tuned from the plan: `(class name, salience, water, weight)`, each value optional, a name the table
+    /// does not know ignored, the values clamped (the salience to `[0, 1]`, the water to `[−1, 1]`, the weight to `[0, 1]`).
+    pub fn tune(&mut self, overrides: &[(String, Option<f32>, Option<f32>, Option<f32>)]) {
+        for (name, sal, wat, wgt) in overrides {
             let n = name.trim().to_ascii_lowercase();
             if let Some(i) = CLASSES.iter().position(|c| c.name() == n) {
                 if let Some(v) = sal {
@@ -375,8 +395,16 @@ impl ClassMap {
                 if let Some(v) = wat {
                     self.water[i] = v.clamp(-1.0, 1.0);
                 }
+                if let Some(v) = wgt {
+                    self.weight[i] = v.clamp(0.0, 1.0);
+                }
             }
         }
+    }
+
+    /// The heavy pigment's share by class and confidence, in `[0, 1]` (set 11); all zero unless the plan tunes a class.
+    pub fn heavy(&self) -> Vec<f32> {
+        self.class.iter().zip(&self.conf).map(|(c, p)| self.weight[(*c as usize).min(7)] * p).collect()
     }
 
     /// The class cue: the class's salience by its confidence.
@@ -427,6 +455,9 @@ pub struct SightMaps {
     pub classes: Option<ClassMap>,
     /// The technique as water by class and confidence, in `[−1, 1]` (`ClassMap::wash`), when SegFormer ran.
     pub wash: Option<Vec<f32>>,
+    /// The heavy pigment's share by class and confidence, in `[0, 1]` (`ClassMap::heavy`; set 11), when SegFormer ran
+    /// and the plan tuned a class's weight — `None` when none is above 0.
+    pub heavy: Option<Vec<f32>>,
     /// The names of the cues that went into the fusion, for the report line.
     pub sources: Vec<&'static str>,
 }
@@ -587,7 +618,7 @@ impl SightMaps {
 /// painter's face mask when one was found; `class_k` the key `aqua_sight_class` — above 0 SegFormer runs and the
 /// class map enters the fusion by it; `tune` the plan's class table (`ClassMap::tune`). Fails only when not even the
 /// low-level cue can be built.
-pub async fn build(input: &Path, img: &RgbImage, face: Option<&[f32]>, class_k: f32, tune: &[(String, Option<f32>, Option<f32>)]) -> Result<(SightMaps, Vec<String>)> {
+pub async fn build(input: &Path, img: &RgbImage, face: Option<&[f32]>, class_k: f32, tune: &[(String, Option<f32>, Option<f32>, Option<f32>)]) -> Result<(SightMaps, Vec<String>)> {
     let (w, h) = img.dimensions();
     let n = w as usize * h as usize;
     let mut notes: Vec<String> = Vec::new();
@@ -688,14 +719,14 @@ pub async fn build(input: &Path, img: &RgbImage, face: Option<&[f32]>, class_k: 
     if face.is_some() {
         sources.push("faces");
     }
-    let (cue, damp, wash) = match &classes {
-        Some(c) => (Some(c.cue()), Some(c.damp(class_k)), Some(c.wash())),
-        None => (None, None, None),
+    let (cue, damp, wash, heavy) = match &classes {
+        Some(c) => (Some(c.cue()), Some(c.damp(class_k)), Some(c.wash()), Some(c.heavy()).filter(|m| m.iter().any(|v| *v > 0.0))),
+        None => (None, None, None, None),
     };
     let saliency = fuse_with_class(w, h, object.as_deref(), near.as_deref(), face, &low, cue.as_deref(), damp.as_deref());
     // The technique yields to the saliency: what the sight looks at is painted as the brush is, whatever its class.
     let wash = wash.map(|m| yield_to_saliency(&m, &saliency));
-    Ok((SightMaps { w, h, saliency, object, depth, near, low, classes, wash, sources }, notes))
+    Ok((SightMaps { w, h, saliency, object, depth, near, low, classes, wash, heavy, sources }, notes))
 }
 
 #[cfg(test)]
@@ -828,8 +859,10 @@ mod tests {
         let probs = vec![1.0f32, 0.0, 0.0, 1.0];
         let mut cm = collapse_classes(&probs, &labels, 2, 1, 4, 1).expect("a map");
         assert!(cm.wash()[0] > 0.99 && cm.cue()[0] < 0.1, "the sky a wet wash of no salience by default");
-        cm.tune(&[("sky".into(), Some(0.9), Some(-1.0)), ("Thing".into(), None, Some(2.0)), ("dragon".into(), Some(1.0), Some(1.0))]);
+        assert!(cm.heavy().iter().all(|v| *v == 0.0), "no heavy pigment by default");
+        cm.tune(&[("sky".into(), Some(0.9), Some(-1.0), None), ("Thing".into(), None, Some(2.0), Some(1.5)), ("dragon".into(), Some(1.0), Some(1.0), Some(1.0))]);
         assert!(cm.wash()[0] < -0.99 && cm.cue()[0] > 0.89, "the sky tuned dry and salient: {} {}", cm.wash()[0], cm.cue()[0]);
+        assert!(cm.heavy()[3] > 0.99 && cm.heavy()[0] == 0.0, "the thing's weight clamped to 1, the sky's none: {:?}", cm.heavy());
         assert!(cm.wash()[3] > 0.99, "the thing's water clamped to 1: {}", cm.wash()[3]);
         assert!((cm.cue()[3] - PainterClass::Thing.salience()).abs() < 1e-6, "the thing's salience untouched");
         let wash = vec![1.0f32, -1.0, 0.5, 0.0];

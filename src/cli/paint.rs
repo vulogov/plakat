@@ -1942,6 +1942,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_sight_wet = plan.medium.aqua_sight_wet;
     params.aqua_sight_bleed = plan.medium.aqua_sight_bleed;
     params.aqua_sight_luminous = plan.medium.aqua_sight_luminous;
+    params.aqua_sight_whites = plan.medium.aqua_sight_whites;
+    params.aqua_sight_strokes = plan.medium.aqua_sight_strokes;
+    params.aqua_sight_accent = plan.medium.aqua_sight_accent;
+    params.aqua_gestalt = plan.medium.aqua_gestalt;
+    params.aqua_budget = plan.medium.aqua_budget;
+    params.aqua_abstraction_focus = plan.medium.aqua_abstraction_focus;
+    params.aqua_negative_space = plan.medium.aqua_negative_space;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2982,6 +2989,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_sight_wet = m.aqua_sight_wet;
         params.aqua_sight_bleed = m.aqua_sight_bleed;
         params.aqua_sight_luminous = m.aqua_sight_luminous;
+        params.aqua_sight_whites = m.aqua_sight_whites;
+        params.aqua_sight_strokes = m.aqua_sight_strokes;
+        params.aqua_sight_accent = m.aqua_sight_accent;
+        params.aqua_gestalt = m.aqua_gestalt;
+        params.aqua_budget = m.aqua_budget;
+        params.aqua_abstraction_focus = m.aqua_abstraction_focus;
+        params.aqua_negative_space = m.aqua_negative_space;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3297,6 +3311,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_sight_wet { params.aqua_sight_wet = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_bleed { params.aqua_sight_bleed = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_luminous { params.aqua_sight_luminous = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_whites { params.aqua_sight_whites = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_strokes { params.aqua_sight_strokes = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_accent { params.aqua_sight_accent = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_gestalt { params.aqua_gestalt = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_budget { params.aqua_budget = v.max(0.0); }
+        if let Some(v) = pl.aqua_abstraction_focus { params.aqua_abstraction_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_negative_space { params.aqua_negative_space = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
@@ -3782,10 +3803,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     #[cfg(feature = "aqua-sight")]
     if params.aqua_sight > 0.0 && params.medium == "watercolour" {
         // AQUA SIGHT CLASSES: the plan's class table (see `PaintPlan::aqua_sight_classes`).
-        let tune: Vec<(String, Option<f32>, Option<f32>)> = layer_plan
+        let tune: Vec<(String, Option<f32>, Option<f32>, Option<f32>)> = layer_plan
             .as_ref()
             .and_then(|pl| pl.aqua_sight_classes.as_ref())
-            .map(|m| m.iter().map(|(n, t)| (n.clone(), t.salience, t.water)).collect())
+            .map(|m| m.iter().map(|(n, t)| (n.clone(), t.salience, t.water, t.weight)).collect())
             .unwrap_or_default();
         match crate::paint::sight::build(&a.input, &img, params.face_mask.as_deref(), params.aqua_sight_class, &tune).await {
             Ok((maps, notes)) => {
@@ -3802,6 +3823,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 params.sight = Some(maps.saliency);
                 params.sight_class = maps.classes.as_ref().map(|c| c.class.clone());
                 params.sight_wash = maps.wash;
+                params.sight_heavy = maps.heavy;
             }
             Err(e) => found!(style("·").yellow(), "sight: failed ({e}) — the focus from the gradients"),
         }

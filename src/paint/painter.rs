@@ -711,6 +711,21 @@ pub struct PaintParams {
     pub aqua_sight_bleed: f32,
     /// AQUA SIGHT LUMINOUS: the share of the base's tone the first wash withholds (see `MediumProfile::aqua_sight_luminous`).
     pub aqua_sight_luminous: f32,
+    /// AQUA SIGHT WHITES: the masking fluid on the small lights before the first wash (see `MediumProfile::aqua_sight_whites`).
+    pub aqua_sight_whites: f32,
+    /// AQUA SIGHT STROKES: a wash class's wet sessions as strokes along its direction, in bands (see `MediumProfile::aqua_sight_strokes`).
+    pub aqua_sight_strokes: f32,
+    /// AQUA SIGHT ACCENT: a thick charge into a wash's dark while it is wet (see `MediumProfile::aqua_sight_accent`).
+    pub aqua_sight_accent: f32,
+    /// AQUA GESTALT (7.17.0 set 12; `MediumProfile::aqua_gestalt`): the water engine's score planned by the gestalt
+    /// planner (`paint::gestalt`) instead of the grid of debt. 0 = the grid.
+    pub aqua_gestalt: f32,
+    /// AQUA BUDGET: the planner's strokes at most (0 = no limit).
+    pub aqua_budget: f32,
+    /// AQUA ABSTRACTION FOCUS (0..1): how steeply the detail falls from the focus to the edges.
+    pub aqua_abstraction_focus: f32,
+    /// AQUA NEGATIVE SPACE (0..1): the share of the picture's range above which the paper stays bare off the focus.
+    pub aqua_negative_space: f32,
     /// AQUA GRAIN DIR: the pigment settling on the relief's slopes turned from the light (see `MediumProfile::aqua_grain_dir`).
     pub aqua_grain_dir: f32,
     /// AQUA SPOT DRY: the sheet dried under the focus's high-contrast touches (see `MediumProfile::aqua_spot_dry`).
@@ -993,12 +1008,16 @@ pub struct PaintParams {
     /// AQUA SIGHT (set 5): the sight's class index per pixel (`sight::ClassMap::class`, `w × h`) — the gradient's
     /// low-pass is taken within each class on its own. `None` = within the wash as one.
     pub sight_class: Option<Vec<u8>>,
+    /// AQUA SIGHT (set 11): the heavy pigment's share per pixel, `[0, 1]` (`sight::ClassMap::heavy` — the plan's class
+    /// table, a granulating pigment chosen for a class), laid on the engine's cells before the first wash
+    /// (`Canvas::add_heavy_cells`) by `aqua_sight_class`, yielding to the saliency. `None` = none.
+    pub sight_heavy: Option<Vec<f32>>,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0, aqua_sight_debt: 0.0, aqua_sight_sessions: 0.0, aqua_sight_wet: 0.0, aqua_sight_bleed: 0.0, aqua_sight_luminous: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None, sight: None, sight_wash: None, sight_class: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, aqua_sight: 0.0, aqua_sight_reserve: 0.0, aqua_sight_ceiling: 0.0, aqua_sight_class: 0.0, aqua_sight_gradient: 0.0, aqua_sight_barrier: 0.0, aqua_sight_debt: 0.0, aqua_sight_sessions: 0.0, aqua_sight_wet: 0.0, aqua_sight_bleed: 0.0, aqua_sight_luminous: 0.0, aqua_sight_whites: 0.0, aqua_sight_strokes: 0.0, aqua_sight_accent: 0.0, aqua_gestalt: 0.0, aqua_budget: 0.0, aqua_abstraction_focus: 0.0, aqua_negative_space: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None, sight: None, sight_wash: None, sight_class: None, sight_heavy: None }
     }
 }
 
@@ -1464,7 +1483,7 @@ fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 streak: brush.streak,
                 round: brush.round,
                 pickup: Some(0.0),
-                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
 }
@@ -1572,7 +1591,7 @@ fn leak_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 let s = Stroke { path: pth, width0: w0, width1: w1, load: vec![0.0; np], pressure: 1.0, wetness: lw };
                 s.wipe(canvas, &brush, lw * p.lift);
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, inject: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix: Vec::new(), wet: lw, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, inject: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix: Vec::new(), wet: lw, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             }
         } else {
             // A dark run: the pigment a drip collects on its way down, well above the wash's own charge.
@@ -1582,7 +1601,7 @@ fn leak_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 s.rasterize(canvas, &brush);
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix, wet, press: pr, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix, wet, press: pr, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             }
         }
         laid += 1;
@@ -2172,7 +2191,7 @@ fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, lum
             s.smudge(canvas, strength);
             *placed += 1;
             laid += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, inject: false, stage: stage.into(), spline: s.path, w0: width, w1: width, taper: 0.0, mix: Vec::new(), wet: strength, press: 1.0, streak: 0.0, round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: Some(strength), stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, inject: false, stage: stage.into(), spline: s.path, w0: width, w1: width, taper: 0.0, mix: Vec::new(), wet: strength, press: 1.0, streak: 0.0, round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: Some(strength), stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
     }
     laid
@@ -2283,7 +2302,7 @@ fn lay_bole(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
                 *placed += 1;
                 laid += 1;
                 let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "ground".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: BOLE_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(colour), mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "ground".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: BOLE_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(colour), mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             }
             x0 += fine;
         }
@@ -6373,7 +6392,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     edge: None,
                     prof: None,
                     resist: None,
-                seam: None,
+                    seam: None,
+                    heavy: None,
                 })
             }
         };
@@ -6539,7 +6559,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     placed += 1;
                     in_pass += 1;
                     flung += 1;
-                    score.strokes.push(StrokeRecord { id: placed as u32, wipe: false, wash: false, inject: false, stage: pass.stage.clone(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: s.wetness, press: 1.0, streak: b.streak, round: b.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: Some(b.viscosity), crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: placed as u32, wipe: false, wash: false, inject: false, stage: pass.stage.clone(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: s.wetness, press: 1.0, streak: b.streak, round: b.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: Some(b.viscosity), crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 }
             }
             if flung > 0 {
@@ -7408,7 +7428,7 @@ fn wash_prewet(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w: u
     canvas.fill_rings(&rings, &clear, wet, 1.0);
     *k += 1;
     *placed += 1;
-    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: 1.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: 1.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
 }
 
 /// NIB WASH SWEEP (see `MediumProfile::nib_wash_sweep`): one plane laid as wide wet strokes along the flow of
@@ -7558,7 +7578,7 @@ fn wash_sweep_plane(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool],
                     }
                     let mix: Vec<(String, f32)> = (0..n_pig).filter(|&i| load[i] > 0.0).map(|i| (p.palette.pigments[i].name.to_string(), load[i])).collect();
                     let mix2: Vec<(String, f32)> = (0..n_pig).filter(|&i| load_end[i] > 0.0).map(|i| (p.palette.pigments[i].name.to_string(), load_end[i])).collect();
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: stage.to_string(), spline: st.path, w0: width, w1: width, taper: 0.0, mix, wet, press: 1.0, streak: brush.streak, round: 0.4, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: if agent { None } else { Some(mix2) }, smudge: None, stop: None, edge: None, prof, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: stage.to_string(), spline: st.path, w0: width, w1: width, taper: 0.0, mix, wet, press: 1.0, streak: brush.streak, round: 0.4, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: if agent { None } else { Some(mix2) }, smudge: None, stop: None, edge: None, prof, resist: None, seam: None, heavy: None });
                 }
             }
         }
@@ -7669,7 +7689,7 @@ fn wash_plane_fills(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbIma
             pr(PaintProgress::Placed(*placed));
         }
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge, prof: None, resist: None, seam: None, heavy: None });
         // NIB WASH GRADE: within the plane's own band, two sub-steps — the band's darker two thirds filled again, then
         // its darkest third over that — each a third of the key's share of the step to the plane below darker.
         if grade > 0.0 {
@@ -7702,7 +7722,7 @@ fn wash_plane_fills(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbIma
                     pr(PaintProgress::Placed(*placed));
                 }
                 let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.to_string(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             }
         }
     }
@@ -7875,7 +7895,7 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
 }
@@ -8130,7 +8150,7 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
                 streak: p.brush.streak,
                 round: p.brush.round,
                 pickup: None,
-                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
     if laid > 0 {
@@ -8292,7 +8312,7 @@ fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
                 pickup: Some(0.0),
                 bristles: Some(1),
                 kd: None,
-                cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
 }
@@ -8474,7 +8494,7 @@ fn liner_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p:
             s.rasterize(canvas, &brush);
             let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(ix, v)| (p.palette.pigments[ix].name.to_string(), *v)).collect();
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "liner".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix, wet: s.wetness, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "liner".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix, wet: s.wetness, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
     }
 }
@@ -8557,7 +8577,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
 }
@@ -8812,7 +8832,7 @@ fn nib_figure_strokes(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintPar
         let st = Stroke { path, width0: width, width1: (width * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
         st.rasterize(canvas, brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -9081,7 +9101,7 @@ fn nib_figure_hatch(canvas: &mut Canvas, score: &mut StrokeScore, src: &RgbImage
         let st = Stroke { path, width0: width, width1: (width * 0.6).max(1.0), load, pressure: 1.0, wetness: 0.3 };
         st.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
     // NIB OBJECT (see `MediumProfile::nib_object`): a held object's contours — the picture's edges inside it and on its
     // rim (its mask grown by two pixels) — as firm black lines, `1 + 1.5·key` times the hatching's width.
@@ -9105,7 +9125,7 @@ fn nib_figure_hatch(canvas: &mut Canvas, score: &mut StrokeScore, src: &RgbImage
             let st = Stroke { path, width0: ow, width1: (ow * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
             st.rasterize(canvas, &brush);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
     }
 }
@@ -9299,7 +9319,7 @@ fn nib_figure_rim_pool(canvas: &mut Canvas, score: &mut StrokeScore, src: &RgbIm
                 let st = Stroke { path, width0: w0, width1: w1, load, pressure: 1.0, wetness: 0.3 };
                 st.rasterize(canvas, &brush);
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 j = e;
             }
         }
@@ -9441,7 +9461,7 @@ fn nib_accents(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, o
         let s = Stroke { path, width0: width, width1: (width * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.3 };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     };
     if p.nib_anchor > 0.0 {
         let field = nib_anchor_field(&value, p, w, h);
@@ -9675,7 +9695,7 @@ fn nib_accents(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, o
                     let st = Stroke { path, width0: mid_w, width1: fine_w.min(mid_w), load, pressure: 1.0, wetness: 0.3 };
                     st.rasterize(canvas, &brush);
                     *placed += 1;
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: st.path, w0: st.width0, w1: st.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), st.load[ink])], wet: st.wetness, press: st.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 }
             }
         }
@@ -9710,7 +9730,7 @@ fn nib_accents(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, o
             s.rasterize(canvas, &brush);
             *placed += 1;
             *k += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
         // The dark of the eye and the nose filled with close diagonal lines of the finest pen (two and a half widths
         // apart), the catchlight and the nose's light left to the paper.
@@ -9741,7 +9761,7 @@ fn nib_accents(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, o
                     s.rasterize(canvas, &brush);
                     *placed += 1;
                     *k += 1;
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "nib".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 }
                 if !ok {
                     run.clear();
@@ -9915,7 +9935,7 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
                     let s = Stroke { path, width0: dw, width1: dw, load, pressure: 1.0, wetness: 0.3 };
                     s.rasterize(canvas, &dot_brush);
                     *placed += 1;
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: dot_brush.streak, round: dot_brush.round, pickup: Some(0.0), bristles: Some(dot_brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: dot_brush.streak, round: dot_brush.round, pickup: Some(0.0), bristles: Some(dot_brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 }
             }
             continue;
@@ -10003,7 +10023,7 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
                 }
             }
         }
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         // THE TOME's press: the brush halted on the end, the ink spreading and pooling — a short round mark
         // along the line's last direction, wider, darker and wetter by the key.
         for (tome, a, b) in [(tome0, cc[0], cc[(cc.len() - 1).min(4)]), (tome1, cc[cc.len() - 1], cc[cc.len().saturating_sub(5)])] {
@@ -10021,7 +10041,7 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
             let ts = Stroke { path: vec![[a[0] - ox / ol * half, a[1] - oy / ol * half], [a[0] + ox / ol * half * 0.5, a[1] + oy / ol * half * 0.5]], width0: tw, width1: tw, load: tl, pressure: 1.0, wetness: 0.3 + 0.3 * e };
             ts.rasterize(canvas, &tb);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: ts.path, w0: ts.width0, w1: ts.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), ts.load[ink])], wet: ts.wetness, press: ts.pressure, streak: tb.streak, round: tb.round, pickup: Some(0.0), bristles: Some(tb.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: ts.path, w0: ts.width0, w1: ts.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), ts.load[ink])], wet: ts.wetness, press: ts.pressure, streak: tb.streak, round: tb.round, pickup: Some(0.0), bristles: Some(tb.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
     }
     // NIB CLOSE (see `MediumProfile::nib_close`): along the figure's boundary, a stretch no bone line covers, shorter
@@ -10068,7 +10088,7 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
                 let s = Stroke { path, width0: fine_w, width1: fine_w, load, pressure: 1.0, wetness: 0.3 };
                 s.rasterize(canvas, &brush);
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             }
         }
     }
@@ -10203,7 +10223,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         } else {
             // THE DROP'S COLOUR is the brush's — the wash being flicked, i.e. the picture's colour at this
             // spot, a shade deeper — not the palette's darkest pigment. On a white snow scene the ink drops
@@ -10249,7 +10269,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet: s.wetness,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
         }
     }
 }
@@ -10410,7 +10430,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             let s = Stroke { path, width0: ir * 1.5, width1: ir * 0.6, load, pressure: 1.0, wetness: 0.15 };
             s.rasterize(canvas, &dry);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0), bristles: Some(dry.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0), bristles: Some(dry.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
             if let Some(pr) = progress { if *placed % 64 == 0 { pr(PaintProgress::Placed(*placed)); } }
         }
     }
@@ -10585,7 +10605,7 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
         return 0;
     }
     canvas.set_clip_rings(&clip_rings);
-    let clip_rec = |spline: Vec<[f32; 2]>, id: usize| StrokeRecord { id: id as u32, wipe: true, wash: true, inject: false, stage: stage.into(), spline, w0: 0.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 0.0, streak: 0.0, round: 0.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None };
+    let clip_rec = |spline: Vec<[f32; 2]>, id: usize| StrokeRecord { id: id as u32, wipe: true, wash: true, inject: false, stage: stage.into(), spline, w0: 0.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 0.0, streak: 0.0, round: 0.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None };
     score.strokes.push(clip_rec(clip_rings, *placed));
     let mut laid = 0usize;
     let mut tt = if single { (tmin + tmax) * 0.5 } else { tmin + spacing * 0.5 };
@@ -10645,7 +10665,7 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             s.rasterize(canvas, brush);
             *placed += 1;
             laid += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: stage.into(), spline: s.path, w0: width, w1, taper: 0.3, mix: mix.clone(), wet, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(brush.k_pickup), bristles: Some(brush.bristles), kd: Some(brush.k_deposit), cap: (brush.film_cap > 0.0).then_some(brush.film_cap), flat: brush.flat_ends, hold: brush.hold_charge, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: stage.into(), spline: s.path, w0: width, w1, taper: 0.3, mix: mix.clone(), wet, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(brush.k_pickup), bristles: Some(brush.bristles), kd: Some(brush.k_deposit), cap: (brush.film_cap > 0.0).then_some(brush.film_cap), flat: brush.flat_ends, hold: brush.hold_charge, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
         if single {
             break;
@@ -10680,7 +10700,7 @@ fn wc_touch_up(canvas: &mut Canvas, score: &mut StrokeScore, piece: &[bool], w: 
     *k += 1;
     *placed += 1;
     let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.into(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.into(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
 }
 
 fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, sweep_stages: Option<(f32, usize)>, input_keyed: &RgbImage, placed: &mut usize, k: &mut u64) {
@@ -10852,7 +10872,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
                                 *k += 1;
                                 *placed += 1;
                                 let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                             }
                         }
                     }
@@ -10880,7 +10900,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
         *k += 1;
         *placed += 1;
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "wash".into(), spline: rings, w0: feather_px, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "wash".into(), spline: rings, w0: feather_px, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -11374,7 +11394,7 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
                     *k += 1;
                     *placed += 1;
                     let first = if line_off > 0 { "line".to_string() } else { stage.clone() };
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: first, spline: rings, w0: feather_res, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(kr), seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: first, spline: rings, w0: feather_res, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(kr), seam: None, heavy: None });
                 }
             }
             // AQUA LINE (see `aqua_line_pass`): the skeleton on the bare sheet, its stage crossed before the washes.
@@ -11482,7 +11502,7 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
                         pr(PaintProgress::Placed(*placed));
                     }
                     let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather_under, w1: 0.0, taper: 0.0, mix, wet: wet_pool, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather_under, w1: 0.0, taper: 0.0, mix, wet: wet_pool, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
                 }
             }
         }
@@ -11652,7 +11672,7 @@ fn aqua_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_
                     pr(PaintProgress::Placed(*placed));
                 }
                 let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: edges, prof: None, resist: None, seam: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: edges, prof: None, resist: None, seam: None, heavy: None });
             }
         }
         // The plane's stage crossed as the replay crosses it: the bleed's taper, the water, the drying.
@@ -11819,6 +11839,12 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let bleed_k = p.aqua_sight_bleed.clamp(0.0, 1.0);
     let lum_k = p.aqua_sight_luminous.clamp(0.0, 1.0);
     let seam_s = if bleed_k > 0.0 { 1.min(sessions - 1) } else { 0 };
+    // AQUA SIGHT WHITES / STROKES / ACCENT (set 10; see `MediumProfile::aqua_sight_whites`, `aqua_sight_strokes`,
+    // `aqua_sight_accent`): the small lights saved under the fluid before the first wash; a wash class's wet sessions
+    // laid as strokes along its own direction in bands with the paper between; a thick charge into a wash's dark.
+    let whites_k = p.aqua_sight_whites.clamp(0.0, 1.0);
+    let strokes_k = p.aqua_sight_strokes.clamp(0.0, 1.0);
+    let accent_k = p.aqua_sight_accent.clamp(0.0, 1.0);
     let ceil_k = p.aqua_sight_ceiling.clamp(0.0, 1.0);
     let long = w.max(h) as f32;
     let r_wash = (long * 0.007).max(2.0);
@@ -11917,6 +11943,43 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         }
         m
     });
+    // AQUA SIGHT WHITES (see `MediumProfile::aqua_sight_whites`): the SMALL LIGHTS — a pixel at or above the picture's
+    // mid-tone standing over its surround (the luma's low-pass over a 100th of the long side) by 0.15 + 0.6 × (1 − key)
+    // stops, the shapes a 150th of the short side and wider left to the paper gate — the far town's white houses, the
+    // crests' flecks: the fluid's, wherever they are, on the sight or off it.
+    // Set 11: the whites SOFT and BY THE CLASSES — a light's share the fluid takes is its contrast over the threshold
+    // (0 at the bar, 1 at twice it, in quarters: `whites[i]` 0..4), and with the class map only the built, the things
+    // and the people hold a light to save (a lit blade of grass, a crest's fleck are their wash's); without the map
+    // every class, as before.
+    let whites: Option<Vec<u8>> = (whites_k > 0.0).then(|| {
+        let rs = (long / 100.0).round().max(2.0) as i32;
+        let low = box_blur(&box_blur(&luma, w as u32, h as u32, rs), w as u32, h as u32, rs);
+        let thr = 0.15 + 0.6 * (1.0 - whites_k);
+        let (lo, hi) = aqua_range(&luma);
+        let mid = lo + 0.5 * (hi - lo);
+        let class_ok = |i: usize| p.sight_class.as_deref().filter(|c| c.len() == w * h).map_or(true, |c| matches!(c[i], 4 | 5 | 7));
+        let stops: Vec<f32> = (0..w * h).map(|i| if luma[i] >= mid && class_ok(i) { (luma[i].max(1e-3) / low[i].max(1e-3)).ln() } else { 0.0 }).collect();
+        let m: Vec<bool> = stops.iter().map(|s| *s >= thr).collect();
+        let r = (w.min(h) / 150).max(3);
+        let big = dilate_bool(&erode_bool(&m, w, h, r), w, h, r);
+        let m: Vec<u8> = (0..w * h).map(|i| if m[i] && !big[i] { (((stops[i] - thr) / thr * 4.0).ceil().clamp(1.0, 4.0)) as u8 } else { 0 }).collect();
+        if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+            let g = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([m[y as usize * w + x as usize] * 63]));
+            let _ = g.save(std::path::Path::new(&dir).join("aqua_sight_whites.png"));
+        }
+        m
+    });
+    // The whites count as paper for the engine's debt and for the drawing after the washes.
+    let sight_paper: Option<Vec<bool>> = match (sight_paper, &whites) {
+        (Some(mut a), Some(b)) => {
+            for (x, y) in a.iter_mut().zip(b) {
+                *x |= *y > 0;
+            }
+            Some(a)
+        }
+        (None, Some(b)) => Some(b.iter().map(|v| *v > 0).collect()),
+        (a, None) => a,
+    };
     // …and handed out: the drawing after the washes keeps off it too (the restate gate, the paths' guard).
     *sight_reserve_out = sight_paper.clone();
     // AQUA SIGHT CEILING: the feathered focus handed out — the drawing after the washes is held off the focus by
@@ -11975,6 +12038,45 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         let m = (dx * dx + dy * dy).sqrt();
         if m < 1e-4 { (1.0, 0.0) } else { (dx / m, dy / m) }
     };
+    // AQUA SIGHT STROKES (see `MediumProfile::aqua_sight_strokes`): each class's OWN DIRECTION — the structure tensor
+    // of the picture summed over the class, the stroke along its structures (across the gradient): the sea's waves
+    // horizontal, a flat sky's by the sheet.
+    let class_map: Option<&[u8]> = p.sight_class.as_deref().filter(|c| c.len() == w * h);
+    let class_dir: Vec<(f32, f32)> = match (strokes_k > 0.0, class_map) {
+        (true, Some(cm)) => {
+            let (sx, sy) = sobel(&luma, w as u32, h as u32);
+            let (mut jxx, mut jyy, mut jxy) = ([0f32; 256], [0f32; 256], [0f32; 256]);
+            for i in 0..w * h {
+                let c = cm[i] as usize;
+                jxx[c] += sx[i] * sx[i];
+                jyy[c] += sy[i] * sy[i];
+                jxy[c] += sx[i] * sy[i];
+            }
+            (0..256)
+                .map(|c| {
+                    let (a, b, d) = (jxx[c], jxy[c], jyy[c]);
+                    if a + d < 1e-9 {
+                        return (1.0, 0.0);
+                    }
+                    let l1 = 0.5 * ((a + d) + ((a - d).powi(2) + 4.0 * b * b).sqrt());
+                    let (ex, ey) = if b.abs() > 1e-9 { (l1 - d, b) } else if a >= d { (1.0, 0.0) } else { (0.0, 1.0) };
+                    let n = (ex * ex + ey * ey).sqrt().max(1e-9);
+                    (-ey / n, ex / n)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    // AQUA SIGHT ACCENT (see `MediumProfile::aqua_sight_accent`): the picture's DARKS within a wash — the stops it
+    // falls under its base (the wash's low-pass) — where the wet brush drops a thick charge into the puddle.
+    let dark_hp: Vec<f32> = match (accent_k > 0.0, &lin_low) {
+        (true, Some(lowm)) => {
+            let ly = |c: &color::LinRgb| (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).max(1e-4);
+            (0..w * h).map(|i| (ly(&lowm[i]) / ly(&lin[i])).ln().max(0.0)).collect()
+        }
+        _ => Vec::new(),
+    };
+    let accent_thr = 0.15 + 0.6 * (1.0 - accent_k);
     // AQUA LIGHT (see `MediumProfile::aqua_light`): the signed slope of the value over the window (toward the
     // lighter side) against the direction the light comes from — a touch at an edge facing the light (the mass's
     // lit edge) is wetter, at an edge turned from it (the shadow edge) drier; nothing on a flat passage.
@@ -12004,11 +12106,42 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
     let clear = vec![0f32; n];
     let mut want_cache: std::collections::HashMap<(i16, i16, i16), Vec<f32>> = std::collections::HashMap::new();
     let mut samples: Vec<(f32, [f32; 3])> = Vec::new();
+    // THE GESTALT PLANNER (7.17.0 set 12; see `MediumProfile::aqua_gestalt`, `paint::gestalt`): under the key the
+    // grid of debt is not walked — the sheet is cut into the focus, the middle ground and the background by the
+    // sight, the background owes its low-pass base alone and is flooded once, the negative space is paper, and the
+    // strokes are polylines along the picture's structure (abutting bands on a background wash),
+    // each carrying the mass of the pixels it claims, the heaviest kept within the budget. Everything the planner
+    // decides is in the touch records, so the replay is exact; at 0 the grid as before, to the bit.
+    use crate::paint::gestalt;
+    let gestalt_k = p.aqua_gestalt.clamp(0.0, 1.0);
+    let lin_low_g: Option<Vec<color::LinRgb>> = (gestalt_k > 0.0).then(|| sight_wash_lowpass(&lin, &vec![1.0f32; w * h], p.sight_class.as_deref(), w, h, (long / 10.0).round().max(1.0) as i32, 1.0, bleed_k));
+    let gestalt: Option<gestalt::Gestalt> = lin_low_g.as_ref().map(|lowm| {
+        let ly = |c: &color::LinRgb| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let lum_lin: Vec<f32> = lin.iter().map(ly).collect();
+        let low_luma: Vec<f32> = lowm.iter().map(ly).collect();
+        let paper_vec: Vec<bool> = (0..w * h).map(|i| paper(i)).collect();
+        let whites_b: Option<Vec<bool>> = whites.as_ref().map(|m| m.iter().map(|v| *v > 0).collect());
+        let sal_vec: Vec<f32> = (0..w * h).map(|i| sal(i)).collect();
+        let radii: Vec<f32> = (0..sessions).map(|s| (long / 10.0 / (1u32 << s.min(20)) as f32).max(4.0)).collect();
+        gestalt::plan(&gestalt::GestaltInput { w, h, sal: &sal_vec, luma: &lum_lin, low_luma: &low_luma, focus: &focus, class: p.sight_class.as_deref().filter(|c| c.len() == w * h), wash, paper: &paper_vec, whites: whites_b.as_deref(), sessions, crisp_from, radii: &radii, class_k, abstraction: p.aqua_abstraction_focus.clamp(0.0, 1.0), negative: p.aqua_negative_space.clamp(0.0, 1.0), budget: p.aqua_budget.max(0.0).round() as usize, strokes_k, seed: p.seed })
+    });
+    if let Some(g) = &gestalt {
+        // The drawing after the washes on the focus alone: the periphery and the negative space are handed out as
+        // the reserve (the restate gate, the paths' guard).
+        *sight_reserve_out = Some((0..w * h).map(|i| g.negative[i] || g.zone[i] < 2 || sight_paper.as_ref().is_some_and(|m| m[i])).collect());
+        if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+            let z = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([g.zone[y as usize * w + x as usize] * 120]));
+            let _ = z.save(std::path::Path::new(&dir).join("aqua_gestalt_zone.png"));
+            let ng = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if g.negative[y as usize * w + x as usize] { 255 } else { 0 }]));
+            let _ = ng.save(std::path::Path::new(&dir).join("aqua_gestalt_negative.png"));
+        }
+    }
+    let paper = |i: usize| paper(i) || gestalt.as_ref().is_some_and(|g| g.negative[i]);
     let record = |score: &mut StrokeScore, placed: &mut usize, k: &mut u64, stage: &str, dabs: Vec<[f32; 2]>, r: f32, r_end: f32, sweep: f32, spot: bool, wet: f32, load: &[f32]| {
         *k += 1;
         *placed += 1;
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: true, stage: stage.to_string(), spline: dabs, w0: r, w1: r_end, taper: sweep, mix, wet, press: press_k, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: spot, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: true, stage: stage.to_string(), spline: dabs, w0: r, w1: r_end, taper: sweep, mix, wet, press: press_k, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: spot, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     };
     for s in 0..sessions {
         let stage = format!("aqua-{}", s + 1);
@@ -12028,7 +12161,98 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     *k += 1;
                     *placed += 1;
                     let first = if line_off > 0 { "line".to_string() } else { stage.clone() };
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: first, spline: rings, w0: feather_res, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(kr), seam: None });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: first, spline: rings, w0: feather_res, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(kr), seam: None, heavy: None });
+                }
+            }
+            // AQUA SIGHT WHITES: the fluid on the small lights — every run of white pixels a segment of the fluid's
+            // line at half a pixel, one record with `resist` at the first session's stage, before the first touch: the
+            // washes flow around them (`Canvas::add_resist_lines`, the cell walled), and the replay lays it the same.
+            // Set 11: the fluid SOFT (`Canvas::add_resist_soft` — the share on the pixels, no wall at the cells, so the
+            // light is a tint at 1 − share of the wash and its shape the pixels'), the share key × the light's contrast
+            // in quarters, one record with `resist` and `hold` per share.
+            if let (Some(wm), None) = (&whites, &gestalt) {
+                for q in 1..=4u8 {
+                    if whites_k <= 0.0 || *placed >= p.budget {
+                        break;
+                    }
+                    let mut paths: Vec<[f32; 2]> = Vec::new();
+                    for y in 0..h {
+                        let mut x = 0;
+                        while x < w {
+                            if wm[y * w + x] == q {
+                                let x0 = x;
+                                while x < w && wm[y * w + x] == q {
+                                    x += 1;
+                                }
+                                paths.push([x0 as f32, y as f32 + 0.5]);
+                                paths.push([x as f32, y as f32 + 0.5]);
+                                paths.push([f32::NAN, f32::NAN]);
+                            } else {
+                                x += 1;
+                            }
+                        }
+                    }
+                    if !paths.is_empty() {
+                        let share = whites_k * q as f32 / 4.0;
+                        canvas.add_resist_soft(&paths, 0.5, share);
+                        *k += 1;
+                        *placed += 1;
+                        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: 0.5, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: true, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(share), seam: None, heavy: None });
+                    }
+                }
+            }
+            // AQUA SIGHT CLASSES — THE WEIGHT (set 11; see `PaintPlan::aqua_sight_classes`, `Canvas::add_heavy_cells`): the
+            // heavy pigment's share by the class table, yielding to the saliency (share × (1 − S)), taken per engine cell
+            // as its mean in quarters and laid along the cells' rows before the first touch — one record with `heavy` per
+            // quarter, so the replay is exact. The solver settles every lane on those cells as a granulating pigment.
+            if let Some(hm) = p.sight_heavy.as_deref().filter(|m| m.len() == w * h) {
+                if class_k > 0.0 {
+                    let cs = canvas.aqua_cell();
+                    let (cw, ch) = (w.div_ceil(cs), h.div_ceil(cs));
+                    let mut cell: Vec<u8> = vec![0; cw * ch];
+                    for qy in 0..ch {
+                        for qx in 0..cw {
+                            let (mut sum, mut cnt) = (0.0f32, 0usize);
+                            for y in qy * cs..((qy + 1) * cs).min(h) {
+                                for x in qx * cs..((qx + 1) * cs).min(w) {
+                                    let i = y * w + x;
+                                    sum += hm[i].clamp(0.0, 1.0) * class_k * (1.0 - sal(i));
+                                    cnt += 1;
+                                }
+                            }
+                            cell[qy * cw + qx] = ((sum / cnt.max(1) as f32) * 4.0).round().clamp(0.0, 4.0) as u8;
+                        }
+                    }
+                    for q in 1..=4u8 {
+                        if *placed >= p.budget {
+                            break;
+                        }
+                        let mut paths: Vec<[f32; 2]> = Vec::new();
+                        for qy in 0..ch {
+                            let cy = (qy * cs) as f32 + cs as f32 * 0.5;
+                            let mut qx = 0;
+                            while qx < cw {
+                                if cell[qy * cw + qx] == q {
+                                    let x0 = qx;
+                                    while qx < cw && cell[qy * cw + qx] == q {
+                                        qx += 1;
+                                    }
+                                    paths.push([(x0 * cs) as f32 + cs as f32 * 0.5, cy]);
+                                    paths.push([((qx - 1) * cs) as f32 + cs as f32 * 0.5, cy]);
+                                    paths.push([f32::NAN, f32::NAN]);
+                                } else {
+                                    qx += 1;
+                                }
+                            }
+                        }
+                        if !paths.is_empty() {
+                            let share = q as f32 / 4.0;
+                            canvas.add_heavy_cells(&paths, 0.5, share);
+                            *k += 1;
+                            *placed += 1;
+                            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: 0.5, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: Some(share) });
+                        }
+                    }
                 }
             }
             if line_off > 0 {
@@ -12043,9 +12267,14 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         // take none. The shore is the wash's MASS: what is not a wash opened by a 600th of the long side, so a rope or a
         // stair of the class map's cells is no shore — a mast is.
         if barrier_k > 0.0 && s == seam_s && *placed < p.budget {
-            if let Some(wm) = wash {
+            // (THE GESTALT PLANNER: the seam along the FOCUS's boundary alone — the background's washes mingle free.)
+            let solid_raw: Option<Vec<bool>> = match (&gestalt, wash) {
+                (Some(g), _) => Some(g.zone.iter().map(|z| *z == 2).collect()),
+                (None, Some(wm)) => Some((0..w * h).map(|i| wm[i] < 0.5).collect()),
+                _ => None,
+            };
+            if let Some(solid) = solid_raw {
                 let ro = (long / 600.0).round().max(1.0) as usize;
-                let solid: Vec<bool> = (0..w * h).map(|i| wm[i] < 0.5).collect();
                 let solid = dilate_bool(&erode_bool(&solid, w, h, ro), w, h, ro);
                 let is_wash = |i: usize| !solid[i];
                 let mut paths: Vec<[f32; 2]> = Vec::new();
@@ -12073,7 +12302,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     canvas.add_capillary_seam(&paths, radius, barrier_k);
                     *k += 1;
                     *placed += 1;
-                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 && s == 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: Some(barrier_k) });
+                    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: if line_off > 0 && s == 0 { "line".to_string() } else { stage.clone() }, spline: paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: Some(barrier_k), heavy: None });
                 }
             }
         }
@@ -12140,7 +12369,9 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // AQUA SIGHT SESSIONS (see `MediumProfile::aqua_sight_sessions`): the pixel's own ladder — its ceiling
                 // rises over the sessions the bar leaves it, so what the dry sessions never reach is at its tone by
                 // the last wet one, and what they do reach climbs the whole ladder as before.
-                let a = if sess_k > 0.0 { let n = n_open(i); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else { a };
+                let a = if sess_k > 0.0 { let n = n_open(i); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else if let Some(g) = &gestalt { let n = gestalt::zone_sessions(g.zone[i], sessions, crisp_from); if s < n { 1.0 - (1.0 - (s as f32 + 1.0) / n as f32).max(0.0).powf(1.5) } else { a } } else { a };
+                // THE GESTALT PLANNER: the background owes its low-pass BASE alone — its details nothing.
+                let tgt: &color::LinRgb = match (&gestalt, &lin_low_g) { (Some(g), Some(m)) if g.zone[i] == 0 => &m[i], _ => &lin[i] };
                 // AQUA SIGHT CEILING (see `MediumProfile::aqua_sight_ceiling`): off the focus the session's ceiling held
                 // back toward the ground — the exponent × (1 − key × (1 − focus)) — so the periphery ends as a tint.
                 let a = if ceil_k > 0.0 { a * (1.0 - ceil_k * (1.0 - focus[i].clamp(0.0, 1.0))) } else { a };
@@ -12149,10 +12380,12 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // owes the target over the darker of the sheet and the base (the lower reflectance): the base counts
                 // as paid, whatever the flood made of it, and the touches that come back pay only the picture's darks
                 // over it — a wave's shadow, the hull's reflection — never the base's tone again.
-                let g = grad_at(i);
+                // (Under the gestalt the background's base IS its target and its one session lays it whole: the
+                // gradient's base and the luminous withholding — both owed to sessions after — are off it.)
+                let g = if gestalt.as_ref().is_some_and(|gs| gs.zone[i] == 0) { 0.0 } else { grad_at(i) };
                 let a_last = if ceil_k > 0.0 { 1.0 - ceil_k * (1.0 - focus[i].clamp(0.0, 1.0)) } else { 1.0 };
                 for c in 0..3 {
-                    let ceil = ground[c].max(0.002).powf(1.0 - a) * lin[i][c].max(0.002).powf(a);
+                    let ceil = ground[c].max(0.002).powf(1.0 - a) * tgt[c].max(0.002).powf(a);
                     let mut dc = (ceil / under[i][c].max(0.002)).ln().min(0.0);
                     if g > 0.0 {
                         let low = lin_low.as_ref().map_or(lin[i][c], |m| m[i][c]).max(0.002);
@@ -12229,6 +12462,166 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
         let sp_min = 1.25 * r * 0.65 * if crisp { 1.0 } else { 1.0 + sparse };
         let (nx, ny) = ((w as f32 / sp_min).ceil() as usize, (h as f32 / sp_min).ceil() as usize);
         let stride = ((r / 6.0).round() as usize).max(1);
+        if let Some(g) = &gestalt {
+            // THE GESTALT PLANNER: the session's planned strokes laid as the engine's touches — the charge the debt
+            // under the stroke at the session's percentile (the background's flood at the median, its base being
+            // the target), the mass the pixels the stroke claimed, the brush lifting off at the ends (`aqua_taper`)
+            // and run dry toward them (`aqua_sweep`), the water the session's by the class and the sight.
+            let dbg = std::env::var_os("PLAKAT_GESTALT_DEBUG").is_some();
+            let mut dcnt = [0usize; 5]; // planned, few samples, no debt, no load, laid
+            let cls_of = |i: usize| p.sight_class.as_deref().filter(|c| c.len() == w * h).map_or(0u8, |c| c[i]);
+            // (path, radius, end radius, water, charge, spot-dried, sweep)
+            let mut touches: Vec<(Vec<[f32; 2]>, f32, f32, f32, Vec<f32>, bool, f32)> = Vec::new();
+            for st in g.strokes.iter().filter(|st| st.session == s) {
+                if *placed + touches.len() >= p.budget {
+                    break;
+                }
+                dcnt[0] += 1;
+                let c = st.path[st.path.len() / 2];
+                let (cx, cy) = (c[0], c[1]);
+                let m = focus[at(cx, cy)];
+                let wc = wash.map_or(0.0, |wm| wm[at(cx, cy)].clamp(-1.0, 1.0));
+                let r_s = st.radius;
+                samples.clear();
+                for d in &st.path {
+                    let x0 = (d[0] - r_s).floor().max(0.0) as usize;
+                    let x1 = ((d[0] + r_s).ceil() as usize).min(w - 1);
+                    let y0 = (d[1] - r_s).floor().max(0.0) as usize;
+                    let y1 = ((d[1] + r_s).ceil() as usize).min(h - 1);
+                    let mut yy = y0;
+                    while yy <= y1 {
+                        let mut xx = x0;
+                        while xx <= x1 {
+                            let (dx, dy) = (xx as f32 + 0.5 - d[0], yy as f32 + 0.5 - d[1]);
+                            if dx * dx + dy * dy < r_s * r_s {
+                                let i = yy * w + xx;
+                                // (The debt read within the stroke's own zone and class: what the brush spills
+                                // over the boundary does not set its charge.)
+                                if g.zone[i] == st.zone && cls_of(i) == st.class {
+                                    samples.push((dmag(&debt[i]), debt[i]));
+                                }
+                            }
+                            xx += stride;
+                        }
+                        yy += stride;
+                    }
+                }
+                if samples.len() < 3 {
+                    dcnt[1] += 1;
+                    continue;
+                }
+                let pct_s = if st.zone == 0 { 0.5 } else { pct };
+                samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                let ns = samples.len();
+                let rank = (((ns - 1) as f32) * (1.0 - pct_s)).round() as usize;
+                let band = (ns / 10).max(1);
+                let (lo_i, hi_i) = (rank.saturating_sub(band), (rank + band).min(ns - 1));
+                let mut want = [0f32; 3];
+                for q in &samples[lo_i..=hi_i] {
+                    for c in 0..3 {
+                        want[c] += q.1[c];
+                    }
+                }
+                for v in &mut want {
+                    *v /= (hi_i - lo_i + 1) as f32;
+                }
+                if dmag(&want) < 0.02 {
+                    dcnt[2] += 1;
+                    continue;
+                }
+                let key = ((want[0] * 200.0) as i16, (want[1] * 200.0) as i16, (want[2] * 200.0) as i16);
+                let load = want_cache.entry(key).or_insert_with(|| trans_densities(&ln_r, want)).clone();
+                if load.iter().all(|v| *v <= 0.0) {
+                    dcnt[3] += 1;
+                    continue;
+                }
+                dcnt[4] += 1;
+                let multi = st.path.len() > 1;
+                let r_end = if multi && taper_k > 0.0 { (r_s * (1.0 - taper_k)).max(0.5) } else { 0.0 };
+                // The stroke's mass over its dabs — each by its tapered radius AND the sweep's share of the charge
+                // along the path (the ends run dry), so what the dabs lay sums to the claim exactly: the one
+                // session of the background has no session after it to pay what a stroke left short.
+                let sweep_rec = if multi { sweep_k } else { 0.0 };
+                let denom = {
+                    let md = st.path.len();
+                    let sum: f32 = (0..md).map(|q| {
+                        let t = q as f32 / (md - 1).max(1) as f32;
+                        let ri = if r_end > 0.0 { r_end + (r_s - r_end) * (std::f32::consts::PI * t).sin() } else { r_s };
+                        let sw = if multi { 1.0 - sweep_rec * (2.0 * t - 1.0).abs() } else { 1.0 };
+                        ri * ri * sw
+                    }).sum();
+                    (0.5 * std::f32::consts::PI * sum).max(1e-3)
+                };
+                let scale = st.area / denom;
+                let dab: Vec<f32> = load.iter().map(|v| v * scale).collect();
+                let spot = !step_map.is_empty() && m >= 0.5 && step_map[at(cx, cy)] >= 1.0 - spot_k;
+                let thick = 1.0 - thick_k * (1.0 - (-dmag(&want)).exp());
+                let water = water + swet_k * (1.0 - sal(at(cx, cy))) * (water_mul - water).max(0.0);
+                let water = if st.wob != 0.0 { water * (1.0 + st.wob) } else { water };
+                let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) * thick * (1.0 + class_k * wc).max(0.25) };
+                touches.push((st.path.clone(), r_s, r_end, wv, dab, spot, sweep_rec));
+            }
+            // THE REHEARSAL: a wet session is laid first on a copy of the sheet and dried as the session dries
+            // (the engine's settling, the stage's crossing), the share of the session's debt the drying left paid
+            // is measured over the pixels the session owes (a least-squares gain, all three channels), and the
+            // charge of every touch is raised by its inverse — at most fourfold, the rehearsal twice at most and
+            // not at all when the sheet pays nine tenths — before the sheet itself is touched. The brain knows its
+            // tool: the open grid had six sessions and the drawing after them to pay what a wet flood left short;
+            // the background has its one. The records carry the charge as laid, so the replay is exact.
+            let mut gain_dbg = Vec::new();
+            if s < crisp_from && !touches.is_empty() {
+                let owed: Vec<usize> = (0..w * h).filter(|&i| gestalt::zone_sessions(g.zone[i], sessions, crisp_from) > s && dmag(&debt[i]) > 0.02).collect();
+                for _round in 0..2 {
+                    if owed.is_empty() {
+                        break;
+                    }
+                    let mut probe = canvas.clone();
+                    for (path, r_s, r_end, wv, dab, spot, sweep_rec) in &touches {
+                        if *spot {
+                            probe.aqua_dry_spot(path, *r_s, *r_end);
+                        }
+                        probe.aqua_inject_with(path, *r_s, *r_end, *wv, dab, press_k, boost_k, bias_k, *sweep_rec);
+                    }
+                    score.cross_passes(&mut probe, line_off + s, line_off + s + 1, n_stages_total);
+                    let (mut num, mut den) = (0f64, 0f64);
+                    for &i in &owed {
+                        let after = probe.linear_at((i % w) as u32, (i / w) as u32);
+                        for c in 0..3 {
+                            let paid = (after[c].max(0.002) / under[i][c].max(0.002)).ln().min(0.0) as f64;
+                            num += paid * debt[i][c] as f64;
+                            den += (debt[i][c] as f64).powi(2);
+                        }
+                    }
+                    let gain = if den > 0.0 { (num / den) as f32 } else { 1.0 };
+                    gain_dbg.push(gain);
+                    if !(gain > 0.0) || gain >= 0.9 {
+                        break;
+                    }
+                    let up = (1.0 / gain).min(4.0);
+                    for t in &mut touches {
+                        for v in &mut t.4 {
+                            *v *= up;
+                        }
+                    }
+                }
+            }
+            for (path, r_s, r_end, wv, dab, spot, sweep_rec) in touches {
+                if *placed >= p.budget {
+                    break;
+                }
+                if spot {
+                    canvas.aqua_dry_spot(&path, r_s, r_end);
+                }
+                canvas.aqua_inject_with(&path, r_s, r_end, wv, &dab, press_k, boost_k, bias_k, sweep_rec);
+                record(score, placed, k, &stage, path, r_s, r_end, sweep_rec, spot, wv, &dab);
+                if let Some(pr) = progress {
+                    pr(PaintProgress::Placed(*placed));
+                }
+            }
+            if dbg {
+                eprintln!("gestalt laying {stage}: planned {} few-samples {} no-debt {} no-load {} laid {} rehearsal gains {:?}", dcnt[0], dcnt[1], dcnt[2], dcnt[3], dcnt[4], gain_dbg);
+            }
+        } else {
         'grid: for j in 0..ny {
             for i in 0..nx {
                 if *placed >= p.budget {
@@ -12255,6 +12648,39 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 if hash(s as u64 + 101, i as u64, j as u64) >= keep {
                     continue;
                 }
+                // AQUA SIGHT STROKES / ACCENT: a wash cell off the sight (the wash yielding to the saliency) in a WET
+                // session. The accent first: the cell over a dark of the wash (the stops under the base, at the centre
+                // and half a radius about it, at the bar) — a thick charge, the darkest band of the footprint on half
+                // the brush with the water cut by the key, left to the puddle. Else the stroke: the cells kept in
+                // BANDS across the class's direction, a band one cell wide at a pitch of the brush's width plus the
+                // key's half-radius of paper, each band cell carrying the cells it stands for.
+                let bg_wash = wc.max(0.0) * (1.0 - sal(at(cx, cy)));
+                let accent_cell = accent_k > 0.0 && !crisp && s > 0 && bg_wash >= 0.5 && !dark_hp.is_empty() && {
+                    let hr = 0.5 * r_loc;
+                    let pts = [(cx, cy), (cx - hr, cy), (cx + hr, cy), (cx, cy - hr), (cx, cy + hr)];
+                    pts.iter().map(|&(x, y)| dark_hp[at(x, y)]).sum::<f32>() / 5.0 >= accent_thr
+                };
+                let stroke_cell = !accent_cell && strokes_k > 0.0 && !crisp && bg_wash >= 0.5 && !class_dir.is_empty();
+                let mut band_mass = 1.0f32;
+                let (sdx, sdy) = if stroke_cell { class_dir[class_map.map_or(0, |cm| cm[at(cx, cy)] as usize)] } else { (1.0, 0.0) };
+                // Set 11: the pitch the brush's width plus key × two radii of paper (the touch's footprint runs 1.4 radii
+                // each way from the band, so the paper between the bands opens at a radius and more by the key); and the
+                // water UNEVEN along the band — by the band and its step along, a seeded ± key × 30% (`band_wob`), so the
+                // puddle runs unequally along the stroke and the solver draws a ripple, not a gradient.
+                let mut band_wob = 0.0f32;
+                if stroke_cell {
+                    let pitch = 2.0 * r_loc * (1.0 + 2.0 * strokes_k);
+                    let across = cx * -sdy + cy * sdx;
+                    let off = across.rem_euclid(pitch);
+                    if off >= sp_min {
+                        continue;
+                    }
+                    band_mass = pitch / sp_min;
+                    let band_id = (across / pitch).floor() as i64;
+                    let along_id = ((cx * sdx + cy * sdy) / (2.0 * r_loc).max(1.0)).floor() as i64;
+                    band_wob = strokes_k * 0.3 * (2.0 * hash(s as u64 + 211, band_id as u64, along_id as u64) - 1.0);
+                }
+                let pct = if accent_cell { 0.95 } else { pct };
                 samples.clear();
                 let x0 = (cx - r_loc).floor().max(0.0) as usize;
                 let x1 = ((cx + r_loc).ceil() as usize).min(w - 1);
@@ -12302,11 +12728,41 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // AQUA STROKE (see `MediumProfile::aqua_stroke`): the brush aimed across the ridge at its darkest
                 // coherent point, narrowed to the ridge's half-width, walked both ways along the structure while it
                 // runs; the grid point's mass over the stroke's dabs. Off a structure, the three dabs along the flow.
-                let mut r_s = r_loc;
+                let mut r_s = if accent_cell { 0.5 * r_loc } else { r_loc };
                 let mut r_end = 0.0f32;
                 let mut sweep_rec = 0.0f32;
                 let mut dabs: Vec<[f32; 2]> = Vec::new();
-                if stroke_k > 0.0 {
+                if stroke_cell {
+                    // AQUA SIGHT STROKES: the stroke along the class's direction, three radii each way, while the
+                    // sheet is the wash's — the paper, the sight and the class's shore end it; the brush charged where
+                    // it touched and run dry toward the ends, as a stroke is.
+                    let inside = |x: f32, y: f32| x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32;
+                    let step = (0.6 * r_loc).max(1.0);
+                    let max_len = 3.0 * r_loc;
+                    let (mut back, mut fwd): (Vec<[f32; 2]>, Vec<[f32; 2]>) = (Vec::new(), Vec::new());
+                    for (sg, out) in [(-1.0f32, &mut back), (1.0, &mut fwd)] {
+                        let (mut x, mut y, mut len) = (cx, cy, 0.0f32);
+                        while len + step <= max_len {
+                            let (x2, y2) = (x + sdx * sg * step, y + sdy * sg * step);
+                            if !inside(x2, y2) {
+                                break;
+                            }
+                            let i2 = at(x2, y2);
+                            if paper(i2) || wash.map_or(0.0, |wm| wm[i2].max(0.0)) * (1.0 - sal(i2)) < 0.5 {
+                                break;
+                            }
+                            out.push([x2, y2]);
+                            x = x2;
+                            y = y2;
+                            len += step;
+                        }
+                    }
+                    back.reverse();
+                    dabs = back;
+                    dabs.push([cx, cy]);
+                    dabs.extend(fwd);
+                    sweep_rec = sweep_k;
+                } else if stroke_k > 0.0 && !accent_cell {
                     let want_mag = dmag(&want);
                     let half = 0.5 * want_mag;
                     let inside = |x: f32, y: f32| x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32;
@@ -12396,8 +12852,8 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     continue;
                 }
                 if dabs.is_empty() {
-                    r_s = r_loc;
-                    let step = 0.6 * r_loc;
+                    r_s = if accent_cell { 0.5 * r_loc } else { r_loc };
+                    let step = 0.6 * r_s;
                     dabs = vec![[cx - ux * step, cy - uy * step], [cx, cy], [cx + ux * step, cy + uy * step]];
                 }
                 // The grid point's mass over the stroke's dabs — the tapered ones by their own radii.
@@ -12409,7 +12865,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     dabs.len() as f32 * 0.5 * std::f32::consts::PI * r_s * r_s
                 };
                 let sp_eff = if sparse > 0.0 && !crisp { sp_loc.max(sp_min) } else { sp_loc };
-                let scale = sp_eff * sp_eff / denom;
+                let scale = sp_eff * sp_eff / denom * band_mass;
                 let dab: Vec<f32> = load.iter().map(|v| v * scale).collect();
                 // AQUA SPOT DRY: on the focus, at a step of the key's complement or more, the sheet under the touch is
                 // dried first and the touch laid without water — the dry brush over the dried underpainting.
@@ -12421,6 +12877,10 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                 // AQUA SIGHT WET: off the sight the touch's water raised toward the first session's by key × (1 − S) —
                 // a dry session's touch there is wet-on-wet, laid into the puddle and left to bloom.
                 let water = water + swet_k * (1.0 - sal(at(cx, cy))) * (water_mul - water).max(0.0);
+                // AQUA SIGHT ACCENT: the thick charge — the water cut by the key, the pigment dropped into the puddle.
+                let water = if accent_cell { water * (1.0 - accent_k) } else { water };
+                // AQUA SIGHT STROKES (set 11): the water uneven along the band.
+                let water = if band_wob != 0.0 { water * (1.0 + band_wob) } else { water };
                 let wv = if spot { 0.0 } else { water * (1.0 - 0.5 * m * (1.0 - relax)) * (1.0 + lit(cx, cy)).clamp(0.0, 2.0) * thick * (1.0 + class_k * wc).max(0.25) };
                 if spot {
                     canvas.aqua_dry_spot(&dabs, r_s, r_end);
@@ -12431,6 +12891,7 @@ fn aqua_engine_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbIm
                     pr(PaintProgress::Placed(*placed));
                 }
             }
+        }
         }
         // The session dried as the replay dries it: the engine's settling, then the stage's crossing.
         score.cross_passes(canvas, line_off + s, line_off + s + 1, n_stages_total);
@@ -12612,7 +13073,7 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
             let mix_src: &[f32] = if pencil_k > 0.0 { &dens } else { &s.load };
             let mix: Vec<(String, f32)> = mix_src.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: Some(1), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
     }
     // AQUA LINE RESIST: the fluid along every line drawn, one record after them all (a line crossing a line is
@@ -12620,7 +13081,7 @@ fn aqua_line_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage
     if res_k > 0.0 && !res_paths.is_empty() {
         canvas.add_resist_lines(&res_paths, radius, res_k);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: res_paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(res_k), seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "line".into(), spline: res_paths, w0: radius, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: Some(res_k), seam: None, heavy: None });
     }
 }
 
@@ -12810,7 +13271,7 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
                 pr(PaintProgress::Placed(*placed));
             }
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
         // The pass boundary, as the stroke passes cross it (and as the replay reproduces it).
         // The pass boundary as the replay reproduces it: the taper over EVERY stage of the painting (the washes
@@ -13756,7 +14217,7 @@ fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage,
                 pr(PaintProgress::Placed(*placed));
             }
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         }
         // The pass boundary, as the replay reproduces it: each plate sets before the next is laid.
         if p.bleed > 0.0 {
@@ -14814,7 +15275,7 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
     if !key.is_empty() && *placed < p.budget {
         canvas.fill_rings(&key, &load, 0.0, gain);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "key".into(), spline: key, w0: gain, w1: 0.0, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "key".into(), spline: key, w0: gain, w1: 0.0, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -14869,7 +15330,7 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
         let s = Stroke { path, width0: width, width1: width, load: load_here, pressure: 0.9, wetness: wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -14933,7 +15394,7 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
             streak: brush.streak,
             round: brush.round,
             pickup: None,
-            bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, });
+            bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None, });
     }
 }
 
@@ -14967,7 +15428,7 @@ fn engraving(canvas: &mut Canvas, score: &mut StrokeScore, picture: &RgbImage, p
                 pr(PaintProgress::Placed(*placed));
             }
         }
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage, spline: s.path, w0: cut.w0, w1: cut.w1, taper: 0.0, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, inject: false, stage, spline: s.path, w0: cut.w0, w1: cut.w1, taper: 0.0, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -16101,9 +16562,9 @@ mod transmittance_tests {
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();
-        sc.strokes.push(StrokeRecord { id: 1, wipe: false, wash: true, inject: false, stage: "wash".into(), spline: vec![[4.0, 4.0], [40.0, 4.0], [40.0, 40.0], [4.0, 40.0]], w0: 0.0, w1: 0.0, taper: 0.0, mix: vec![(name(1), 0.8), (name(2), 0.3)], wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
-        sc.strokes.push(StrokeRecord { id: 2, wipe: false, wash: false, inject: false, stage: "block-in".into(), spline: vec![[6.0, 20.0], [24.0, 22.0], [42.0, 20.0]], w0: 12.0, w1: 7.0, taper: 0.4, mix: vec![(name(3), 1.7)], wet: 0.6, press: 0.9, streak: 0.05, round: 0.6, pickup: Some(0.0), bristles: None, kd: Some(0.51), cap: Some(1.0), flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
-        sc.strokes.push(StrokeRecord { id: 3, wipe: false, wash: false, inject: false, stage: "block-in".into(), spline: vec![[8.0, 30.0], [40.0, 32.0]], w0: 5.0, w1: 3.0, taper: 0.4, mix: vec![(name(0), 0.9)], wet: 0.5, press: 1.0, streak: 0.3, round: 0.7, pickup: Some(0.1), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        sc.strokes.push(StrokeRecord { id: 1, wipe: false, wash: true, inject: false, stage: "wash".into(), spline: vec![[4.0, 4.0], [40.0, 4.0], [40.0, 40.0], [4.0, 40.0]], w0: 0.0, w1: 0.0, taper: 0.0, mix: vec![(name(1), 0.8), (name(2), 0.3)], wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
+        sc.strokes.push(StrokeRecord { id: 2, wipe: false, wash: false, inject: false, stage: "block-in".into(), spline: vec![[6.0, 20.0], [24.0, 22.0], [42.0, 20.0]], w0: 12.0, w1: 7.0, taper: 0.4, mix: vec![(name(3), 1.7)], wet: 0.6, press: 0.9, streak: 0.05, round: 0.6, pickup: Some(0.0), bristles: None, kd: Some(0.51), cap: Some(1.0), flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
+        sc.strokes.push(StrokeRecord { id: 3, wipe: false, wash: false, inject: false, stage: "block-in".into(), spline: vec![[8.0, 30.0], [40.0, 32.0]], w0: 5.0, w1: 3.0, taper: 0.4, mix: vec![(name(0), 0.9)], wet: 0.5, press: 1.0, streak: 0.3, round: 0.7, pickup: Some(0.1), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
         let mem = sc.replay(48, 48).unwrap().to_image().into_raw();
         let text = sc.to_text();
         assert!(text.contains("trans=1") && text.contains("kd=0.51") && text.contains("cap=1"), "the film flag and the wash brush's fields are written");
@@ -16791,7 +17252,7 @@ fn dot_pass(canvas: &mut Canvas, score: &mut StrokeScore, pic: &RgbImage, p: &Pa
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(ix, v)| (p.palette.pigments[ix].name.to_string(), *v)).collect();
         *placed += 1;
         *k += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "dot".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: DOT_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(srgb), mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, inject: false, stage: "dot".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: DOT_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(srgb), mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, seam: None, heavy: None });
     }
 }
 
@@ -18684,6 +19145,139 @@ mod aqua_tests {
         let painted = late.canvas.to_image().into_raw();
         assert_eq!(StrokeScore::parse(&late.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), painted, "the late seam replays byte-exact");
         p.aqua_sight_bleed = 0.0;
+    }
+
+    #[test]
+    fn the_whites_the_strokes_and_the_accents_follow_the_wash() {
+        // 7.17.0 set 10 on the flat sky (a wash class, off the sight) over the dark ground with three white 3-px dots
+        // in the ground (a far town). The whites at 1: one record with `resist` (no wash) at the first session's stage
+        // before the first touch, the fluid on the dots and nowhere else (not on the sky, a shape the paper gate's), the
+        // dots lighter on the sheet than the base run leaves them; at 0 no record. The strokes at 1 (sky class 0, ground
+        // 1): the first session's sky touches run along the sheet (the flat class's direction) as strokes of five dabs
+        // or more on one row each, fewer than the base's touches (the bands). The accent at 1 on the STRIPED sky: the
+        // second (wet) session's touches on the dark stripes narrower and drier than the base's. Every sheet replays.
+        let (w, h) = (96u32, 64u32);
+        let dots = [(20u32, 44u32), (48, 50), (76, 40)];
+        // (Set 11: a fourth dot in the WATER class at (8, 56) — no light to save there; the three in the THING class.)
+        let is_dot = |x: u32, y: u32| dots.iter().chain([(8u32, 56u32)].iter()).any(|&(dx, dy)| x >= dx && x < dx + 3 && y >= dy && y < dy + 3);
+        let is_thing = |x: u32, y: u32| dots.iter().any(|&(dx, dy)| x >= dx && x < dx + 3 && y >= dy && y < dy + 3);
+        let flat = RgbImage::from_fn(w, h, |x, y| if y < h / 2 { image::Rgb([150, 170, 215]) } else if is_dot(x, y) { image::Rgb([235, 235, 230]) } else { image::Rgb([70, 60, 40]) });
+        let striped = RgbImage::from_fn(w, h, |x, y| if y < h / 2 { if (x / 24) % 2 == 0 { image::Rgb([110, 130, 190]) } else { image::Rgb([175, 190, 225]) } } else { image::Rgb([70, 60, 40]) });
+        let mut p = aqua_params(w);
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_reserve = 0.0;
+        p.aqua_detail = 0.5;
+        p.aqua_sight_class = 1.0;
+        p.aqua_sight_gradient = 1.0;
+        p.sight = Some(vec![0.0; (w * h) as usize]);
+        p.sight_wash = Some((0..w * h).map(|i| if i / w < h / 2 { 1.0 } else { 0.0 }).collect());
+        p.sight_class = Some((0..w * h).map(|i| if i / w < h / 2 { 0 } else if is_thing(i % w, i / w) { 5 } else { 1 }).collect());
+        let luma_at = |r: &PaintResult, x: u32, y: u32| -> f32 { let px = r.canvas.to_image().get_pixel(x, y).0; 0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32 };
+        let replay_exact = |r: &PaintResult, what: &str| { assert_eq!(StrokeScore::parse(&r.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), r.canvas.to_image().into_raw(), "{what} replays byte-exact"); };
+        let base = paint_from_image(&flat, &p);
+        assert!(base.score.strokes.iter().all(|s| s.resist.is_none()), "no fluid at the keys 0");
+        p.aqua_sight_whites = 1.0;
+        let saved = paint_from_image(&flat, &p);
+        let rec_at = saved.score.strokes.iter().position(|s| s.resist.is_some() && !s.wash).expect("the whites' record");
+        let first_touch = saved.score.strokes.iter().position(|s| s.inject).unwrap();
+        assert!(rec_at < first_touch && saved.score.strokes[rec_at].stage == "aqua-1", "the fluid before the first touch at the first session's stage");
+        let at = |x: u32, y: u32| (y * w + x) as usize;
+        assert!(dots.iter().all(|&(dx, dy)| saved.canvas.resist_at(at(dx + 1, dy + 1)) > 0.5), "the fluid on the dots");
+        assert!(saved.canvas.resist_at(at(48, 20)) == 0.0 && saved.canvas.resist_at(at(10, 60)) == 0.0, "none on the sky nor the plain ground");
+        assert!(saved.canvas.resist_at(at(9, 57)) == 0.0, "none on the water class's dot (set 11: the built, the things and the people only)");
+        assert!(saved.score.strokes.iter().filter(|s| s.resist.is_some() && !s.wash).all(|s| s.hold), "the fluid laid soft (set 11)");
+        assert!(dots.iter().all(|&(dx, dy)| luma_at(&saved, dx + 1, dy + 1) > luma_at(&base, dx + 1, dy + 1) + 20.0), "the dots kept lighter than the base run leaves them: {} vs {}", luma_at(&saved, 21, 45), luma_at(&base, 21, 45));
+        replay_exact(&saved, "the whites");
+        // Set 11, the class's WEIGHT: the ground's heavy share at 1 — records with `heavy` before the first touch at the
+        // first session's stage, the cells under the ground heavy and the sky's not, the sheet changed by the solver's
+        // settling and replayed exact; the share yields to the saliency (the sight at 1 everywhere: no record).
+        p.aqua_sight_whites = 0.0;
+        p.sight_heavy = Some((0..w * h).map(|i| if i / w < h / 2 { 0.0 } else { 1.0 }).collect());
+        let heavy = paint_from_image(&flat, &p);
+        let rec_at = heavy.score.strokes.iter().position(|s| s.heavy.is_some() && !s.wash).expect("the heavy record");
+        let first_touch = heavy.score.strokes.iter().position(|s| s.inject).unwrap();
+        assert!(rec_at < first_touch && heavy.score.strokes[rec_at].stage == "aqua-1" && heavy.score.strokes[rec_at].heavy == Some(1.0), "the heavy cells before the first touch at the first session's stage, the share 1");
+        assert!(heavy.canvas.heavy_at(at(48, 56)) >= 0.999 && heavy.canvas.heavy_at(at(48, 8)) <= 0.0, "the ground's cells heavy, the sky's not: {} {}", heavy.canvas.heavy_at(at(48, 56)), heavy.canvas.heavy_at(at(48, 8)));
+        assert_ne!(heavy.canvas.to_image().into_raw(), base.canvas.to_image().into_raw(), "the heavy ground settles otherwise");
+        replay_exact(&heavy, "the heavy class");
+        p.sight = Some(vec![1.0; (w * h) as usize]);
+        let salient = paint_from_image(&flat, &p);
+        assert!(salient.score.strokes.iter().all(|s| s.heavy.is_none()), "the weight yields to the saliency: no heavy record on the sight");
+        p.sight = Some(vec![0.0; (w * h) as usize]);
+        p.sight_heavy = None;
+        p.aqua_sight_whites = 0.0;
+        p.aqua_sight_strokes = 1.0;
+        let stroked = paint_from_image(&flat, &p);
+        let sky_touches = |r: &PaintResult, stage: &str| -> Vec<StrokeRecord> { r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty() && s.stage == stage && s.spline.iter().all(|d| d[1] < h as f32 / 2.0 - 4.0)).cloned().collect() };
+        let (sb, ss) = (sky_touches(&base, "aqua-1"), sky_touches(&stroked, "aqua-1"));
+        assert!(!ss.is_empty() && ss.len() < sb.len(), "the sky in bands: {} touches vs the base's {}", ss.len(), sb.len());
+        assert!(ss.iter().all(|s| s.spline.len() >= 5 && s.spline.iter().all(|d| (d[1] - s.spline[0][1]).abs() < 1e-3)), "…each a stroke along the row: {} of {} not", ss.iter().filter(|s| !(s.spline.len() >= 5 && s.spline.iter().all(|d| (d[1] - s.spline[0][1]).abs() < 1e-3))).count(), ss.len());
+        replay_exact(&stroked, "the strokes");
+        p.aqua_sight_strokes = 0.0;
+        let base_s = paint_from_image(&striped, &p);
+        p.aqua_sight_accent = 1.0;
+        let accented = paint_from_image(&striped, &p);
+        let med = |v: &mut Vec<f32>| -> f32 { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[v.len() / 2] };
+        let (ab, aa) = (sky_touches(&base_s, "aqua-2"), sky_touches(&accented, "aqua-2"));
+        assert!(!ab.is_empty() && !aa.is_empty(), "the second session touches the striped sky: {} / {}", ab.len(), aa.len());
+        let (mut wb, mut wa) = (ab.iter().map(|s| s.w0).collect::<Vec<f32>>(), aa.iter().map(|s| s.w0).collect::<Vec<f32>>());
+        let (mut vb, mut va) = (ab.iter().map(|s| s.wet).collect::<Vec<f32>>(), aa.iter().map(|s| s.wet).collect::<Vec<f32>>());
+        assert!(med(&mut wa) < 0.7 * med(&mut wb), "the accents narrower: {} vs {}", med(&mut wa), med(&mut wb));
+        assert!(med(&mut va) < 0.5 * med(&mut vb), "…and drier: {} vs {}", med(&mut va), med(&mut vb));
+        replay_exact(&accented, "the accents");
+    }
+
+    #[test]
+    fn the_gestalt_plans_the_sheet_by_zones() {
+        // 7.17.0 set 12 on the sky over the ground with the sight 1 in a box (the focus) and 0 elsewhere (the
+        // background), the keys 0 the grid as before. The planner at 1: the first session floods outside the box
+        // and inside it, every session after touches the box alone (the background allows one), no fluid is laid for
+        // the whites (their lights are negative space); the negative space at 0.6 keeps the light sky bare of every
+        // touch; the budget at 12 keeps at most twelve strokes; every sheet replays byte-exact.
+        let (w, h) = (96u32, 64u32);
+        let in_box = |d: &[f32; 2], m: f32| d[0] >= 32.0 - m && d[0] < 64.0 + m && d[1] >= 16.0 - m && d[1] < 48.0 + m;
+        let img = sky_and_ground(w, h);
+        let mut p = aqua_params(w);
+        p.aqua_planes = 3.0;
+        p.aqua_crisp = 0.34;
+        p.aqua_fluid = 1.0;
+        p.aqua_engine = 1.0;
+        p.aqua_reserve = 0.0;
+        p.aqua_detail = 0.5;
+        p.aqua_taper = 0.6;
+        p.aqua_sweep = 0.8;
+        p.sight = Some((0..w * h).map(|i| if in_box(&[(i % w) as f32 + 0.5, (i / w) as f32 + 0.5], 0.0) { 1.0 } else { 0.0 }).collect());
+        let replay_exact = |r: &PaintResult, what: &str| { assert_eq!(StrokeScore::parse(&r.score.to_text()).unwrap().replay(w, h).unwrap().to_image().into_raw(), r.canvas.to_image().into_raw(), "{what} replays byte-exact"); };
+        let touches = |r: &PaintResult, stage: &str| -> Vec<StrokeRecord> { r.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty() && s.stage == stage).cloned().collect() };
+        let base = paint_from_image(&img, &p);
+        p.aqua_gestalt = 1.0;
+        p.aqua_sight_whites = 1.0;
+        let g = paint_from_image(&img, &p);
+        assert_ne!(g.canvas.to_image().into_raw(), base.canvas.to_image().into_raw(), "the planner paints otherwise");
+        let first = touches(&g, "aqua-1");
+        assert!(first.iter().any(|s| !in_box(&s.spline[0], 0.5)) && first.iter().any(|s| in_box(&s.spline[0], 0.5)), "the first flood over the background and the focus: {}", first.len());
+        for st in ["aqua-2", "aqua-3"] {
+            let t = touches(&g, st);
+            assert!(!t.is_empty(), "{st} touches the focus");
+            assert!(t.iter().all(|s| s.spline.iter().all(|d| in_box(d, 0.5))), "{st} on the focus alone: {} of {} outside", t.iter().filter(|s| !s.spline.iter().all(|d| in_box(d, 0.5))).count(), t.len());
+        }
+        assert!(g.score.strokes.iter().all(|s| s.resist.is_none()), "no fluid under the planner");
+        assert!(first.iter().any(|s| s.spline.len() >= 3 && s.taper > 0.0), "the flood's strokes polylines, run dry toward the ends");
+        replay_exact(&g, "the planner");
+        p.aqua_negative_space = 0.6;
+        let neg = paint_from_image(&img, &p);
+        assert!(neg.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty()).all(|s| s.spline.iter().all(|d| d[1] >= h as f32 / 2.0 - 0.5 || in_box(d, 0.5))), "the light sky off the focus the negative space: no touch on it");
+        replay_exact(&neg, "the negative space");
+        p.aqua_negative_space = 0.0;
+        p.aqua_budget = first.len() as f32;
+        let lim = paint_from_image(&img, &p);
+        let n_lim = lim.score.strokes.iter().filter(|s| s.inject && !s.mix.is_empty()).count();
+        assert!(n_lim <= first.len() && n_lim > 0, "the budget kept: {n_lim}");
+        assert!(touches(&lim, "aqua-2").is_empty() && touches(&lim, "aqua-3").is_empty(), "the first flood kept first, the sessions after dropped: {} / {} / {}", touches(&lim, "aqua-1").len(), touches(&lim, "aqua-2").len(), touches(&lim, "aqua-3").len());
+        replay_exact(&lim, "the budget");
     }
 
     #[test]
