@@ -42,6 +42,11 @@
 //! only the picture's darks and contrasts over it (the debt cap and the high-pass gate in `aqua_engine_pass` and the
 //! restate gate); and the boundary of a wash class is a CAPILLARY SEAM in the solver (`Canvas::add_capillary_seam`:
 //! the flow slowed, the seam drying as a rim, the pigment pinned along it) instead of the masking fluid's wall.
+//!
+//! Set 6 (the painter's `aqua_sight_debt`, `aqua_sight_sessions`): the COMPOSITION by the sight — off the sight the
+//! later sessions' debt is let go (the background a broad understated wash), and a session touches only where the
+//! sight reaches key × its progress, the drawing after the washes only where it reaches key × the brush's fineness:
+//! the finish's contrast between the subject and its ground leads the eye.
 
 use anyhow::{Context, Result};
 use image::{GrayImage, RgbImage};

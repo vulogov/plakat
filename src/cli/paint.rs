@@ -1937,6 +1937,8 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aqua_sight_class = plan.medium.aqua_sight_class;
     params.aqua_sight_gradient = plan.medium.aqua_sight_gradient;
     params.aqua_sight_barrier = plan.medium.aqua_sight_barrier;
+    params.aqua_sight_debt = plan.medium.aqua_sight_debt;
+    params.aqua_sight_sessions = plan.medium.aqua_sight_sessions;
     params.brush.bed = plan.medium.blade_bed;
     params.hatch = plan.medium.hatch;
     params.verdaccio = plan.medium.verdaccio;
@@ -2972,6 +2974,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aqua_sight_class = m.aqua_sight_class;
         params.aqua_sight_gradient = m.aqua_sight_gradient;
         params.aqua_sight_barrier = m.aqua_sight_barrier;
+        params.aqua_sight_debt = m.aqua_sight_debt;
+        params.aqua_sight_sessions = m.aqua_sight_sessions;
         params.brush.bed = m.blade_bed;
         params.hatch = m.hatch;
         params.verdaccio = m.verdaccio;
@@ -3282,6 +3286,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aqua_sight_class { params.aqua_sight_class = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_gradient { params.aqua_sight_gradient = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.aqua_sight_barrier { params.aqua_sight_barrier = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_debt { params.aqua_sight_debt = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aqua_sight_sessions { params.aqua_sight_sessions = v.clamp(0.0, 1.0); }
         // THE DOTS go on the WHITE ground (see `MediumProfile::dot`): the imprimatura below is the brush's — a
         // toned gap between dots is a stain, the white between them the divisionists' light.
         if params.dot > 0.0 {
