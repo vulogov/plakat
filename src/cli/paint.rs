@@ -3716,11 +3716,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     }
                     _ => params.silhouette_mask = Some(s.clone()),
                 }
-                // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
+                // THE CLOTHING CLIPPED TO THE SILHOUETTE (7.18.0): the subject is SAM's silhouette, and the
+                // clothing BOXES of the semantic pass count only within it — where SAM already is. A box is a
+                // box: the one OWL-ViT drew round a tunic reached from the raised hand to the feet and took the
+                // street and the houses behind the figure with it; unioned by `max`, SAM could never cut it
+                // back, and the background inside the box was painted as the subject — no loose hand, no
+                // knife, the full ladder, the lost and glazed seams along the box's edge: a rectangle of
+                // another painting round the figure. (A margin round the silhouette was tried and drew a
+                // contour of marks at its distance instead.) Without a usable SAM mask the union stands.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {
                         for (a, b) in sm.iter_mut().zip(&s) {
-                            *a = a.max(*b);
+                            *a = (*a * *b).max(*b);
                         }
                     }
                     _ => params.subject_mask = Some(s),
