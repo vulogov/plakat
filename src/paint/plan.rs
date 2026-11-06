@@ -100,6 +100,10 @@ pub struct PaintPlan {
     /// new painting, 0 otherwise.
     #[serde(default)]
     pub hotspot: Option<f32>,
+    /// POINT (0..1): the picture's isolated points of light (a star, a lamp, a glint, a catchlight) set last
+    /// with the point of the brush where the brushwork lost them. Absent = 0.
+    #[serde(default)]
+    pub point: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1026,6 +1030,7 @@ impl Default for PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            point: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1347,6 +1352,9 @@ impl PaintPlan {
         }
         if let Some(hs) = self.hotspot {
             o.push_str(&format!("hotspot: {hs:.2}\n"));
+        }
+        if let Some(pt) = self.point {
+            o.push_str(&format!("point: {pt:.2}\n"));
         }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
@@ -1681,6 +1689,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            point: None,
             technique: None,
             diffuse: None,
             splatter: None,

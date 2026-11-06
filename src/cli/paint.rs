@@ -686,6 +686,13 @@ pub struct FromArgs {
     /// Default: 0.5 for a new painting, 0 otherwise.
     #[arg(long)]
     pub hotspot: Option<f32>,
+    /// THE POINT OF THE BRUSH (0..1, 0 = off): the picture's isolated points of light — a star, a lamp in a
+    /// window, a glint on the water, the catchlight in an eye — that no brush of the ladder lays (the broad
+    /// passes average them into the ground, the finest pass never comes to a flat dark passage), each set LAST
+    /// as one thick touch of its own colour lifted toward white, widened by the key, only where the brushwork
+    /// lost it. Plan: `point`
+    #[arg(long)]
+    pub point: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2499,6 +2506,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.hotspot.is_none() {
             a.hotspot = plan.hotspot;
         }
+        if a.point.is_none() {
+            a.point = plan.point;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -2776,6 +2786,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
     params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
     params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
+    params.point = a.point.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,

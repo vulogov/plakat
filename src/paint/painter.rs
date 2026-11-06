@@ -215,6 +215,10 @@ pub struct PaintParams {
     /// highlight — it is where the light is, and the picture wants it; what it lacks is its falloff. 1 models
     /// it fully. See [`hotspot_pass`].
     pub hotspot: f32,
+    /// THE POINT OF THE BRUSH (0..1, 0 = off): the picture's isolated points of light — a star, a lamp, a
+    /// glint on water, a catchlight — that no brush of the ladder lays, each set last as one thick touch of its
+    /// own light widened by the key, where the brushwork lost it. See [`point_pass`].
+    pub point: f32,
     /// See [`WetTechnique`]. `None` keeps every medium exactly as it was.
     pub technique: WetTechnique,
     /// From this index on, the brush ladder is for the FACE only (see `PassSpec::face_only`). `None` = the
@@ -965,7 +969,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, point: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -6612,6 +6616,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         hotspot_pass(&mut canvas, &mut score, p, protect_all.as_deref(), &mut placed, &mut k);
     }
 
+    // THE POINTS OF LIGHT: the stars, lamps and glints the ladder lost, each set with the point of the brush
+    // (see `point_pass`). After the hotspots, so it judges the canvas as finally painted.
+    if p.point > 0.0 && placed < p.budget {
+        point_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k);
+    }
+
     // SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary so shoulders/collar read by their
     // contour against a light ground. Laid before the bleed so a wet medium softens the line.
     if p.silhouette > 0.0 && p.subject_mask.is_some() && placed < p.budget {
@@ -8021,6 +8031,228 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
     }
     if laid > 0 {
         tracing::info!(target: "plakat", "hotspots: {laid} marks re-modelling flat highlights (strength {strength:.2})");
+    }
+}
+
+/// A POINT OF LIGHT found in the picture: an isolated bright speck no brush of the ladder reaches.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PointLight {
+    pub cx: f32,
+    pub cy: f32,
+    /// The speck's own reach from its centre, px (≥ 0.75).
+    pub radius: f32,
+    /// Its brightest luma.
+    pub peak: f32,
+    /// The luma of the ground round it (the wide mean).
+    pub ground: f32,
+}
+
+/// THE POINTS OF LIGHT in a luma field: the pixels that stand at least 0.12 above the mean over a window of
+/// three times `r`, joined into 4-connected specks no larger than twice a `(2r+1)²` cell — a star, a lamp, a
+/// glint on the water, a catchlight. Anything larger is a highlight with an extent of its own (the hotspot
+/// pass's business) and is left out; a speck whose peak stands under 0.2 above its ground is a mid-tone
+/// fleck, not a light. Brightest-against-its-ground first.
+pub(crate) fn point_lights(l: &[f32], w: u32, h: u32, r: i32) -> Vec<PointLight> {
+    let (wu, hu) = (w as usize, h as usize);
+    let n = wu * hu;
+    if n == 0 || l.len() != n {
+        return Vec::new();
+    }
+    let r = r.max(1);
+    let wide = box_blur(l, w, h, 3 * r);
+    let seed: Vec<bool> = (0..n).map(|i| l[i] - wide[i] > 0.12).collect();
+    let max_area = ((2 * r + 1) * (2 * r + 1) * 2) as usize;
+    let mut seen = vec![false; n];
+    let mut out = Vec::new();
+    for start in 0..n {
+        if !seed[start] || seen[start] {
+            continue;
+        }
+        let mut region = Vec::new();
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut bail = false;
+        while let Some(i) = stack.pop() {
+            region.push(i);
+            if region.len() > max_area {
+                bail = true;
+            }
+            let (x, y) = (i % wu, i / wu);
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 || nx >= wu as i64 || ny >= hu as i64 {
+                    continue;
+                }
+                let j = ny as usize * wu + nx as usize;
+                if seed[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        // (The whole component is walked even when it is too big, so its pixels are not re-found as the
+        // start of a smaller one.)
+        if bail {
+            continue;
+        }
+        let (mut cx, mut cy) = (0f64, 0f64);
+        for &i in &region {
+            cx += (i % wu) as f64;
+            cy += (i / wu) as f64;
+        }
+        cx /= region.len() as f64;
+        cy /= region.len() as f64;
+        let peak = region.iter().map(|&i| l[i]).fold(0.0f32, f32::max);
+        let ground = wide[(cy as usize).min(hu - 1) * wu + (cx as usize).min(wu - 1)];
+        if peak - ground < 0.2 {
+            continue;
+        }
+        // The point's radius is its CORE's — the disc of the pixels above half its height over the ground —
+        // not its halo's: a star's faint glow passes the seed and would make a 3 px star an 8 px drop.
+        let half = ground + 0.5 * (peak - ground);
+        let core = region.iter().filter(|&&i| l[i] >= half).count().max(1) as f32;
+        let radius = (core / std::f32::consts::PI).sqrt().max(0.75);
+        // A POINT IS COMPACT. A bright hair against the skin, a rigging line against the sky, a thread of
+        // foam: a thin bright line passes the size gate in pieces, and the first build set a drop on every
+        // piece — a spatter of white along the eyebrows. A point's reach from its centre is its disc's.
+        let reach = region
+            .iter()
+            .map(|&i| {
+                let (dx, dy) = ((i % wu) as f64 - cx, (i / wu) as f64 - cy);
+                (dx * dx + dy * dy).sqrt() as f32
+            })
+            .fold(0.0f32, f32::max);
+        if reach > 1.8 * radius + 1.0 {
+            continue;
+        }
+        // A POINT STANDS ALONE. The weave of a grey tunic, the grain of a beard, the sparkle of a wet road:
+        // a busy texture is bright specks by the hundred, each passing every test above, and the first
+        // build laid a drop on each — the tunic went to confetti. Those specks are the texture's and the
+        // brush's; a point of light has a calm ground round it. The ring from just past the speck's reach
+        // out to three radii of the cell holds no more than a fiftieth of such specks: a star has at most one
+        // neighbour that near, a weave has eight.
+        let (r_in, r_out) = (reach + 1.0, (reach + 2.0 * r as f32).max(3.0 * r as f32));
+        let (mut ring, mut lit) = (0usize, 0usize);
+        let rr = r_out.ceil() as i64;
+        let (ix, iy) = (cx as i64, cy as i64);
+        for y in (iy - rr).max(0)..=(iy + rr).min(hu as i64 - 1) {
+            for x in (ix - rr).max(0)..=(ix + rr).min(wu as i64 - 1) {
+                let d = (((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt()) as f32;
+                if d >= r_in && d <= r_out {
+                    ring += 1;
+                    if seed[y as usize * wu + x as usize] {
+                        lit += 1;
+                    }
+                }
+            }
+        }
+        if ring > 0 && lit as f32 > 0.02 * ring as f32 {
+            continue;
+        }
+        out.push(PointLight { cx: cx as f32, cy: cy as f32, radius, peak, ground });
+    }
+    out.sort_by(|a, b| (b.peak - b.ground).partial_cmp(&(a.peak - a.ground)).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// THE POINT OF THE BRUSH (see `PaintParams::point`). A star, a lamp in a window, a glint on the water, the
+/// catchlight in an eye: an isolated bright speck of two or three pixels on a plain dark ground. No brush of
+/// the ladder lays it — the broad passes average it into the ground, and the finest pass never comes to a
+/// flat dark passage where, by its own gates, the canvas is not plainly wrong — so the picture's points of
+/// light go out one by one, and a night sky full of stars is painted as a blank. A painter sets them LAST,
+/// with the point of the brush: one thick touch of the light's own colour, a little lifted toward white, laid
+/// over everything, a drop of paint standing proud of the dark.
+///
+/// The specks are found in the SOURCE (`point_lights`: the local maxima above the wide mean, no larger than a
+/// cell of the point's radius — a highlight with an extent is the hotspot pass's), and only those the brushwork
+/// LOST are laid: where the canvas at the point already stands within 0.1 of the peak the ladder carried it
+/// and it is left alone. Each is one round dab of radius the speck's own (never under half the point radius,
+/// a 512th of the short side, 2..6 px) widened by the key — the dilation of a thick drop — in the source's
+/// colour lifted toward white by 0.3 of the key, the charge up by the key (thick, so the relief raises it),
+/// pressed full and nearly dry so it sits on top. None on the subject or a face: the figure is the brush's, its
+/// own tiers reach the finest brush and chose not to lay these specks (a beard's wet glints, a tunic's weave);
+/// the point of the brush goes to the lights of the ground. Rationed to a fiftieth of the budget, brightest
+/// first. Laid after the hotspot pass, before the silhouette and the wet finish.
+#[allow(clippy::too_many_arguments)]
+fn point_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
+    let key = p.point.clamp(0.0, 1.0);
+    if key <= 0.0 || *placed >= p.budget {
+        return;
+    }
+    let (w, h) = input.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    if wu == 0 || hu == 0 {
+        return;
+    }
+    let r = ((w.min(h) as f32) / 512.0).round().clamp(2.0, 6.0) as i32;
+    let l = luma_map(input);
+    let pts = point_lights(&l, w, h, r);
+    if pts.is_empty() {
+        return;
+    }
+    let painted = canvas.to_image();
+    let lc = luma_map(&painted);
+    let ceiling = (*placed + (p.budget / 50).max(400)).min(p.budget);
+    let mut mix_cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let (mut laid, mut kept, mut skipped) = (0usize, 0usize, 0usize);
+    for pt in pts {
+        if *placed >= ceiling {
+            break;
+        }
+        let (ix, iy) = ((pt.cx as usize).min(wu - 1), (pt.cy as usize).min(hu - 1));
+        let i = iy * wu + ix;
+        if protect.map(|m| m.get(i).copied().unwrap_or(false)).unwrap_or(false) {
+            continue;
+        }
+        // THE FIGURE IS THE BRUSH'S. The subject and the faces are painted by their own tiers down to the
+        // finest brush, which went there and chose not to lay these specks — the wet glints on a beard, the
+        // weave of a tunic, the raindrops on a cloak are the figure's texture, and a drop of white on each
+        // was confetti over the figure (M_2_1, riga1). The point of the brush goes to the lights of the
+        // GROUND, where the fine passes never land: the stars, the glints on the water, a lamp in a window.
+        let on_figure = p.subject_mask.as_ref().map(|m| m.get(i).copied().unwrap_or(0.0) >= 0.5).unwrap_or(false)
+            || p.face_mask.as_ref().map(|m| m.get(i).copied().unwrap_or(0.0) >= 0.5).unwrap_or(false);
+        if on_figure {
+            skipped += 1;
+            continue;
+        }
+        if lc[i] >= pt.peak - 0.10 {
+            kept += 1;
+            continue;
+        }
+        let c = input.get_pixel(ix as u32, iy as u32).0;
+        let tint = lights_tone(c, 0.3 * key);
+        let rr = pt.radius.max(r as f32 * 0.5) * (1.0 + key);
+        *k += 1;
+        let load = mixture_cached(&mut mix_cache, tint, &p.palette, p.charge * (1.0 + key), p.palette.pigments.len());
+        // The drop is a DISC: the brush lays its lanes along the path, so a path of a pixel's length under a
+        // wide mark is a line of one pixel across, not a dot (the first build's stars were specks). The touch
+        // is as long as it is wide, the round brush's ends closing it.
+        let (x, y) = (pt.cx, pt.cy);
+        let path = vec![[x - 0.8 * rr, y - 0.2 * rr], [x + 0.8 * rr, y + 0.2 * rr]];
+        let st = Stroke { path, width0: 2.0 * rr, width1: 2.0 * rr * 0.9, load, pressure: 1.0, wetness: 0.2 };
+        st.rasterize(canvas, &p.brush);
+        let mix: Vec<(String, f32)> = st.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+        *placed += 1;
+        laid += 1;
+        score.strokes.push(StrokeRecord {
+            id: *placed as u32,
+            wipe: false,
+            wash: false, inject: false,
+            stage: "point".into(),
+            spline: st.path,
+            w0: st.width0,
+            w1: st.width1,
+            taper: 0.1,
+            mix,
+            wet: st.wetness,
+            press: 1.0,
+            streak: p.brush.streak,
+            round: p.brush.round,
+            pickup: None,
+            bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, stop: None, edge: None, prof: None, resist: None, });
+    }
+    if laid > 0 || kept > 0 || skipped > 0 {
+        tracing::info!(target: "plakat", "points of light: {laid} set with the point of the brush, {kept} the brushwork carried, {skipped} on the figure left to the brush (key {key:.2})");
     }
 }
 
@@ -18270,3 +18502,74 @@ mod aqua_tests {
     }
 }
 
+
+#[cfg(test)]
+mod point_light_tests {
+    use super::*;
+
+    /// Three single-pixel stars on a black field are found, brightest first; a lit square the size of a
+    /// highlight is not a point and is left to the hotspot pass.
+    fn field(w: usize, h: usize) -> Vec<f32> {
+        vec![0.02; w * h]
+    }
+
+    #[test]
+    fn the_points_of_light_are_the_isolated_specks_and_not_the_lit_square() {
+        let (w, h) = (96usize, 96usize);
+        let mut l = field(w, h);
+        l[10 * w + 12] = 1.0;
+        l[50 * w + 70] = 0.7;
+        l[80 * w + 20] = 0.9;
+        for y in 30..50 {
+            for x in 30..50 {
+                l[y * w + x] = 1.0;
+            }
+        }
+        let pts = point_lights(&l, w as u32, h as u32, 2);
+        assert_eq!(pts.len(), 3, "{pts:?}");
+        assert!((pts[0].cx - 12.0).abs() < 0.01 && (pts[0].cy - 10.0).abs() < 0.01, "brightest first: {:?}", pts[0]);
+        assert!(pts.iter().all(|p| (p.radius - 0.75).abs() < 1e-6 && p.peak - p.ground >= 0.2), "a one-pixel star is the smallest point: {pts:?}");
+        assert!(pts.iter().all(|p| !(30.0..50.0).contains(&p.cx) || !(30.0..50.0).contains(&p.cy)), "the square is no point: {pts:?}");
+    }
+
+    #[test]
+    fn a_dim_fleck_on_a_mid_ground_is_no_point_of_light() {
+        let (w, h) = (48usize, 48usize);
+        let mut l = vec![0.5; w * h];
+        l[20 * w + 20] = 0.66;
+        assert!(point_lights(&l, w as u32, h as u32, 2).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod point_light_shape_tests {
+    use super::*;
+
+    /// A thin bright line (a hair, a halyard) is no point of light, however short its pieces.
+    #[test]
+    fn a_bright_line_is_no_point_of_light() {
+        let (w, h) = (64usize, 64usize);
+        let mut l = vec![0.1; w * h];
+        for x in 20..34 {
+            l[30 * w + x] = 0.9;
+        }
+        assert!(point_lights(&l, w as u32, h as u32, 2).is_empty());
+    }
+
+    /// A field of bright specks three pixels apart — the weave of a tunic — is a texture, not points of
+    /// light; one speck standing alone on the same field is.
+    #[test]
+    fn a_busy_texture_is_no_field_of_points_but_a_lone_speck_is_one() {
+        let (w, h) = (96usize, 96usize);
+        let mut l = vec![0.3; w * h];
+        for y in (8..56).step_by(3) {
+            for x in (8..56).step_by(3) {
+                l[y * w + x] = 0.9;
+            }
+        }
+        l[80 * w + 80] = 0.9;
+        let pts = point_lights(&l, w as u32, h as u32, 2);
+        assert_eq!(pts.len(), 1, "{pts:?}");
+        assert!((pts[0].cx - 80.0).abs() < 0.01 && (pts[0].cy - 80.0).abs() < 0.01, "{pts:?}");
+    }
+}
