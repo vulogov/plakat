@@ -104,6 +104,17 @@ pub struct PaintPlan {
     /// with the point of the brush where the brushwork lost them. Absent = 0.
     #[serde(default)]
     pub point: Option<f32>,
+    /// MICRO (0..1): the fine brushes restate wherever the brushwork lost the picture's fine structure (the canvas's
+    /// local contrast against the source's within the brush's reach), in the shadows too. Absent = 0.
+    #[serde(default)]
+    pub micro: Option<f32>,
+    /// ADAPT (0..1): the brush adapted to the structure at its scale — the seed moved onto the cell's strongest
+    /// feature, the mark's length its extent, the flat cells withheld by the key. Absent = 0.
+    #[serde(default)]
+    pub adapt: Option<f32>,
+    /// POINT FIELD (0..1): how dense a field of points of light the point of the brush accepts. Absent = 0.
+    #[serde(default)]
+    pub point_field: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1031,6 +1042,9 @@ impl Default for PaintPlan {
             rigger: None,
             hotspot: None,
             point: None,
+            micro: None,
+            adapt: None,
+            point_field: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1355,6 +1369,15 @@ impl PaintPlan {
         }
         if let Some(pt) = self.point {
             o.push_str(&format!("point: {pt:.2}\n"));
+        }
+        if let Some(v) = self.micro {
+            o.push_str(&format!("micro: {v:.2}\n"));
+        }
+        if let Some(v) = self.adapt {
+            o.push_str(&format!("adapt: {v:.2}\n"));
+        }
+        if let Some(v) = self.point_field {
+            o.push_str(&format!("point_field: {v:.2}\n"));
         }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
@@ -1690,6 +1713,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             rigger: None,
             hotspot: None,
             point: None,
+            micro: None,
+            adapt: None,
+            point_field: None,
             technique: None,
             diffuse: None,
             splatter: None,

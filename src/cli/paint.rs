@@ -693,6 +693,21 @@ pub struct FromArgs {
     /// lost it. Plan: `point`
     #[arg(long)]
     pub point: Option<f32>,
+    /// MICRO (0..1, 0 = off): the fine brushes restate wherever the brushwork has LOST the picture's fine
+    /// structure — the canvas's local contrast within the brush's reach against the source's, in the shadows as in
+    /// the light (the restate floor judges a cell's tone, and a board's grain dark on dark is never wrong in tone).
+    /// The key is the share of the contrast that may be lost before the brush comes back. Plan: `micro`
+    #[arg(long)]
+    pub micro: Option<f32>,
+    /// ADAPT (0..1, 0 = off): the brush adapted to the structure at its scale — within each seed's cell the
+    /// strongest feature of the band the brush resolves: none, the mark withheld by the key; one, the seed moved
+    /// onto it and the mark's length its extent along the flow. One mark per cobble, not a grid of dashes. Plan: `adapt`
+    #[arg(long)]
+    pub adapt: Option<f32>,
+    /// POINT FIELD (0..1, 0 = as built): how dense a field of points of light the point of the brush accepts —
+    /// the ring round a point may hold 2 % + 28 % × key of bright pixels. Plan: `point_field`
+    #[arg(long)]
+    pub point_field: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2509,6 +2524,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.point.is_none() {
             a.point = plan.point;
         }
+        if a.micro.is_none() {
+            a.micro = plan.micro;
+        }
+        if a.adapt.is_none() {
+            a.adapt = plan.adapt;
+        }
+        if a.point_field.is_none() {
+            a.point_field = plan.point_field;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -2787,6 +2811,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
     params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
     params.point = a.point.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.micro = a.micro.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.adapt = a.adapt.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.point_field = a.point_field.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,

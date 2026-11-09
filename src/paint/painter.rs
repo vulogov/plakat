@@ -219,6 +219,24 @@ pub struct PaintParams {
     /// glint on water, a catchlight — that no brush of the ladder lays, each set last as one thick touch of its
     /// own light widened by the key, where the brushwork lost it. See [`point_pass`].
     pub point: f32,
+    /// MICRO (0..1, 0 = off): the fine brushes restate wherever the brushwork has LOST the picture's fine
+    /// structure — the canvas's local contrast within the brush's reach against the source's, in the shadows as
+    /// in the light. The restate floor and the shade's calm judge the TONE of a cell, and a board's grain or a
+    /// rivet dark on dark is never plainly wrong in tone: the shadows went to a flat mass. The key is the share of
+    /// the contrast that may be lost before the brush comes back (1 = any loss); the fine passes read the source's
+    /// residual at their own scale off the faces and hair. Plan: `micro`.
+    pub micro: f32,
+    /// ADAPT (0..1, 0 = off): the brush adapted to the structure at its scale. For each seed the strongest feature
+    /// of the band this brush resolves (the luma less its blur at one and a half radii) is found within the cell:
+    /// none (a flat wall at the fine brush's scale) — the mark withheld by the key, the broad pass has laid it;
+    /// one — the seed moved onto it by the key and the mark's length the feature's extent along the flow. One mark
+    /// per cobble, not a grid of dashes over the cobbles. The face and hair keep their own ladder. Plan: `adapt`.
+    pub adapt: f32,
+    /// POINT FIELD (0..1, 0 = the rule as built): how dense a field of points of light the point of the brush
+    /// accepts. A point is ALONE when the ring round it (from its reach to three radii) holds no more than
+    /// 2 % + 28 % × key of bright pixels — at 0 a dense star field yields only its brightest stars, at 1 a third of
+    /// the ring may be lit. Plan: `point_field`.
+    pub point_field: f32,
     /// See [`WetTechnique`]. `None` keeps every medium exactly as it was.
     pub technique: WetTechnique,
     /// From this index on, the brush ladder is for the FACE only (see `PassSpec::face_only`). `None` = the
@@ -969,7 +987,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, point: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, nib_feature_mask: None, nib_object_mask: None, nib_grass_mask: None, nib_person_mask: None, nib_depth_map: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, point: 0.0, micro: 0.0, adapt: 0.0, point_field: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, blade: 0.0, blade_planes: 0.0, blade_levels: 0.0, blade_size: 0.0, blade_light: 0.0, blade_phong: 0.0, blade_flow: 0.0, blade_rest: 0.0, blade_relief: 0.0, blade_along: 0.0, blade_inertia: 0.0, blade_facet: 0.0, blade_visc: 0.0, blade_soft: 0.0, blade_detail: 0.0, blade_layers: 0.0, blade_edge: 0.0, blade_tuft: 0.0, blade_aniso: 0.0, blade_slope: 0.0, blade_break: 0.0, blade_route: 0.0, blade_scatter: 0.0, blade_tint: 0.0, blade_focus: 0.0, blade_peak: 0.0, blade_band: 0.0, dot: 0.0, dot_size: 0.0, dot_space: 0.0, dot_dense: 0.0, dot_busy: 0.0, dot_pure: 0.0, dot_ground: 0.0, dot_edge: 0.0, dot_fill: 0.0, dot_diffuse: 0.0, dot_flow: 0.0, dot_shadow: 0.0, dot_white: 0.0, dot_fine: 0.0, dot_lab: 0.0, dot_lap: 0.0, dot_tone: 0.0, aqua: 0.0, aqua_planes: 0.0, aqua_reserve: 0.0, aqua_wet: 0.0, aqua_grade: 0.0, aqua_detail: 0.0, aqua_soft: 0.0, aqua_rim: 0.0, aqua_bloom: 0.0, aqua_grain: 0.0, aqua_mark: 0.0, aqua_grain_mid: 0.0, aqua_grain_wet: 0.0, aqua_lip: 0.0, aqua_mass: 0.0, aqua_barrier: 0.0, aqua_body: 0.0, aqua_cut: 0.0, aqua_ragged: 0.0, aqua_tension: 0.0, aqua_paper: 0.0, aqua_focus: 0.0, aqua_resist: 0.0, aqua_line: 0.0, aqua_loose: 0.0, aqua_fluid: 0.0, aqua_evap: 0.0, aqua_weight: 0.0, aqua_under: 0.0, aqua_pool: 0.0, aqua_charge: 0.0, aqua_engine: 0.0, aqua_crisp: 0.0, aqua_stroke: 0.0, aqua_visc: 0.0, aqua_press: 0.0, aqua_dry_boost: 0.0, aqua_tip: 0.0, aqua_skip: 0.0, aqua_taper: 0.0, aqua_bias: 0.0, aqua_taper_min: 0.0, aqua_fine: 0.0, aqua_fade: 0.0, aqua_sweep: 0.0, aqua_line_resist: 0.0, aqua_light: 0.0, aqua_light_dir: 0.0, aqua_vignette: 0.0, aqua_line_density: 0.0, aqua_grain_dir: 0.0, aqua_spot_dry: 0.0, aqua_fine_calm: 0.0, aqua_line_press: 0.0, aqua_line_tooth: 0.0, aqua_line_lift: 0.0, aqua_tech: 0.0, aqua_thick: 0.0, aqua_hold: 0.0, aqua_sink: 0.0, aqua_drift: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, nib: 0.0, nibs: 0.0, nib_tone: 0.0, nib_white: 0.0, nib_anchor: 0.0, nib_hint: 0.0, nib_face: 0.0, nib_gap: 0.0, nib_relief: 0.0, nib_far: 0.0, nib_occlude: 0.0, nib_eyes: 0.0, nib_fur: 0.0, nib_lift: 0.0, nib_contact: 0.0, nib_figure: 0.0, nib_object: 0.0, nib_tuft: 0.0, nib_close: 0.0, nib_mass: 0.0, nib_rim: 0.0, nib_pool: 0.0, nib_air: 0.0, nib_people: 0.0, nib_value: 0.0, nib_fine_face: 0.0, nib_scatter: 0.0, nib_falloff: 0.0, nib_depth: 0.0, nib_lush: 0.0, nib_glint: 0.0, nib_wash: 0.0, nib_wash_dark: 0.0, nib_wash_detail: 0.0, nib_wash_line: 0.0, nib_wash_swell: 0.0, nib_wash_air: 0.0, nib_wash_soft: 0.0, nib_wash_gamma: 0.0, nib_wash_flat: 0.0, nib_wash_scurve: 0.0, nib_wash_vary: 0.0, nib_wash_mass: 0.0, nib_wash_hold: 0.0, nib_wash_debt: 0.0, nib_wash_dry: 0.0, nib_wash_cap: 0.0, nib_wash_tone: 0.0, nib_wash_draw: 0.0, nib_wash_planes: 0.0, nib_wash_edge: 0.0, nib_wash_depth: 0.0, nib_wash_scale: 0.0, nib_wash_levels: 0.0, nib_wash_faces: 0.0, nib_wash_rag: 0.0, nib_wash_mask: 0.0, nib_wash_half: 0.0, nib_wash_grain: 0.0, nib_wash_grade: 0.0, nib_wash_profile: 0.0, nib_wash_streak: 0.0, nib_wash_sweep: 0.0, nib_wash_water: 0.0, nib_wash_agent: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -1106,6 +1124,40 @@ fn edge_spread(src: &[f32], guide: &[f32], w: usize, h: usize, sigma: f32, edge:
         }
     }
     out
+}
+
+/// The luma's standard deviation within radius `r` of every pixel (box windows): the local contrast at a scale.
+fn local_std(l: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
+    let m = box_blur(l, w, h, r);
+    let sq: Vec<f32> = l.iter().map(|v| v * v).collect();
+    let m2 = box_blur(&sq, w, h, r);
+    m.iter().zip(m2.iter()).map(|(a, b)| (b - a * a).max(0.0).sqrt()).collect()
+}
+
+/// The canvas's luma std within radius `r` of (x, y), sampled on a stride so a wide window costs no more than a
+/// few dozen reads (the MICRO gate, judged per seed while the pass is laid).
+fn canvas_local_std(cv: &Canvas, x: i32, y: i32, r: i32, w: i32, h: i32) -> f32 {
+    let step = (r / 4).max(1);
+    let (mut s, mut s2, mut n) = (0.0f32, 0.0f32, 0u32);
+    let mut yy = y - r;
+    while yy <= y + r {
+        let mut xx = x - r;
+        while xx <= x + r {
+            if xx >= 0 && yy >= 0 && xx < w && yy < h {
+                let v = color::linear_luma(color::srgb_to_linear(cv.color_at(xx as u32, yy as u32)));
+                s += v;
+                s2 += v * v;
+                n += 1;
+            }
+            xx += step;
+        }
+        yy += step;
+    }
+    if n < 4 {
+        return 0.0;
+    }
+    let m = s / n as f32;
+    (s2 / n as f32 - m * m).max(0.0).sqrt()
 }
 
 fn box_blur(src: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
@@ -2526,6 +2578,11 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
 /// classic tolerance. Under `gradation` a stroke on a slow ramp stops sooner, so a soft mass is laid as graded
 /// marks instead of one flat patch.
 const STOP_TOL: f32 = 0.16;
+/// MICRO: a source passage whose local contrast (the luma's std within the brush's reach) is under this is the
+/// sensor's grain and an open sky, never a structure the brush is sent back for.
+const MICRO_MIN: f32 = 0.025;
+/// ADAPT: a band this weak at the brush's scale is no feature — the cell is flat at this scale.
+const ADAPT_MIN: f32 = 0.02;
 
 /// Grow a stroke through the seed in BOTH directions (Hertzmann), so a seed mid-feature paints the whole
 /// isophote it sits on, not just the half below it.
@@ -2968,6 +3025,37 @@ fn texture_reference(armature: &RgbImage, source: &RgbImage, radius: f32, levels
         // detected face mask says where; without one, the subject matte stands in.
         let bg = 1.0 - subject.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0);
         let k = amount * flat * bg;
+        if k <= 0.0 {
+            continue;
+        }
+        let (x, y) = ((i % w) as u32, (i / w) as u32);
+        let s = source.get_pixel(x, y).0;
+        let b = blurred.get_pixel(x, y).0;
+        for c in 0..3 {
+            let v = px.0[c] as f32 + k * (s[c] as f32 - b[c] as f32);
+            px.0[c] = v.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// MICRO (see `PaintParams::micro`): `texture_reference` with the source's residual at this scale added by the key
+/// everywhere off the faces and hair — the shadows and the busy passages too, where the texture's own gate (the
+/// flat masses off the subject) stays shut. Per pixel the larger of the two shares, so at a key of 0 this is the
+/// texture reference exactly.
+fn micro_reference(armature: &RgbImage, source: &RgbImage, radius: f32, levels: u32, amount: f32, subject: Option<&[f32]>, key: f32, face: Option<&[f32]>, hair: Option<&[f32]>) -> RgbImage {
+    let (w, h) = (armature.width() as usize, armature.height() as usize);
+    let blurred = imageops::blur(source, (radius * 1.5).max(1.0));
+    let luma = luma_map(armature);
+    let range = local_range(&luma, w, h, (radius.round() as usize).max(2));
+    let step = 1.0 / (levels - 1) as f32;
+    let mut out = armature.clone();
+    for (i, px) in out.pixels_mut().enumerate() {
+        let flat = (1.0 - (range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+        let bg = 1.0 - subject.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0);
+        let f = face.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0).clamp(0.0, 1.0);
+        let hr = hair.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0).clamp(0.0, 1.0);
+        let k = (amount * flat * bg).max(key * (1.0 - f) * (1.0 - hr));
         if k <= 0.0 {
             continue;
         }
@@ -4128,6 +4216,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // `detail_texture`), unless a detail sharpen is asked for instead (see `detail_sharpen`).
             if p.detail_sharpen > 0.0 {
                 imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
+            } else if p.micro > 0.0 && !std::ptr::eq(source, input) && !(wc_brush && wcb_texture <= 0.0) {
+                // MICRO (see `PaintParams::micro`): the fine passes read the source's residual at their own scale
+                // off the faces and hair — the shadows and the busy passages included.
+                micro_reference(input, source, radius, p.armature_levels.max(2), p.detail_texture, head_mask.as_deref().or(p.subject_mask.as_deref()), p.micro.clamp(0.0, 1.0), p.face_mask.as_deref(), p.hair_mask.as_deref())
             } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) && !(wc_brush && wcb_texture <= 0.0) {
                 // (The luminous media too: their modelling passes read the armature, which the washes already
                 // match, so without the source's texture the restate gate found nothing to resolve — a night
@@ -4587,6 +4679,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let b_waver = profile.waver;
         lap("pass:flow", &mut prof_acc, &mut prof_t);
         let grid = (radius * 0.9).max(1.5);
+        // MICRO (see `PaintParams::micro`) and ADAPT (see `PaintParams::adapt`): the picture's fine structure at THIS
+        // brush's scale, read in the source — the local contrast within the brush's reach (micro) and the band the
+        // brush resolves, the luma less its blur at one and a half radii (adapt). Neither on the block-in, the
+        // glaze or the crest; micro on the detail passes only.
+        let micro_on = p.micro > 0.0 && detail && !block_in && !glazing && !cresting && !dry_pass && !p.density && !p.luminous;
+        let adapt_on = p.adapt > 0.0 && !block_in && !glazing && !cresting && !dry_pass && !p.density && !p.luminous;
+        let struct_l: Option<Vec<f32>> = (micro_on || adapt_on).then(|| luma_map(source));
+        let micro_rw = radius.round().max(2.0) as i32;
+        let micro_src: Option<Vec<f32>> = micro_on.then(|| local_std(struct_l.as_deref().unwrap(), w, h, micro_rw));
+        let adapt_band: Option<Vec<f32>> = adapt_on.then(|| {
+            let l = struct_l.as_deref().unwrap();
+            let lb = box_blur(l, w, h, (radius * 1.5).round().max(1.0) as i32);
+            l.iter().zip(lb.iter()).map(|(a, b)| a - b).collect()
+        });
 
         let cols = ((w as f32) / grid).ceil() as u32;
         let rows = ((h as f32) / grid).ceil() as u32;
@@ -4610,6 +4716,62 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
                     return None;
                 }
+                // ADAPT (see `PaintParams::adapt`): within the seed's cell the strongest feature of the band this brush
+                // resolves; none — the mark withheld by the key (the broad pass has laid the flat passage); one — the
+                // seed moved onto it by the key, the mark's length (below) its extent along the flow (while the band
+                // keeps its sign and a third of its strength). Off the faces and hair.
+                let mut adapt_len: Option<f32> = None;
+                let (cx, cy) = match adapt_band.as_deref() {
+                    Some(band)
+                        if p.face_mask.as_deref().and_then(|m| m.get(cy as usize * w as usize + cx as usize)).copied().unwrap_or(0.0) <= 0.35
+                            && p.hair_mask.as_deref().and_then(|m| m.get(cy as usize * w as usize + cx as usize)).copied().unwrap_or(0.0) <= 0.0 =>
+                    {
+                        let key = p.adapt.clamp(0.0, 1.0);
+                        let half = (grid * 0.5).ceil() as i32;
+                        let (x0, y0) = (cx as i32, cy as i32);
+                        let (mut best, mut bx, mut by) = (0.0f32, x0, y0);
+                        for yy in (y0 - half).max(0)..=(y0 + half).min(h as i32 - 1) {
+                            for xx in (x0 - half).max(0)..=(x0 + half).min(w as i32 - 1) {
+                                let v = band[yy as usize * w as usize + xx as usize].abs();
+                                if v > best {
+                                    best = v;
+                                    bx = xx;
+                                    by = yy;
+                                }
+                            }
+                        }
+                        if best < ADAPT_MIN {
+                            if jitter(p.seed ^ 0xADA_97, k.wrapping_add(37)) + 0.5 < key {
+                                return None;
+                            }
+                            (cx, cy)
+                        } else {
+                            let bi = by as usize * w as usize + bx as usize;
+                            let sgn = band[bi].signum();
+                            let d = stroke_dir(gx[bi], gy[bi]);
+                            let reach = (radius * 4.4 * len_mul * p.stroke_len).max(radius);
+                            let mut ext = 0.0f32;
+                            for s in [-1.0f32, 1.0] {
+                                let mut t = 1.0f32;
+                                while t <= reach {
+                                    let (x, y) = (bx as f32 + d[0] * t * s, by as f32 + d[1] * t * s);
+                                    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+                                        break;
+                                    }
+                                    let v = band[y as usize * w as usize + x as usize];
+                                    if v.signum() != sgn || v.abs() < 0.3 * best {
+                                        break;
+                                    }
+                                    t += 1.0;
+                                }
+                                ext += t - 1.0;
+                            }
+                            adapt_len = Some(ext.max(1.0));
+                            (cx + key * (bx as f32 + 0.5 - cx), cy + key * (by as f32 + 0.5 - cy))
+                        }
+                    }
+                    _ => (cx, cy),
+                };
                 let (ix, iy) = (cx as u32, cy as u32);
                 // FROM SCRATCH: this plane's minimum brush — a finer rung does not touch it (RFC §9).
                 if let Some(fl) = &plane_floor {
@@ -4699,6 +4861,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // wash that is nearly right is left alone (a thousand small corrections are the stipple).
                 let on_face = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35;
                 let on_subject = p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.5;
+                // MICRO (see `PaintParams::micro`): the brushwork has lost the picture's fine structure here — the
+                // canvas's local contrast within the brush's reach against the source's, by the key's share. The
+                // cell is restated whatever its tone says: the floor, the shade's calm, the coherence gate and the
+                // loose thinning stand aside. Off the faces and hair, never a passage flatter than the sensor's grain.
+                let micro_here = match micro_src.as_deref() {
+                    Some(ms) if !on_face && !lost_here && p.hair_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) <= 0.0 => {
+                        let s = ms[region_i];
+                        s > MICRO_MIN && {
+                            let c = canvas_local_std(cv, ix as i32, iy as i32, micro_rw, w as i32, h as i32);
+                            1.0 - c / s > 1.0 - p.micro.clamp(0.0, 1.0)
+                        }
+                    }
+                    _ => false,
+                };
                 // AQUA PAPER (see `MediumProfile::aqua_paper`): the lights above the gate take no mark — bare sheet.
                 if aqua_on && p.aqua_paper > 0.0 && tluma >= p.aqua_paper {
                     return None;
@@ -4719,6 +4895,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // does not pull the eye. (Not a random thinning: that dropped the broad marks that cover the
                 // ground in the darkest hole and left the toned ground showing as a pale patch.)
                 let shaded = if p.shade > 0.0 && !block_in && !glazing && !cresting && !on_face && p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0) <= 0.0 { (p.shade * sh_raw).clamp(0.0, 1.0) } else { 0.0 };
+                let shaded = if micro_here { 0.0 } else { shaded };
                 let restate_floor = restate_floor * (1.0 + 4.0 * shaded);
                 // SPAN, EDGE and SMOOTH (see `MediumProfile::span`, `edge`, `smooth`): the form's range within
                 // the brush's reach here — flat where it is low, busy or at a contour where it is high.
@@ -4757,7 +4934,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         return None;
                     }
                 }
-                if !block_in && !glazing && !cresting && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
+                if !block_in && !glazing && !cresting && !p.density && !micro_here && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
                 // A watercolour stroke is a GLAZE over what is there: it never lands where the paper is already
@@ -4801,7 +4978,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     let thresh = p.detail_coherence * (1.0 + 1.6 * (1.0 - subj));
                     // (A CALM passage of a smoothed medium is exempt: its veils of small marks are the point —
                     // the sky of a tempera panel is built in them, and gated it stayed the broad pass's dabs.)
-                    if coh < thresh && calm < 0.3 {
+                    if coh < thresh && calm < 0.3 && !micro_here {
                         return None;
                     }
                 }
@@ -5392,10 +5569,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 } else {
                     lvar
                 };
+                // ADAPT (see `PaintParams::adapt`): the mark's length the feature's extent along the flow, against the
+                // nominal travel (2.2 radii each way × the pass's length), by the key.
+                let lvar = match adapt_len {
+                    Some(ext) if !block_in => {
+                        let nominal = (radius * 4.4 * len_mul * p.stroke_len).max(1.0);
+                        lvar * (1.0 + p.adapt.clamp(0.0, 1.0) * ((ext / nominal).clamp(0.4, 2.5) - 1.0))
+                    }
+                    _ => lvar,
+                };
                 // ... and off the subject the restating passes THIN with the ladder — the finest keeps `1 − loose`
                 // of its marks there — so the background stays the broad brush's flat patches, not a thousand
                 // small corrections blended over them. (A deterministic skip by the stroke's own key: replay-exact.)
-                if p.loose > 0.0 && !block_in && off_subject && jitter(p.seed ^ 0x1005E, k.wrapping_add(17)) + 0.5 > 1.0 - p.loose * depth_t {
+                if p.loose > 0.0 && !block_in && off_subject && !micro_here && jitter(p.seed ^ 0x1005E, k.wrapping_add(17)) + 0.5 > 1.0 - p.loose * depth_t {
                     return None;
                 }
                 // ... and in the SHADOW (`shade`) the marks run longer and wider — the dark masses rest.
@@ -8052,7 +8238,7 @@ pub(crate) struct PointLight {
 /// glint on the water, a catchlight. Anything larger is a highlight with an extent of its own (the hotspot
 /// pass's business) and is left out; a speck whose peak stands under 0.2 above its ground is a mid-tone
 /// fleck, not a light. Brightest-against-its-ground first.
-pub(crate) fn point_lights(l: &[f32], w: u32, h: u32, r: i32) -> Vec<PointLight> {
+pub(crate) fn point_lights(l: &[f32], w: u32, h: u32, r: i32, alone: f32) -> Vec<PointLight> {
     let (wu, hu) = (w as usize, h as usize);
     let n = wu * hu;
     if n == 0 || l.len() != n {
@@ -8146,7 +8332,7 @@ pub(crate) fn point_lights(l: &[f32], w: u32, h: u32, r: i32) -> Vec<PointLight>
                 }
             }
         }
-        if ring > 0 && lit as f32 > 0.02 * ring as f32 {
+        if ring > 0 && lit as f32 > alone * ring as f32 {
             continue;
         }
         out.push(PointLight { cx: cx as f32, cy: cy as f32, radius, peak, ground });
@@ -8186,7 +8372,9 @@ fn point_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p:
     }
     let r = ((w.min(h) as f32) / 512.0).round().clamp(2.0, 6.0) as i32;
     let l = luma_map(input);
-    let pts = point_lights(&l, w, h, r);
+    // POINT FIELD (see `PaintParams::point_field`): the share of the ring round a point that may be lit.
+    let alone = 0.02 + 0.28 * p.point_field.clamp(0.0, 1.0);
+    let pts = point_lights(&l, w, h, r, alone);
     if pts.is_empty() {
         return;
     }
@@ -18525,7 +18713,7 @@ mod point_light_tests {
                 l[y * w + x] = 1.0;
             }
         }
-        let pts = point_lights(&l, w as u32, h as u32, 2);
+        let pts = point_lights(&l, w as u32, h as u32, 2, 0.02);
         assert_eq!(pts.len(), 3, "{pts:?}");
         assert!((pts[0].cx - 12.0).abs() < 0.01 && (pts[0].cy - 10.0).abs() < 0.01, "brightest first: {:?}", pts[0]);
         assert!(pts.iter().all(|p| (p.radius - 0.75).abs() < 1e-6 && p.peak - p.ground >= 0.2), "a one-pixel star is the smallest point: {pts:?}");
@@ -18537,7 +18725,7 @@ mod point_light_tests {
         let (w, h) = (48usize, 48usize);
         let mut l = vec![0.5; w * h];
         l[20 * w + 20] = 0.66;
-        assert!(point_lights(&l, w as u32, h as u32, 2).is_empty());
+        assert!(point_lights(&l, w as u32, h as u32, 2, 0.02).is_empty());
     }
 }
 
@@ -18553,7 +18741,7 @@ mod point_light_shape_tests {
         for x in 20..34 {
             l[30 * w + x] = 0.9;
         }
-        assert!(point_lights(&l, w as u32, h as u32, 2).is_empty());
+        assert!(point_lights(&l, w as u32, h as u32, 2, 0.02).is_empty());
     }
 
     /// A field of bright specks three pixels apart — the weave of a tunic — is a texture, not points of
@@ -18568,8 +18756,38 @@ mod point_light_shape_tests {
             }
         }
         l[80 * w + 80] = 0.9;
-        let pts = point_lights(&l, w as u32, h as u32, 2);
+        let pts = point_lights(&l, w as u32, h as u32, 2, 0.02);
         assert_eq!(pts.len(), 1, "{pts:?}");
         assert!((pts[0].cx - 80.0).abs() < 0.01 && (pts[0].cy - 80.0).abs() < 0.01, "{pts:?}");
+    }
+
+    /// POINT FIELD: a sky of stars five pixels apart — each star's ring holds its neighbours, so as built only the
+    /// field's rim passes; with the ring opened (key 1 → 30 %) every star of the field is set.
+    #[test]
+    fn a_dense_star_field_is_set_whole_when_the_ring_is_opened() {
+        let (w, h) = (96usize, 96usize);
+        let mut l = vec![0.02; w * h];
+        let mut n = 0;
+        for y in (20..60).step_by(5) {
+            for x in (20..60).step_by(5) {
+                l[y * w + x] = 0.9;
+                n += 1;
+            }
+        }
+        let tight = point_lights(&l, w as u32, h as u32, 2, 0.02);
+        let open = point_lights(&l, w as u32, h as u32, 2, 0.30);
+        assert_eq!(open.len(), n, "{}", open.len());
+        assert!(tight.len() < n, "{} of {n}", tight.len());
+    }
+
+    /// The local std: nothing on a flat field, half on a checkerboard of 0 and 1 away from its edge.
+    #[test]
+    fn the_local_contrast_is_the_luma_std_within_the_reach() {
+        let (w, h) = (32usize, 32usize);
+        let flat = local_std(&vec![0.4; w * h], w as u32, h as u32, 3);
+        assert!(flat.iter().all(|v| v.abs() < 1e-4));
+        let board: Vec<f32> = (0..w * h).map(|i| ((i % w + i / w) % 2) as f32).collect();
+        let sd = local_std(&board, w as u32, h as u32, 3);
+        assert!((sd[16 * w + 16] - 0.5).abs() < 0.02, "{}", sd[16 * w + 16]);
     }
 }
