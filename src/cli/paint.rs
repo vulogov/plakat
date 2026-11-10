@@ -219,10 +219,11 @@ pub struct PlanArgs {
 pub struct ExportArgs {
     /// The `.strokes` score.
     pub score: PathBuf,
-    /// What to export: `separations` (one PNG per stage), `stages` (cumulative per stage), `height` (16-bit).
-    #[arg(value_parser = ["separations", "stages", "height"])]
+    /// What to export: `separations` (one PNG per stage), `stages` (cumulative per stage), `height` (16-bit), `pbr`
+    /// (the picture as a material: `<out>_albedo.png`, `<out>_height.png` 16-bit, `<out>_normal.png`, `<out>_roughness.png`).
+    #[arg(value_parser = ["separations", "stages", "height", "pbr"])]
     pub target: String,
-    /// Output directory (separations/stages) or file (height).
+    /// Output directory (separations/stages), file (height) or file stem (pbr).
     #[arg(short, long, default_value = "export")]
     pub out: PathBuf,
     #[arg(long)]
@@ -739,6 +740,14 @@ pub struct FromArgs {
     /// PIGMENTS (2..64, default 16): how many pigments `--palette image` derives from the picture. Plan: `pigments`
     #[arg(long)]
     pub pigments: Option<usize>,
+    /// CAVITY FACE (0..1, 1 = off): the cavity's share on the face — the self-shading cut inside the face, the skin
+    /// kept soft while the clothes and the ground keep their furrows. Plan: `cavity_face`
+    #[arg(long)]
+    pub cavity_face: Option<f32>,
+    /// SIDELOAD (0..1, 0 = off): the brush loaded with two colours across its width — one edge of the mark the
+    /// charge, the other the picture's tone at the mark's end, every hair its own mixture. Plan: `sideload`
+    #[arg(long)]
+    pub sideload: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2339,7 +2348,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         r
     };
     // Output at the requested size — replay the score up from the working canvas (resolution-independent).
-    let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image_finished(&result.score.header.finish()) } else { result.canvas.to_image_finished(&result.score.header.finish()) };
+    let image_out = if work != plan.size { result.score.header.render(&result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?) } else { result.score.header.render(&result.canvas) };
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
@@ -2482,7 +2491,7 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
-    canvas.to_image_finished(&score.header.finish()).save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    score.header.render(&canvas).save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
     println!("{}  rendered → {}", style("✓").green(), a.out.display());
     Ok(())
 }
@@ -2587,6 +2596,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         if a.pigments.is_none() {
             a.pigments = plan.pigments;
+        }
+        if a.cavity_face.is_none() {
+            a.cavity_face = plan.cavity_face;
+        }
+        if a.sideload.is_none() {
+            a.sideload = plan.sideload;
         }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
@@ -2873,6 +2888,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.gloss_map = a.gloss_map.unwrap_or(0.0).clamp(0.0, 1.0);
     params.periphery = a.periphery.unwrap_or(0.0).clamp(0.0, 1.0);
     params.cavity = a.cavity.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.cavity_face = a.cavity_face.unwrap_or(1.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
@@ -3605,6 +3621,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(v) = a.haste {
         params.brush.haste = v.clamp(0.0, 1.0);
     }
+    if let Some(v) = a.sideload {
+        params.brush.sideload = v.clamp(0.0, 1.0);
+    }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);
     }
@@ -4300,7 +4319,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let result = painter::paint_from_image_progress(&img, &params, &|ev| paint_progress(&pb, ev));
     pb.set_position(result.strokes as u64);
     pb.finish_and_clear();
-    let out = result.canvas.to_image_finished(&result.score.header.finish());
+    let out = result.score.header.render(&result.canvas);
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
@@ -4402,6 +4421,24 @@ fn run_export(a: ExportArgs) -> Result<()> {
             }
             canvas.height_image().save(&out).with_context(|| format!("writing {}", out.display()))?;
             println!("{}  impasto height (16-bit) → {}", style("✓").green(), out.display());
+        }
+        "pbr" => {
+            // PBR (the eighth review): the picture as a MATERIAL for a 3D engine or a relief printer — the albedo (the
+            // paint's colour, unlit), the height (16-bit, the impasto against its peak), the normal (from the height's
+            // slope, the relight's own gradient) and the roughness (one less the gloss: the sheen by the paint amount,
+            // by the thickness where the gloss map is on). An export reads the replayed canvas; the painting is untouched.
+            let canvas = score.replay(w, h).context("replaying for pbr")?;
+            let f = score.header.finish();
+            let stem = if a.out.extension().is_some() { a.out.with_extension("") } else { a.out.clone() };
+            if let Some(p) = stem.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(p).ok();
+            }
+            let name = |s: &str| -> PathBuf { let mut q = stem.as_os_str().to_owned(); q.push(format!("_{s}.png")); PathBuf::from(q) };
+            canvas.to_image().save(name("albedo")).with_context(|| format!("writing {}", name("albedo").display()))?;
+            canvas.height_image().save(name("height")).with_context(|| format!("writing {}", name("height").display()))?;
+            canvas.normal_image().save(name("normal")).with_context(|| format!("writing {}", name("normal").display()))?;
+            canvas.roughness_image(f.sheen, f.gloss_map).save(name("roughness")).with_context(|| format!("writing {}", name("roughness").display()))?;
+            println!("{}  pbr: albedo, height (16-bit), normal, roughness → {}_*.png", style("✓").green(), stem.display());
         }
         "separations" | "stages" => {
             std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;

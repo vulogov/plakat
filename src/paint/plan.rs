@@ -144,6 +144,12 @@ pub struct PaintPlan {
     /// PIGMENTS (2..64): how many pigments `palette: image` derives from the picture. Absent = 16.
     #[serde(default)]
     pub pigments: Option<usize>,
+    /// CAVITY FACE (0..1, 1 = off): the cavity's share on the face (`Finish::cavity_face`). Absent = 1.
+    #[serde(default)]
+    pub cavity_face: Option<f32>,
+    /// SIDELOAD (0..1): the brush loaded with two colours across its width (`BrushConfig::sideload`). Absent = 0.
+    #[serde(default)]
+    pub sideload: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1082,6 +1088,8 @@ impl Default for PaintPlan {
             chisel: None,
             haste: None,
             pigments: None,
+            cavity_face: None,
+            sideload: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1440,6 +1448,12 @@ impl PaintPlan {
         if let Some(v) = self.pigments {
             o.push_str(&format!("pigments: {v}\n"));
         }
+        if let Some(v) = self.cavity_face {
+            o.push_str(&format!("cavity_face: {v:.2}\n"));
+        }
+        if let Some(v) = self.sideload {
+            o.push_str(&format!("sideload: {v:.2}\n"));
+        }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
@@ -1785,6 +1799,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             chisel: None,
             haste: None,
             pigments: None,
+            cavity_face: None,
+            sideload: None,
             technique: None,
             diffuse: None,
             splatter: None,

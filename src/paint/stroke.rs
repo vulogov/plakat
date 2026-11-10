@@ -76,6 +76,13 @@ pub struct BrushConfig {
     /// by 0.5·key·speed·dryness — a loaded wet mark covers at any speed), settles less (`settle` cut by key·speed) and lays thinner
     /// (the deposit cut by 0.3·key·speed); a short, slow mark prints its pigment whole. Recorded in the header.
     pub haste: f32,
+    /// SIDELOAD (0..1, 0 = off): the brush loaded with TWO colours across its width — the lanes from one edge to the
+    /// other ramped from the mark's charge to its second colour (`load_end`, the ramp's slot: the picture's tone at
+    /// the mark's end) by the key, the side by the mark's own hash: one edge of the mark the one tone, the other the
+    /// other, every hair its own mixture between — the paint taken from two heaps of the palette and not blended.
+    /// Any brush (the knife's `mix` lays bands instead and takes precedence). With it the second colour is spent
+    /// across the mark, not along it (the ramp is off for that mark). Recorded in the header.
+    pub sideload: f32,
     /// THE COMMA (0 = off): the hand's pressure along the mark — nothing at the touch, hardest a third of the
     /// way along, lifting to nothing at the end (sin(π·t^k) with the peak at t = 0.3) — so the mark swells
     /// where it is pressed and thins to a tail: a drop, a comma, as a round brush leaves them. The amount
@@ -310,7 +317,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, settle: 0.0, fray: 0.0, chisel: 0.0, haste: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, settle: 0.0, fray: 0.0, chisel: 0.0, haste: 0.0, sideload: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -670,7 +677,23 @@ impl Stroke {
         let start_norm: Vec<f32> = if split > 0.0 { bload.iter().map(|l| Self::load_norm(l).max(1e-6)).collect() } else { Vec::new() };
         // THE RAMP: the per-lane shift laid on each step is the end-to-start difference times the step's share
         // of the path, so over the whole mark the lane has drifted from the one charge to the other.
-        let ramp: Option<Vec<f32>> = load_end.filter(|_| pts.len() > 1).map(|le| (0..n.min(self.load.len()).min(le.len())).map(|c| (le[c] - self.load[c]) / (pts.len() - 1) as f32).collect());
+        // SIDELOAD (see `BrushConfig::sideload`): the lanes ramped across the width from the charge to the second
+        // colour, the side by the mark's hash; the second colour is then spent across, not along.
+        let sideloaded = brush.sideload > 0.0 && !mixed && load_end.is_some() && nb > 1;
+        if let (true, Some(le)) = (sideloaded, load_end) {
+            let k = brush.sideload.clamp(0.0, 1.0);
+            let flip = lane_hash(seed ^ 0x51DE, 5) < 0.5;
+            let base = Self::load_norm(&self.load).max(1e-6);
+            for (b, lane) in bload.iter_mut().enumerate() {
+                let fr = b as f32 / (nb - 1) as f32;
+                let t = k * if flip { 1.0 - fr } else { fr };
+                let r = Self::load_norm(lane) / base;
+                for c in 0..lane.len().min(le.len()).min(self.load.len()) {
+                    lane[c] = (self.load[c] + (le[c] - self.load[c]) * t) * r;
+                }
+            }
+        }
+        let ramp: Option<Vec<f32>> = load_end.filter(|_| pts.len() > 1 && !sideloaded).map(|le| (0..n.min(self.load.len()).min(le.len())).map(|c| (le[c] - self.load[c]) / (pts.len() - 1) as f32).collect());
 
         // JOIN (see `BrushConfig::join`): the pixels this mark has laid, over its bounding box, and each lane's
         // last pixel — a pixel is laid once, and a lane's path between two stamps is filled.
@@ -1769,6 +1792,31 @@ mod tests {
         assert!(torn > 0, "some of the fast mark is torn off the tops");
         assert_eq!(mark(8.0, 1.0), mark(8.0, 0.0), "a short mark prints whole");
         assert_eq!(fast_off, mark(200.0, -1.0), "the dial at zero is the default path");
+    }
+
+    #[test]
+    fn a_side_loaded_brush_lays_one_tone_at_one_edge_and_the_other_at_the_other() {
+        // A mark charged red with ochre as its second colour: side-loaded, its two edges differ in colour along the
+        // whole mark; ramped (the default), the edges are alike at every point; at zero the mark is the default path's.
+        let mark = |sideload: f32| -> Canvas {
+            let mut c = Canvas::white(120, 24, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 12.0], [116.0, 12.0]], width0: 8.0, width1: 8.0, load: red_load(), pressure: 1.0, wetness: 0.8 };
+            let brush = BrushConfig { sideload, hold_charge: true, ..BrushConfig::default() };
+            let mut end = vec![0f32; c.n_pigments()];
+            end[0] = red_load().iter().sum::<f32>();
+            s.rasterize_ramp(&mut c, &brush, Some(&end));
+            c
+        };
+        // (The ochre's share of the pigment laid, each side of the axis: the ramp along the mark lays the two
+        // alike across, the side-loaded brush lays them apart.)
+        let share = |c: &Canvas, rows: std::ops::Range<u32>| -> f32 { let (mut o, mut r) = (0f32, 0f32); for y in rows { for x in 30..90u32 { let q = c.conc_at(x, y); o += q[0].max(0.0); r += q[1].max(0.0); } } o / (o + r).max(1e-6) };
+        let diff = |c: &Canvas| -> f32 { (share(c, 8..12) - share(c, 12..16)).abs() };
+        let (on, off) = (mark(1.0), mark(0.0));
+        // (The ramp's lanes take the same ochre step whatever their charge, so the pale lanes' share runs higher —
+        // some difference across is the streak's; the side-loaded mark's is the key's.)
+        assert!(diff(&on) > diff(&off) + 0.2, "the side-loaded mark lays the ochre on one side ({:.2} vs the ramp's {:.2})", diff(&on), diff(&off));
+        let sat = |c: &Canvas| -> Vec<f32> { (0..24u32).flat_map(|y| (0..120u32).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect() };
+        assert_eq!(sat(&off), sat(&mark(-1.0)), "the dial at zero is the default path");
     }
 
     #[test]
