@@ -131,6 +131,19 @@ pub struct PaintPlan {
     /// the corners left unfinished (`PaintParams::periphery`). Absent = 0.
     #[serde(default)]
     pub periphery: Option<f32>,
+    /// CAVITY (0..1): the relief's self-shading — the hollows darkened by their depth against the surround,
+    /// whatever the lamp (`Finish::cavity`). Absent = 0.
+    #[serde(default)]
+    pub cavity: Option<f32>,
+    /// CHISEL (0..1): the flat brush held as it started — a bend laid on its edge (`BrushConfig::chisel`). Absent = 0.
+    #[serde(default)]
+    pub chisel: Option<f32>,
+    /// HASTE (0..1): the mark's speed — a long fast mark torn, unsettled and thin (`BrushConfig::haste`). Absent = 0.
+    #[serde(default)]
+    pub haste: Option<f32>,
+    /// PIGMENTS (2..64): how many pigments `palette: image` derives from the picture. Absent = 16.
+    #[serde(default)]
+    pub pigments: Option<usize>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1065,6 +1078,10 @@ impl Default for PaintPlan {
             fray: None,
             gloss_map: None,
             periphery: None,
+            cavity: None,
+            chisel: None,
+            haste: None,
+            pigments: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1411,6 +1428,18 @@ impl PaintPlan {
         if let Some(v) = self.periphery {
             o.push_str(&format!("periphery: {v:.2}\n"));
         }
+        if let Some(v) = self.cavity {
+            o.push_str(&format!("cavity: {v:.2}\n"));
+        }
+        if let Some(v) = self.chisel {
+            o.push_str(&format!("chisel: {v:.2}\n"));
+        }
+        if let Some(v) = self.haste {
+            o.push_str(&format!("haste: {v:.2}\n"));
+        }
+        if let Some(v) = self.pigments {
+            o.push_str(&format!("pigments: {v}\n"));
+        }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
@@ -1752,6 +1781,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             fray: None,
             gloss_map: None,
             periphery: None,
+            cavity: None,
+            chisel: None,
+            haste: None,
+            pigments: None,
             technique: None,
             diffuse: None,
             splatter: None,

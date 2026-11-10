@@ -3356,7 +3356,7 @@ impl Canvas {
             }
         }
         // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 || f.peak > 1e-4 {
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 || f.peak > 1e-4 || f.cavity > 1e-4 {
             // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
             // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
             let peak = if f.relief_robust {
@@ -3445,6 +3445,9 @@ impl Canvas {
             } else {
                 Vec::new()
             };
+            // CAVITY (see `Finish::cavity`): the height's mean over the window, for the hollows' own shadow.
+            let cav = f.cavity.clamp(0.0, 1.0);
+            let cav_mean: Vec<f32> = if cav > 0.0 { Self::box_blur_f(&self.height, w, h, (w.min(h) / 300).max(3)) } else { Vec::new() };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -3560,6 +3563,13 @@ impl Canvas {
                         let short = w.min(h) as f32;
                         let uneven = 0.7 + 0.6 * (value_noise(x as f32 / (short / 6.0), y as f32 / (short / 6.0), f.seed ^ 0x5A6) - 0.5);
                         shade += 0.8 * sag * uneven * (sx * lx + sy * ly);
+                    }
+                    if cav > 0.0 {
+                        // CAVITY (see `Finish::cavity`): the shortfall below the surround, against the peak.
+                        let d = ((cav_mean[y * w + x] - self.height[y * w + x]) / peak).clamp(0.0, 1.0);
+                        if d > 0.0 {
+                            shade -= 0.5 * cav * d;
+                        }
                     }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {
@@ -3706,6 +3716,12 @@ pub struct Finish {
     /// a gloss, their highlight bright (up to 1.6) and sharp (the facing as it stands). A varnished picture is
     /// not one roughness: the impasto's crests glint and the lessons of the glaze lie satin. By the key.
     pub gloss_map: f32,
+    /// CAVITY (0..1, 0 = off): the relief's SELF-SHADING — where the paint stands below its surround (the height
+    /// against its mean over a window of a 300th of the short side, 3 px at least) the hollow is darkened by its
+    /// shortfall against the sheet's peak, up to 0.5·key, whatever the lamp's azimuth: the furrows between the
+    /// ridges and the pits of the impasto hold their own shadow in an evenly lit passage, where the raking
+    /// light's cast shadow does not reach. The crests are not lightened (the lamp does that). By the key.
+    pub cavity: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -3750,7 +3766,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, gloss_map: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, gloss_map: 0.0, cavity: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
     }
 }
 
@@ -4828,6 +4844,31 @@ mod flow_tests {
         // (A low ridge's highlight is under a level of eight bits here — its satin is read as "no brighter".)
         assert!(at(&mapped, 42) <= at(&plain, 42), "the thin ridge lies satin, no brighter ({} vs {})", at(&mapped, 42), at(&plain, 42));
         assert_eq!(zero.as_raw(), plain.as_raw(), "the key at zero is the plain sheen");
+    }
+
+    #[test]
+    fn the_cavity_darkens_the_trench_and_leaves_the_plain_alone() {
+        // A thick ground with a three-pixel trench down it, no lamp (impasto and sheen at nothing): with `cavity`
+        // the trench is darker than without, the plain far from it is the same, and at zero the finish is the
+        // plain one byte for byte.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = if (30..=32).contains(&x) { 0.2 } else { 2.0 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let plain = c.to_image_finished(&Finish { impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let shaded = c.to_image_finished(&Finish { cavity: 1.0, impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let zero = c.to_image_finished(&Finish { cavity: 0.0, impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&shaded, 31) < at(&plain, 31) - 4.0, "the trench holds its shadow ({} vs {})", at(&shaded, 31), at(&plain, 31));
+        assert_eq!(at(&shaded, 10), at(&plain, 10), "the plain far from the trench is the same");
+        assert_eq!(zero.as_raw(), plain.as_raw(), "the key at zero is the plain finish");
     }
 
     #[test]

@@ -64,6 +64,18 @@ pub struct BrushConfig {
     /// the path, by the spent charge squared and the key, up to a third of the width — so the dry tail of a
     /// depleting mark falls apart into separate furrows instead of thinning as one band. In the header.
     pub fray: f32,
+    /// CHISEL (0..1, 0 = off): a FLAT brush held as it started — the hairs' breadth set square to the mark's first
+    /// direction (read over half a width) and kept, so where the path turns the breadth across the motion falls
+    /// with the cosine of the turn from that first direction, never under a fifth: a straight mark is as wide as
+    /// ever, a bend lays a wide passage into a thin line and back — the calligraphy of the flat. By the key.
+    /// (`turn` lifts the brush on a bend and recovers; `twist` turns it along the mark by a programme; this holds
+    /// the axis.) Recorded in the header.
+    pub chisel: f32,
+    /// HASTE (0..1, 0 = off): the hand's SPEED read from the mark — its length for its width, 0 at two widths and
+    /// 1 at six (the `split`'s own measure): a fast mark tears off the tooth's tops (the dry-brush threshold raised
+    /// by 0.5·key·speed·dryness — a loaded wet mark covers at any speed), settles less (`settle` cut by key·speed) and lays thinner
+    /// (the deposit cut by 0.3·key·speed); a short, slow mark prints its pigment whole. Recorded in the header.
+    pub haste: f32,
     /// THE COMMA (0 = off): the hand's pressure along the mark — nothing at the touch, hardest a third of the
     /// way along, lifting to nothing at the end (sin(π·t^k) with the peak at t = 0.3) — so the mark swells
     /// where it is pressed and thins to a tail: a drop, a comma, as a round brush leaves them. The amount
@@ -298,7 +310,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, settle: 0.0, fray: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, settle: 0.0, fray: 0.0, chisel: 0.0, haste: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -679,6 +691,19 @@ impl Stroke {
         let mut lane_prev: Vec<(i32, i32)> = if seen.is_some() { vec![(i32::MIN, i32::MIN); nb] } else { Vec::new() };
         // FRAY (see `BrushConfig::fray`): each lane's starting charge, against which its spent share is read, and
         // the noise's period along the mark (one and a half widths).
+        // CHISEL (see `BrushConfig::chisel`): the flat's axis — the mark's first direction over half a width.
+        let chisel_k = brush.chisel.clamp(0.0, 1.0);
+        let (ax0, ay0) = if chisel_k > 0.0 && pts.len() > 1 {
+            let m = ((maxw * 0.5).round() as usize).clamp(1, pts.len() - 1);
+            let (a, c) = (pts[0], pts[m]);
+            let (vx, vy) = (c[0] - a[0], c[1] - a[1]);
+            let l = (vx * vx + vy * vy).sqrt();
+            if l > 1e-4 { (vx / l, vy / l) } else { (1.0, 0.0) }
+        } else {
+            (1.0, 0.0)
+        };
+        // HASTE (see `BrushConfig::haste`): the mark's speed by the key — its length for its width, 0 at two, 1 at six.
+        let haste_t = if brush.haste > 0.0 { brush.haste.clamp(0.0, 1.0) * ((pts.len() as f32 / maxw - 2.0) / 4.0).clamp(0.0, 1.0) } else { 0.0 };
         let fray_k = brush.fray.clamp(0.0, 1.0);
         let fray_norm: Vec<f32> = if fray_k > 0.0 { bload.iter().map(|l| Self::load_norm(l).max(1e-6)).collect() } else { Vec::new() };
         let fray_per = (maxw * 1.5).max(4.0);
@@ -775,6 +800,14 @@ impl Stroke {
                 } else {
                     width
                 }
+            } else {
+                width
+            };
+            // CHISEL (see `BrushConfig::chisel`): the flat held as it started — the breadth across the motion by
+            // the cosine of the turn from the first direction, never under a fifth.
+            let width = if chisel_k > 0.0 && dl > 1e-4 {
+                let c = (dx * ax0 + dy * ay0).abs().max(0.2);
+                width * (1.0 - chisel_k * (1.0 - c))
             } else {
                 width
             };
@@ -1089,13 +1122,13 @@ impl Stroke {
                         let own = Self::load_norm(lane);
                         let mut tmp: Vec<f32> = lane.iter().enumerate().map(|(c, v)| v * (1.0 - w_dirty) + dir.get(c).copied().unwrap_or(0.0) * own * w_dirty).collect();
                         let before = Self::load_norm(&tmp).max(1e-9);
-                        self.apply(canvas, tx, ty, &mut tmp, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
+                        self.apply(canvas, tx, ty, &mut tmp, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, haste_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
                         let r = Self::load_norm(&tmp) / before;
                         for v in lane.iter_mut() {
                             *v *= r;
                         }
                     } else {
-                        self.apply(canvas, tx, ty, lane, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
+                        self.apply(canvas, tx, ty, lane, &mut bwet[b], brush, n, edge * end * keep * (0.5 + 0.5 * fade_t), deplete, &mut scratch, if brush.knife > 0.0 { bevel_h * rim_h * tilt_h * heel_h * fade_t * lift_h } else { ridge.max(0.05) }, plateau_b, wv_press, katsu_t, haste_t, if brush.knife > 0.0 && brush.skid > 0.0 { brush.skid.clamp(0.0, 1.0) * (1.0 - fade_t) } else { 0.0 }, bed_arg, agent_t, age_arg, void_t.and_then(|bk| void_base.map(|(v, bx0, by0, bw, bh)| (bk, v, bx0, by0, bw, bh))));
                     }
                 }
                 if smear_k > 0.0 {
@@ -1277,7 +1310,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, skid_t: f32, bed: Option<(f32, &[f32], i64, i64, usize, usize)>, agent_t: Option<(f32, f32)>, age_t: f32, void: Option<(f32, &[f32], i64, i64, usize, usize)>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32, katsu_t: f32, haste_t: f32, skid_t: f32, bed: Option<(f32, &[f32], i64, i64, usize, usize)>, agent_t: Option<(f32, f32)>, age_t: f32, void: Option<(f32, &[f32], i64, i64, usize, usize)>) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
@@ -1351,7 +1384,7 @@ impl Stroke {
         // wetness, not the bristle's running one: that decays along every stroke, and read there the tail of
         // every long wash went dry and the whole sheet stippled and darkened.
         // KATSU (see `BrushConfig::katsu`): the threshold raised by the mark's speed, whatever its water.
-        if brush.skip > 0.0 || katsu_t > 0.0 {
+        if brush.skip > 0.0 || katsu_t > 0.0 || haste_t > 0.0 {
             // ...and on a mark laid DRY, a bristle whose charge has run out — the dry tail of a depleting
             // mark — reaches only the raised fibres, so the tail breaks on the tooth instead of thinning
             // evenly. A wet mark is never broken, charge or no charge: water floods the hollows. (Full from
@@ -1359,7 +1392,9 @@ impl Stroke {
             let base = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
             let spent = 1.0 - (Self::load_norm(load) / Self::load_norm(&self.load).max(1e-6)).clamp(0.0, 1.0);
             let dryness = base.max(spent * spent * (base * 4.0).min(1.0));
-            let thr = (brush.skip.clamp(0.0, 1.0) * dryness * 0.9).max(katsu_t * 0.9);
+            // HASTE (see `BrushConfig::haste`): a fast DRY mark tears off the tops — by the mark's dryness, so a loaded
+            // wet mark at speed covers (torn at any water, a fast wet mark on a dark passage opened to the ground).
+            let thr = (brush.skip.clamp(0.0, 1.0) * dryness * 0.9).max(katsu_t * 0.9).max(haste_t * 0.5 * dryness);
             if thr > 0.0 {
                 let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
                 let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
@@ -1373,11 +1408,15 @@ impl Stroke {
         if brush.settle > 0.0 {
             let wet = ((self.wetness - 0.3) / 0.3).clamp(0.0, 1.0);
             let buried = sat.max(canvas.height[p].clamp(0.0, 1.0));
-            let k = brush.settle.clamp(0.0, 1.0) * wet * (1.0 - buried);
+            let k = brush.settle.clamp(0.0, 1.0) * wet * (1.0 - buried) * (1.0 - haste_t);
             if k > 0.0 {
                 let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
                 df = (df * (1.0 + k * (0.5 - relief) * 2.4)).clamp(0.0, 1.0);
             }
+        }
+        // HASTE (see `BrushConfig::haste`): a fast mark lays thinner.
+        if haste_t > 0.0 {
+            df *= 1.0 - 0.3 * haste_t;
         }
         if brush.chalk > 0.0 {
             // THE CHALK ON THE TOOTH (see `BrushConfig::chalk`): the stick reaches the paper's raised grain
@@ -1687,6 +1726,49 @@ mod tests {
         assert_eq!(rows(&on, 6, 30), rows(&off, 6, 30), "the head holds its width");
         let sat = |c: &Canvas| -> Vec<f32> { (0..24u32).flat_map(|y| (0..140u32).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect() };
         assert_eq!(sat(&off), sat(&mark(-1.0)), "the dial at zero is the default path");
+    }
+
+    #[test]
+    fn the_chisel_lays_the_bend_thin_and_the_straight_run_wide() {
+        // An L: a run to the right, then straight down. With `chisel` the brush is held square to the first run, so
+        // the downward leg — a right-angle turn — is laid on the flat's edge, a fifth as wide, while the first run
+        // keeps its width; at zero the mark is the default path's.
+        let mark = |chisel: f32| -> Canvas {
+            let mut c = Canvas::white(72, 72, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [60.0, 8.0], [60.0, 66.0]], width0: 6.0, width1: 6.0, load: red_load(), pressure: 1.0, wetness: 0.8 };
+            let brush = BrushConfig { chisel, hold_charge: true, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            c
+        };
+        let cols = |c: &Canvas| -> usize { (0..72u32).filter(|&x| (36..60u32).any(|y| c.saturation_at(x, y) > 1e-4)).count() };
+        let rows = |c: &Canvas| -> usize { (0..72u32).filter(|&y| (8..40u32).any(|x| c.saturation_at(x, y) > 1e-4)).count() };
+        let (on, off) = (mark(1.0), mark(0.0));
+        assert!(cols(&on) * 2 < cols(&off), "the downward leg is laid on the edge ({} vs {} columns)", cols(&on), cols(&off));
+        assert_eq!(rows(&on), rows(&off), "the first run keeps its width");
+        let sat = |c: &Canvas| -> Vec<f32> { (0..72u32).flat_map(|y| (0..72u32).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect() };
+        assert_eq!(sat(&off), sat(&mark(-1.0)), "the dial at zero is the default path");
+    }
+
+    #[test]
+    fn a_fast_mark_lays_thin_and_torn_and_a_short_one_prints_whole() {
+        // A long mark (forty widths — the hand's full speed), laid on the dry side, with `haste` lays less paint than
+        // without it, and some of its pixels are torn off the tooth's tops; a short mark (under two widths — no speed)
+        // is the same with the dial
+        // as without; at zero the mark is the default path's.
+        let mark = |len: f32, haste: f32| -> Vec<f32> {
+            let mut c = Canvas::white(220, 16, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [4.0 + len, 8.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            let brush = BrushConfig { haste, hold_charge: true, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            (0..16u32).flat_map(|y| (0..220u32).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect()
+        };
+        let total = |m: &[f32]| m.iter().sum::<f32>();
+        let (fast_on, fast_off) = (mark(200.0, 1.0), mark(200.0, 0.0));
+        assert!(total(&fast_on) < total(&fast_off) * 0.8, "the fast mark lays thinner ({:.1} vs {:.1})", total(&fast_on), total(&fast_off));
+        let torn = fast_on.iter().zip(fast_off.iter()).filter(|(a, b)| **b > 1e-4 && **a < **b * 0.2).count();
+        assert!(torn > 0, "some of the fast mark is torn off the tops");
+        assert_eq!(mark(8.0, 1.0), mark(8.0, 0.0), "a short mark prints whole");
+        assert_eq!(fast_off, mark(200.0, -1.0), "the dial at zero is the default path");
     }
 
     #[test]

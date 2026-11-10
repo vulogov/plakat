@@ -724,6 +724,21 @@ pub struct FromArgs {
     /// the detail passes thin — the corners of the picture left unfinished. Plan: `periphery`
     #[arg(long)]
     pub periphery: Option<f32>,
+    /// CAVITY (0..1, 0 = off): the relief's self-shading — the hollows between the ridges darkened by their depth
+    /// against the surround, whatever the lamp. Plan: `cavity`
+    #[arg(long)]
+    pub cavity: Option<f32>,
+    /// CHISEL (0..1, 0 = off): a flat brush held as it started — where the mark bends it is laid on its edge, a
+    /// wide passage into a thin line and back. Plan: `chisel`
+    #[arg(long)]
+    pub chisel: Option<f32>,
+    /// HASTE (0..1, 0 = off): the mark's speed (its length for its width) — a long fast mark torn off the tooth's
+    /// tops (by its dryness), settled less and laid thinner; a short slow one printed whole. Plan: `haste`
+    #[arg(long)]
+    pub haste: Option<f32>,
+    /// PIGMENTS (2..64, default 16): how many pigments `--palette image` derives from the picture. Plan: `pigments`
+    #[arg(long)]
+    pub pigments: Option<usize>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2561,6 +2576,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.periphery.is_none() {
             a.periphery = plan.periphery;
         }
+        if a.cavity.is_none() {
+            a.cavity = plan.cavity;
+        }
+        if a.chisel.is_none() {
+            a.chisel = plan.chisel;
+        }
+        if a.haste.is_none() {
+            a.haste = plan.haste;
+        }
+        if a.pigments.is_none() {
+            a.pigments = plan.pigments;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -2788,7 +2815,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
             // (The watercolour recipe's palette — more pigments, farthest-point seeded with per-hue accents —
             // is the WATERCOLOUR's; every other medium keeps its 16 from the picture.)
-            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if wc_brush_cli { 24 } else { 16 });
+            // PIGMENTS (plan `pigments`, `--pigments`): the count the picture's palette is derived at (16 unless set).
+            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if wc_brush_cli { 24 } else { a.pigments.map(|n| n.clamp(2, 64)).unwrap_or(16) });
             let p = if wc_brush_cli { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
             let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
             let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
@@ -2799,7 +2827,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             // A medium was chosen but no palette was named — DERIVE one from the image. A fixed medium palette
             // (e.g. a landscape palette) rarely fits an arbitrary photo (a portrait's skin, a plaid shirt …).
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let p = palette_from_image(&img, 16);
+            let p = palette_from_image(&img, a.pigments.map(|n| n.clamp(2, 64)).unwrap_or(16));
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
         }
@@ -2844,6 +2872,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.point_field = a.point_field.unwrap_or(0.0).clamp(0.0, 1.0);
     params.gloss_map = a.gloss_map.unwrap_or(0.0).clamp(0.0, 1.0);
     params.periphery = a.periphery.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.cavity = a.cavity.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
@@ -3569,6 +3598,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(v) = a.fray {
         params.brush.fray = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.chisel {
+        params.brush.chisel = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.haste {
+        params.brush.haste = v.clamp(0.0, 1.0);
     }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);
