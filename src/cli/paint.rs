@@ -708,6 +708,22 @@ pub struct FromArgs {
     /// the ring round a point may hold 2 % + 28 % × key of bright pixels. Plan: `point_field`
     #[arg(long)]
     pub point_field: Option<f32>,
+    /// SETTLE (0..1, 0 = off): a wet opaque paint settles into the paper's hollows — thin on the tooth's tops,
+    /// thick in its dips, until the tooth is filled; the dry-brush skip's complement. Plan: `settle`
+    #[arg(long)]
+    pub settle: Option<f32>,
+    /// FRAY (0..1, 0 = off): the dry tail of a depleting mark falls apart into separate furrows — the spent hairs
+    /// wander across the mark by a slow noise. Plan: `fray`
+    #[arg(long)]
+    pub fray: Option<f32>,
+    /// GLOSS MAP (0..1, 0 = off; with `sheen`): the sheen's roughness by the paint's thickness — the thin passages
+    /// satin (dim, broad), the thick ridges glossy (bright, sharp). Plan: `gloss_map`
+    #[arg(long)]
+    pub gloss_map: Option<f32>,
+    /// PERIPHERY (0..1, 0 = off): where the eye does not go the brush is broader, `micro` and `adapt` fall off and
+    /// the detail passes thin — the corners of the picture left unfinished. Plan: `periphery`
+    #[arg(long)]
+    pub periphery: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2533,6 +2549,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.point_field.is_none() {
             a.point_field = plan.point_field;
         }
+        if a.settle.is_none() {
+            a.settle = plan.settle;
+        }
+        if a.fray.is_none() {
+            a.fray = plan.fray;
+        }
+        if a.gloss_map.is_none() {
+            a.gloss_map = plan.gloss_map;
+        }
+        if a.periphery.is_none() {
+            a.periphery = plan.periphery;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -2814,6 +2842,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.micro = a.micro.unwrap_or(0.0).clamp(0.0, 1.0);
     params.adapt = a.adapt.unwrap_or(0.0).clamp(0.0, 1.0);
     params.point_field = a.point_field.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.gloss_map = a.gloss_map.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.periphery = a.periphery.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
@@ -3533,6 +3563,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(sk) = a.skip {
         params.brush.skip = sk.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.settle {
+        params.brush.settle = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.fray {
+        params.brush.fray = v.clamp(0.0, 1.0);
     }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);

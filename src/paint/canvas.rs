@@ -3424,6 +3424,27 @@ impl Canvas {
             } else {
                 (Vec::new(), 0.0)
             };
+            // GLOSS MAP (see `Finish::gloss_map`): the facing read over a two-pixel window — the satin lobe of the
+            // thin passages; the sharp facing stays the thick paint's.
+            let gmap = f.gloss_map.clamp(0.0, 1.0);
+            let facing_soft: Vec<f32> = if gmap > 0.0 && spec > 0.0 {
+                let mut fm = vec![0f32; w * h];
+                for y in 0..h {
+                    for x in 0..w {
+                        let (xl, xr, yt, yb) = (x.saturating_sub(1), (x + 1).min(w - 1), y.saturating_sub(1), (y + 1).min(h - 1));
+                        let mut hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak;
+                        let mut hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak;
+                        if spread > 0.0 {
+                            hx += (wide[y * w + xr] - wide[y * w + xl]) / peak * wide_r;
+                            hy += (wide[yb * w + x] - wide[yt * w + x]) / peak * wide_r;
+                        }
+                        fm[y * w + x] = (hx * lx + hy * ly).max(0.0);
+                    }
+                }
+                Self::box_blur_f(&fm, w, h, 2)
+            } else {
+                Vec::new()
+            };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -3446,7 +3467,16 @@ impl Canvas {
                     // Diffuse impasto shading + a sharper glossy highlight on the near ridges (sheen).
                     let mut shade = gain * facing * amt;
                     if spec > 0.0 && facing > 0.0 {
-                        shade += spec * facing * facing * amt;
+                        if gmap > 0.0 {
+                            // The roughness by the thickness: the thin passage's lobe toward the satin (the soft
+                            // facing squared), its weight down to 0.4; the thick ridge's lobe sharp, its weight to 1.6.
+                            let t = (self.height[y * w + x] / peak).clamp(0.0, 1.0);
+                            let soft = facing_soft[y * w + x];
+                            let lobe = facing * facing + (soft * soft - facing * facing) * gmap * (1.0 - t);
+                            shade += spec * lobe * amt * (1.0 + gmap * (1.2 * t - 0.6));
+                        } else {
+                            shade += spec * facing * facing * amt;
+                        }
                     }
                     if phong > 0.0 {
                         // PHONG (see `Finish::phong`): a specular lobe on the FACETS that face the lamp — the
@@ -3670,6 +3700,12 @@ pub struct Finish {
     /// facing to the fourth power) only where the paint stands above its 5×5 surround and high against the
     /// sheet's own peak, so the thick marks' crests glint under the lamp and the thin passages stay matte.
     pub gloss: f32,
+    /// GLOSS MAP (0..1, 0 = off; with `sheen`): the sheen's ROUGHNESS by the paint's thickness — the thin passages
+    /// (a glaze, a scumble: the height low against the sheet's peak) a satin, their highlight dim (down to 0.4 of
+    /// the sheen) and broad (the facing read over a two-pixel window); the thick ridges (the height at the peak)
+    /// a gloss, their highlight bright (up to 1.6) and sharp (the facing as it stands). A varnished picture is
+    /// not one roughness: the impasto's crests glint and the lessons of the glaze lie satin. By the key.
+    pub gloss_map: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -3714,7 +3750,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, gloss_map: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
     }
 }
 
@@ -4766,6 +4802,32 @@ mod flow_tests {
         assert!(at(&peaked, 43) > at(&plain, 43) + 3.0, "and the low crest too ({} vs {})", at(&peaked, 43), at(&plain, 43));
         assert!((at(&peaked, 25) - at(&plain, 25)).abs() < 1.0, "the ground between is left alone ({} vs {})", at(&peaked, 25), at(&plain, 25));
         assert!((at(&glossed, 43) - at(&plain, 43)).abs() < 1.0, "the gloss passes the low crest over ({} vs {})", at(&glossed, 43), at(&plain, 43));
+    }
+
+    #[test]
+    fn the_gloss_map_glints_the_thick_ridge_and_lays_the_thin_one_satin() {
+        // Two ridges on a thin ground, a tall one on the left and a low one on the right, under the sheen. With
+        // the gloss map the tall ridge's lit flank is brighter than under the plain sheen and the low ridge's
+        // dimmer; at zero the finish is the plain sheen's, byte for byte.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = match x { 10..=12 => 2.0, 42..=44 => 0.5, _ => 0.1 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let plain = c.to_image_finished(&Finish { sheen: 1.0, impasto: 0.0, ..Default::default() });
+        let mapped = c.to_image_finished(&Finish { sheen: 1.0, gloss_map: 1.0, impasto: 0.0, ..Default::default() });
+        let zero = c.to_image_finished(&Finish { sheen: 1.0, gloss_map: 0.0, impasto: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&mapped, 10) > at(&plain, 10) + 2.0, "the thick ridge glints brighter ({} vs {})", at(&mapped, 10), at(&plain, 10));
+        // (A low ridge's highlight is under a level of eight bits here — its satin is read as "no brighter".)
+        assert!(at(&mapped, 42) <= at(&plain, 42), "the thin ridge lies satin, no brighter ({} vs {})", at(&mapped, 42), at(&plain, 42));
+        assert_eq!(zero.as_raw(), plain.as_raw(), "the key at zero is the plain sheen");
     }
 
     #[test]

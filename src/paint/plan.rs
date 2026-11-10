@@ -115,6 +115,22 @@ pub struct PaintPlan {
     /// POINT FIELD (0..1): how dense a field of points of light the point of the brush accepts. Absent = 0.
     #[serde(default)]
     pub point_field: Option<f32>,
+    /// SETTLE (0..1): a wet opaque paint settles into the paper's hollows — thin on the tooth's tops, thick in
+    /// its dips, until the tooth is filled (`BrushConfig::settle`). Absent = 0.
+    #[serde(default)]
+    pub settle: Option<f32>,
+    /// FRAY (0..1): the dry tail of a depleting mark falls apart into separate furrows — the spent hairs wander
+    /// across the mark (`BrushConfig::fray`). Absent = 0.
+    #[serde(default)]
+    pub fray: Option<f32>,
+    /// GLOSS MAP (0..1, with `sheen`): the sheen's roughness by the paint's thickness — thin passages satin, thick
+    /// ridges glossy (`Finish::gloss_map`). Absent = 0.
+    #[serde(default)]
+    pub gloss_map: Option<f32>,
+    /// PERIPHERY (0..1): off the focus the brush is broader, `micro`/`adapt` fall off and the detail passes thin —
+    /// the corners left unfinished (`PaintParams::periphery`). Absent = 0.
+    #[serde(default)]
+    pub periphery: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1045,6 +1061,10 @@ impl Default for PaintPlan {
             micro: None,
             adapt: None,
             point_field: None,
+            settle: None,
+            fray: None,
+            gloss_map: None,
+            periphery: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1378,6 +1398,18 @@ impl PaintPlan {
         }
         if let Some(v) = self.point_field {
             o.push_str(&format!("point_field: {v:.2}\n"));
+        }
+        if let Some(v) = self.settle {
+            o.push_str(&format!("settle: {v:.2}\n"));
+        }
+        if let Some(v) = self.fray {
+            o.push_str(&format!("fray: {v:.2}\n"));
+        }
+        if let Some(v) = self.gloss_map {
+            o.push_str(&format!("gloss_map: {v:.2}\n"));
+        }
+        if let Some(v) = self.periphery {
+            o.push_str(&format!("periphery: {v:.2}\n"));
         }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
@@ -1716,6 +1748,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             micro: None,
             adapt: None,
             point_field: None,
+            settle: None,
+            fray: None,
+            gloss_map: None,
+            periphery: None,
             technique: None,
             diffuse: None,
             splatter: None,

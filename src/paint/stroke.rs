@@ -54,6 +54,16 @@ pub struct BrushConfig {
     /// stand. A loaded wet brush floods the hollows and is never broken. A bristle whose charge has run out
     /// (the dry tail of a depleting mark) skips as a dry one does.
     pub skip: f32,
+    /// SETTLE (0..1, 0 = off): a WET opaque paint flows into the paper's hollows — where the tooth stands high
+    /// the film is thin and the ground shows through, where it dips the paint lies thick — until the tooth is
+    /// filled or the paint stands above it (the substrate drowned) and the surface is the paint's own. The
+    /// skip's complement: a dry mark breaks on the tooth's tops, a wet one settles in its hollows. By the mark's
+    /// own wetness (full from 0.6 wet up, nothing under 0.3). In the header.
+    pub settle: f32,
+    /// FRAY (0..1, 0 = off): as a lane's charge runs out its hair wanders across the mark — a slow noise along
+    /// the path, by the spent charge squared and the key, up to a third of the width — so the dry tail of a
+    /// depleting mark falls apart into separate furrows instead of thinning as one band. In the header.
+    pub fray: f32,
     /// THE COMMA (0 = off): the hand's pressure along the mark — nothing at the touch, hardest a third of the
     /// way along, lifting to nothing at the end (sin(π·t^k) with the peak at t = 0.3) — so the mark swells
     /// where it is pressed and thins to a tail: a drop, a comma, as a round brush leaves them. The amount
@@ -288,7 +298,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, settle: 0.0, fray: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, bevel: 0.0, mix: 0.0, fade: 0.0, pile: 0.0, skid: 0.0, rim: 0.0, slip: 0.0, bed: 0.0, drag: 0.0, age: 0.0, bridge: 0.0, liftoff: 0.0, broken: 0.0, lip: 0.0, marble: 0.0, slump: 0.0, tilt: 0.0, stiction: 0.0, smear: 0.0, heel: 0.0, dirty: 0.0, tear: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, katsu: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -667,6 +677,11 @@ impl Stroke {
             (bx0, by0, bw, bh, vec![false; bw * bh])
         });
         let mut lane_prev: Vec<(i32, i32)> = if seen.is_some() { vec![(i32::MIN, i32::MIN); nb] } else { Vec::new() };
+        // FRAY (see `BrushConfig::fray`): each lane's starting charge, against which its spent share is read, and
+        // the noise's period along the mark (one and a half widths).
+        let fray_k = brush.fray.clamp(0.0, 1.0);
+        let fray_norm: Vec<f32> = if fray_k > 0.0 { bload.iter().map(|l| Self::load_norm(l).max(1e-6)).collect() } else { Vec::new() };
+        let fray_per = (maxw * 1.5).max(4.0);
         let mut targets: Vec<(u32, u32)> = Vec::with_capacity(8);
         let mut across_prev: Option<(i32, i32)>;
         // WAVER (see `BrushConfig::waver`): the knots of the pressure's noise along the mark.
@@ -780,6 +795,15 @@ impl Stroke {
             for b in 0..nb {
                 let fr = (b as f32 + 0.5) / nb as f32; // 0..1 across the width
                 let off = (fr - 0.5) * width;
+                // FRAY (see `BrushConfig::fray`): the spent hair wanders across the mark — by its spent charge squared,
+                // a slow noise along the path, its own for every lane; a flooded wash never frays.
+                let off = if fray_k > 0.0 {
+                    let spent = 1.0 - (Self::load_norm(&bload[b]) / fray_norm[b]).clamp(0.0, 1.0);
+                    let wander = fray_k * spent * spent * (1.0 - flood) * maxw * 0.35;
+                    if wander > 0.0 { off + wander * (value_noise(seed ^ 0xF4A7_0000 ^ ((b as u64) << 24), i as f32 / fray_per, b as f32 * 0.37) - 0.5) * 2.0 } else { off }
+                } else {
+                    off
+                };
                 let x = (p[0] + perpx * off).round();
                 let y = (p[1] + perpy * off).round();
                 if x < 0.0 || y < 0.0 || x >= canvas.w as f32 || y >= canvas.h as f32 {
@@ -1342,6 +1366,19 @@ impl Stroke {
                 df *= t * t * (3.0 - 2.0 * t);
             }
         }
+        // SETTLE (see `BrushConfig::settle`): a wet opaque paint flows into the tooth's hollows — the deposit raised
+        // in a hollow and thinned on a top (the grain from about 0.2 to 0.8, the mid 0.5), by the mark's wetness
+        // (nothing under 0.3, full from 0.6 — a dry mark skips, a wet one settles) and by how far the substrate still stands: the tooth filled or the paint
+        // standing above it, nothing settles — the surface is the paint's own.
+        if brush.settle > 0.0 {
+            let wet = ((self.wetness - 0.3) / 0.3).clamp(0.0, 1.0);
+            let buried = sat.max(canvas.height[p].clamp(0.0, 1.0));
+            let k = brush.settle.clamp(0.0, 1.0) * wet * (1.0 - buried);
+            if k > 0.0 {
+                let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+                df = (df * (1.0 + k * (0.5 - relief) * 2.4)).clamp(0.0, 1.0);
+            }
+        }
         if brush.chalk > 0.0 {
             // THE CHALK ON THE TOOTH (see `BrushConfig::chalk`): the stick reaches the paper's raised grain
             // first — pressed lightly it touches only the fibres that stand up, pressed hard it fills the
@@ -1602,6 +1639,54 @@ mod tests {
         assert!(gaps(tail) > gaps(head), "the depleted tail is more broken than the head ({} vs {} bare pixels)", gaps(tail), gaps(head));
         // Wet: whatever bare pixels an emptied brush leaves, the skip adds none.
         assert_eq!(gaps(&mark(0.9, 0.4, 2.0)), gaps(&mark(0.9, 0.0, 2.0)), "a wet mark is never broken by the tooth");
+    }
+
+    #[test]
+    fn a_wet_mark_settles_in_the_hollows_and_a_dry_one_does_not() {
+        // The same wet mark with `settle` on lays more in the paper's hollows than on its tops; with the dial off
+        // the two are even, and the mark is the one the default path always made; laid dry, the dial does nothing.
+        let mark = |wet: f32, settle: f32| -> Vec<f32> {
+            let mut c = Canvas::white(120, 16, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [116.0, 8.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: wet };
+            let brush = BrushConfig { settle, hold_charge: true, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            (6..114).map(|x| c.saturation_at(x as u32, 8)).collect()
+        };
+        let split = |m: &[f32]| -> (f32, f32) {
+            let (mut top, mut nt, mut hol, mut nh) = (0f32, 0f32, 0f32, 0f32);
+            for (i, v) in m.iter().enumerate() {
+                let r = crate::paint::canvas::paper_relief(i + 6, 8);
+                if r > 0.6 { top += v; nt += 1.0; } else if r < 0.4 { hol += v; nh += 1.0; }
+            }
+            (top / nt.max(1.0), hol / nh.max(1.0))
+        };
+        let (top_on, hol_on) = split(&mark(0.9, 1.0));
+        let (top_off, hol_off) = split(&mark(0.9, 0.0));
+        assert!(hol_on > top_on * 1.3, "the wet paint lies thick in the hollows and thin on the tops ({hol_on:.3} vs {top_on:.3})");
+        // (The default path lays a little MORE on the tops — the contact — so the dial is read against it.)
+        assert!(hol_on / top_on > 1.5 * (hol_off / top_off), "the hollows gain on the tops by the dial ({:.3} vs {:.3})", hol_on / top_on, hol_off / top_off);
+        assert_eq!(mark(0.9, 0.0), mark(0.9, -1.0), "the dial at zero is the default path");
+        assert_eq!(mark(0.1, 1.0), mark(0.1, 0.0), "a dry mark does not settle");
+    }
+
+    #[test]
+    fn a_frayed_tail_falls_apart_into_furrows_and_the_head_holds() {
+        // A fast-depleting mark with `fray` on: over its tail the lanes wander across the mark, so the tail's
+        // footprint spans more rows than without the dial, while the head's footprint is the same; at zero the
+        // mark is the default path's.
+        let mark = |fray: f32| -> Canvas {
+            let mut c = Canvas::white(140, 24, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 12.0], [136.0, 12.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: 0.5 };
+            let brush = BrushConfig { fray, deplete: 3.0, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            c
+        };
+        let rows = |c: &Canvas, x0: u32, x1: u32| -> usize { (0..24u32).filter(|&y| (x0..x1).any(|x| c.saturation_at(x, y) > 1e-4)).count() };
+        let (on, off) = (mark(1.0), mark(0.0));
+        assert!(rows(&on, 110, 134) > rows(&off, 110, 134), "the frayed tail spans more rows ({} vs {})", rows(&on, 110, 134), rows(&off, 110, 134));
+        assert_eq!(rows(&on, 6, 30), rows(&off, 6, 30), "the head holds its width");
+        let sat = |c: &Canvas| -> Vec<f32> { (0..24u32).flat_map(|y| (0..140u32).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect() };
+        assert_eq!(sat(&off), sat(&mark(-1.0)), "the dial at zero is the default path");
     }
 
     #[test]
