@@ -150,6 +150,18 @@ pub struct PaintPlan {
     /// SIDELOAD (0..1): the brush loaded with two colours across its width (`BrushConfig::sideload`). Absent = 0.
     #[serde(default)]
     pub sideload: Option<f32>,
+    /// CHISEL TWIST (0..1): the flat turned in the fingers along the mark (`BrushConfig::chisel_twist`). Absent = 0.
+    #[serde(default)]
+    pub chisel_twist: Option<f32>,
+    /// ADVECT (0..1): the wet layer below a brush mark dragged along its motion (`BrushConfig::advect`). Absent = 0.
+    #[serde(default)]
+    pub advect: Option<f32>,
+    /// FILM FLAT (0..1): the glaze's film laid without height (`BrushConfig::film_flat`). Absent = 0.
+    #[serde(default)]
+    pub film_flat: Option<f32>,
+    /// PERIPHERY DRY (0..1): the brush drier toward the edges (`PaintParams::periphery_dry`). Absent = 0.
+    #[serde(default)]
+    pub periphery_dry: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1090,6 +1102,10 @@ impl Default for PaintPlan {
             pigments: None,
             cavity_face: None,
             sideload: None,
+            chisel_twist: None,
+            advect: None,
+            film_flat: None,
+            periphery_dry: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1454,6 +1470,18 @@ impl PaintPlan {
         if let Some(v) = self.sideload {
             o.push_str(&format!("sideload: {v:.2}\n"));
         }
+        if let Some(v) = self.chisel_twist {
+            o.push_str(&format!("chisel_twist: {v:.2}\n"));
+        }
+        if let Some(v) = self.advect {
+            o.push_str(&format!("advect: {v:.2}\n"));
+        }
+        if let Some(v) = self.film_flat {
+            o.push_str(&format!("film_flat: {v:.2}\n"));
+        }
+        if let Some(v) = self.periphery_dry {
+            o.push_str(&format!("periphery_dry: {v:.2}\n"));
+        }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
@@ -1801,6 +1829,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             pigments: None,
             cavity_face: None,
             sideload: None,
+            chisel_twist: None,
+            advect: None,
+            film_flat: None,
+            periphery_dry: None,
             technique: None,
             diffuse: None,
             splatter: None,

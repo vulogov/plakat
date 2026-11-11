@@ -748,6 +748,22 @@ pub struct FromArgs {
     /// charge, the other the picture's tone at the mark's end, every hair its own mixture. Plan: `sideload`
     #[arg(long)]
     pub sideload: Option<f32>,
+    /// CHISEL TWIST (0..1, 0 = off; with `chisel`): the flat turned in the fingers along the mark — the held axis
+    /// follows the motion, so a long bend keeps its breadth. Plan: `chisel_twist`
+    #[arg(long)]
+    pub chisel_twist: Option<f32>,
+    /// ADVECT (0..1, 0 = off): a wet brush mark drags the wet paint below it a third of a width along its motion —
+    /// tails and marbling at the borders of contrasting colours. Plan: `advect`
+    #[arg(long)]
+    pub advect: Option<f32>,
+    /// FILM FLAT (0..1, 0 = off; with `film`/`over`): the glaze's film laid without height — colour over the dried
+    /// relief, the relief untouched. Plan: `film_flat`
+    #[arg(long)]
+    pub film_flat: Option<f32>,
+    /// PERIPHERY DRY (0..1, 0 = off; with `periphery`): toward the edges the brush runs drier, so the dry brush
+    /// skips, frays and tears there and the canvas shows through the loose edge. Plan: `periphery_dry`
+    #[arg(long)]
+    pub periphery_dry: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2603,6 +2619,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.sideload.is_none() {
             a.sideload = plan.sideload;
         }
+        if a.chisel_twist.is_none() {
+            a.chisel_twist = plan.chisel_twist;
+        }
+        if a.advect.is_none() {
+            a.advect = plan.advect;
+        }
+        if a.film_flat.is_none() {
+            a.film_flat = plan.film_flat;
+        }
+        if a.periphery_dry.is_none() {
+            a.periphery_dry = plan.periphery_dry;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -2889,6 +2917,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.periphery = a.periphery.unwrap_or(0.0).clamp(0.0, 1.0);
     params.cavity = a.cavity.unwrap_or(0.0).clamp(0.0, 1.0);
     params.cavity_face = a.cavity_face.unwrap_or(1.0).clamp(0.0, 1.0);
+    params.periphery_dry = a.periphery_dry.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
@@ -3623,6 +3652,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(v) = a.sideload {
         params.brush.sideload = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.chisel_twist {
+        params.brush.chisel_twist = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.advect {
+        params.brush.advect = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.film_flat {
+        params.brush.film_flat = v.clamp(0.0, 1.0);
     }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);
