@@ -8,6 +8,67 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.18.0 — The painted surface under review — the points of light, the lost microcontrast, the relief's own shadow, the brush's morphology and wet drag, the painting as a material
+
+A cycle of nine reviews of the opaque media on one verification set (seven pictures — a Riga street, a
+schooner at night, a riveted hull, a thaw, a deck, a rigging, a portrait — painted in oil-direct, oil-indirect,
+acrylic, gouache, tempera and palette-knife from one plan per medium). Every finding became a **plan key, 0 by
+default**, so every plan without it and every other medium render byte-identical (checked against the reference
+sheets of ten media after each set); nothing was fitted to a picture. Eighteen keys, one export target, one fix.
+
+### `plakat paint`
+
+- **The subject's clothing clipped to SAM's silhouette** (fix). The semantic pass unioned OWL-ViT's clothing
+  boxes into the subject mask, and a box is a box: round a tunic it took the street and the houses behind the
+  figure, and that rectangle was painted as the subject. With a usable SAM mask the subject is now
+  max(old × SAM, SAM) — the clothing counts only within the silhouette. Acrylic, pastel and gouache move a
+  little (RMSE 0.026–0.036); charcoal's sweeps now reach the figure's true silhouette.
+- **The points of light** (`point`): the stars of a night sky, the glints of a thaw, laid as single touches of
+  impasto — found in the SOURCE by a white top-hat (luma over a wide blur), compact and alone, the radius from
+  the core, laid last and brightest first, never on the subject or the face, only where the brushwork lost the
+  point; a dab as long as its diameter, nearly dry. `point_field` opens the alone rule so a dense star field or
+  the sparkle of a thaw is set whole.
+- **The lost microcontrast** (`micro`, `adapt`): on the detail passes the fine brush restates a cell wherever the
+  canvas has lost more than the key's share of the source's local contrast within the brush's reach, bypassing
+  every gate built to hold a brush off a passage; the brush size follows the detail — a flat cell withholds the
+  mark, a found detail moves the seed onto it and sets the mark's length to the detail's extent along the flow.
+  Riga's cobbles in oil read 22.0 of local std against the source's 23.2 (19.8 before); the acrylic deck's
+  shadow 7.0 against 5.4. A leak found on the way (a seed clamp moving the last column's seeds for every medium)
+  removed.
+- **The painted surface** (`settle`, `fray`, `gloss_map`, `periphery`): wet opaque paint sinks into the grain;
+  the spent lanes of the bristle bundle wander across the stroke so the tail falls apart into furrows; the
+  highlight's roughness follows the thickness (thin paint satin, a thick ridge a gloss); and the map of attention —
+  1 − max(focal field, SAM's silhouette, the face) — widens and lengthens the brush on the periphery and thins
+  the detail passes there, never the subject or the face.
+- **The relief's own shadow, the flat brush, the hand's speed, the count of the palette** (`cavity`, `chisel`,
+  `haste`, `pigments`): where the paint stands below its surround the hollow is darkened whatever the lamp's
+  azimuth, so the furrows hold their shadow in an evenly lit passage; a flat brush held as it started lays a bend
+  from a wide passage into a thin line and back; the hand's speed is read from the mark's length for its width —
+  a fast mark tears off the tooth's tops, settles less and lays thinner, by the mark's dryness; and
+  `palette: image` derives as many pigments as the plan asks (2..64; eight is the painter's limited palette). The
+  limited physical palette (`palette`, twenty named ones) and the wet collision (`collide`) were found already in
+  the engine and taken to the plans.
+- **The cavity's share on the face, the brush loaded with two colours** (`cavity_face`, `sideload`): a portrait
+  painter does not rake the face — the self-shading cut to this fraction inside the face's cells (the score's
+  coarse hold mask, recorded so a replay sees the same cells), the skin soft while the clothes keep their furrows;
+  and the lanes across the brush's width ramped from the mark's charge to its second colour, one edge the one
+  tone, the other the other, every hair its own mixture — the paint taken from two heaps and not blended.
+- **The chisel turned in the fingers, the wet drag, the glaze without depth, the dry periphery** (`chisel_twist`,
+  `advect`, `film_flat`, `periphery_dry`): the flat brush's axis follows the mark so a bend keeps its breadth;
+  the knife's `smear` for the brush — the wet layer below dragged a third of a width along the motion by the
+  mark's wetness and the lower paint's, tails and marbling at the borders of contrasting colours, no flow field,
+  and never from a film mark (a glaze goes over the dried layer; without that gate the glaze pass dragged the dry
+  underpainting and the indirect oil's hull lost a third of its contrast); a glaze that is colour over the paint
+  and not a relief on it; and toward the edges a drier brush that skips, frays and tears where the attention is
+  not — nothing on the media whose later marks are already dry. The review's face palette by semantics was
+  declined: one palette for the whole picture is the painter's.
+- **The painting as a material**: `export <score> pbr -o <stem>` writes `<stem>_albedo.png` (the paint's colour,
+  unlit), `<stem>_height.png` (16-bit), `<stem>_normal.png` (tangent space, from the relight's own gradient) and
+  `<stem>_roughness.png` (one less the gloss, by the paint amount and the gloss map) from the replayed canvas —
+  for a 3D engine or a relief printer; the painting untouched.
+- Every key is in the score header, the plan, the CLI and `Documentation/PAINT_CONTROLS.md`; twenty-odd tests
+  cover the mechanisms, each at 0 byte-identical.
+
 ## What's new in 7.16.0 — Watercolour: the water engine — the picture laid by a brush on water, the sheet's drying solved on a grid, the technique's grip on the solver, the thick charge, the graphite skeleton's hand
 
 ### `plakat paint`
