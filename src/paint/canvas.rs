@@ -3251,6 +3251,42 @@ impl Canvas {
         })
     }
 
+    /// The relief's NORMAL map (tangent space: +X right, +Y up, +Z out; 128,128,255 = flat), from the height's central
+    /// difference against the sheet's peak — the relight's own gradient — scaled so a full rise over a 40th of the
+    /// short side tilts the normal 45°. For a 3D engine (the `pbr` export).
+    pub fn normal_image(&self) -> RgbImage {
+        let w = self.w as usize;
+        let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
+        let s = (self.w.min(self.h) as f32 / 40.0).max(4.0) * 0.5;
+        RgbImage::from_fn(self.w, self.h, |x, y| {
+            let (x, y) = (x as usize, y as usize);
+            let (xl, xr, yt, yb) = (x.saturating_sub(1), (x + 1).min(w - 1), y.saturating_sub(1), (y + 1).min(self.h as usize - 1));
+            let hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak * s;
+            let hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak * s;
+            let l = (hx * hx + hy * hy + 1.0).sqrt();
+            // The image's y grows downward: a rise toward the top is a slope the normal leans up (+Y) from.
+            let (nx, ny, nz) = (-hx / l, hy / l, 1.0 / l);
+            let q = |v: f32| ((v * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
+            image::Rgb([q(nx), q(ny), q(nz)])
+        })
+    }
+
+    /// The ROUGHNESS map (0 = mirror, 255 = matte): one less the gloss — the sheen by the paint amount (a bare ground
+    /// is matte) and, with the gloss map, by the thickness: a thin passage satin (0.4 of the sheen), the peak's crest a
+    /// gloss (1.6, capped at one) — the finish's own terms. For a 3D engine (the `pbr` export).
+    pub fn roughness_image(&self, sheen: f32, gloss_map: f32) -> image::GrayImage {
+        let w = self.w as usize;
+        let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
+        let (spec, gmap) = (sheen.clamp(0.0, 1.0), gloss_map.clamp(0.0, 1.0));
+        image::GrayImage::from_fn(self.w, self.h, |x, y| {
+            let i = y as usize * w + x as usize;
+            let amt = (self.film[i].max(0.0) / 2.0).clamp(0.0, 1.0);
+            let t = (self.height[i] / peak).clamp(0.0, 1.0);
+            let gloss = (spec * amt * (1.0 + gmap * (1.2 * t - 0.6))).clamp(0.0, 1.0);
+            image::Luma([((1.0 - gloss) * 255.0).round() as u8])
+        })
+    }
+
     /// Render the whole canvas to an sRGB image (no impasto relight — that is a later output stage).
     pub fn to_image(&self) -> RgbImage {
         let mut img = RgbImage::new(self.w, self.h);
@@ -3279,6 +3315,12 @@ impl Canvas {
     /// All are deterministic (grain seeded) and recorded in the score, so `replay` reproduces the material
     /// exactly. `Finish::default()` (all neutral) reproduces `to_image`.
     pub fn to_image_finished(&self, f: &Finish) -> RgbImage {
+        self.to_image_finished_with(f, None)
+    }
+
+    /// As [`Canvas::to_image_finished`], with the score's coarse face/subject cells (cols, cells 0/1/2; see
+    /// `coarse_hold`) for the cavity's face share (`Finish::cavity_face`); `None` reads no face.
+    pub fn to_image_finished_with(&self, f: &Finish, face_cells: Option<&(u32, Vec<u8>)>) -> RgbImage {
         let mut img = self.to_image();
         let (w, h) = (self.w as usize, self.h as usize);
         let material = (f.chroma - 1.0).abs() > 1e-3 || f.dry_shift.abs() > 1e-3 || f.granulate > 1e-3;
@@ -3356,7 +3398,7 @@ impl Canvas {
             }
         }
         // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 || f.peak > 1e-4 {
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 || f.peak > 1e-4 || f.cavity > 1e-4 {
             // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
             // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
             let peak = if f.relief_robust {
@@ -3424,6 +3466,41 @@ impl Canvas {
             } else {
                 (Vec::new(), 0.0)
             };
+            // GLOSS MAP (see `Finish::gloss_map`): the facing read over a two-pixel window — the satin lobe of the
+            // thin passages; the sharp facing stays the thick paint's.
+            let gmap = f.gloss_map.clamp(0.0, 1.0);
+            let facing_soft: Vec<f32> = if gmap > 0.0 && spec > 0.0 {
+                let mut fm = vec![0f32; w * h];
+                for y in 0..h {
+                    for x in 0..w {
+                        let (xl, xr, yt, yb) = (x.saturating_sub(1), (x + 1).min(w - 1), y.saturating_sub(1), (y + 1).min(h - 1));
+                        let mut hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak;
+                        let mut hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak;
+                        if spread > 0.0 {
+                            hx += (wide[y * w + xr] - wide[y * w + xl]) / peak * wide_r;
+                            hy += (wide[yb * w + x] - wide[yt * w + x]) / peak * wide_r;
+                        }
+                        fm[y * w + x] = (hx * lx + hy * ly).max(0.0);
+                    }
+                }
+                Self::box_blur_f(&fm, w, h, 2)
+            } else {
+                Vec::new()
+            };
+            // CAVITY (see `Finish::cavity`): the height's mean over the window, for the hollows' own shadow.
+            let cav = f.cavity.clamp(0.0, 1.0);
+            let cav_mean: Vec<f32> = if cav > 0.0 { Self::box_blur_f(&self.height, w, h, (w.min(h) / 300).max(3)) } else { Vec::new() };
+            // CAVITY FACE (see `Finish::cavity_face`): the cavity's factor per pixel — 1 off the face, the share on it,
+            // the coarse cells feathered over one cell's width.
+            let cav_face: Vec<f32> = match (face_cells, cav > 0.0 && f.cavity_face < 1.0) {
+                (Some((cols, cells)), true) => {
+                    let share = f.cavity_face.clamp(0.0, 1.0);
+                    let m: Vec<f32> = crate::paint::score::expand_hold(*cols, cells, self.w, self.h).iter().map(|v| if *v >= 1.5 { 1.0 } else { 0.0 }).collect();
+                    let r = (w / (*cols as usize).max(1)).max(1);
+                    Self::box_blur_f(&m, w, h, r).iter().map(|v| 1.0 - (1.0 - share) * v.clamp(0.0, 1.0)).collect()
+                }
+                _ => Vec::new(),
+            };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -3446,7 +3523,16 @@ impl Canvas {
                     // Diffuse impasto shading + a sharper glossy highlight on the near ridges (sheen).
                     let mut shade = gain * facing * amt;
                     if spec > 0.0 && facing > 0.0 {
-                        shade += spec * facing * facing * amt;
+                        if gmap > 0.0 {
+                            // The roughness by the thickness: the thin passage's lobe toward the satin (the soft
+                            // facing squared), its weight down to 0.4; the thick ridge's lobe sharp, its weight to 1.6.
+                            let t = (self.height[y * w + x] / peak).clamp(0.0, 1.0);
+                            let soft = facing_soft[y * w + x];
+                            let lobe = facing * facing + (soft * soft - facing * facing) * gmap * (1.0 - t);
+                            shade += spec * lobe * amt * (1.0 + gmap * (1.2 * t - 0.6));
+                        } else {
+                            shade += spec * facing * facing * amt;
+                        }
                     }
                     if phong > 0.0 {
                         // PHONG (see `Finish::phong`): a specular lobe on the FACETS that face the lamp — the
@@ -3530,6 +3616,13 @@ impl Canvas {
                         let short = w.min(h) as f32;
                         let uneven = 0.7 + 0.6 * (value_noise(x as f32 / (short / 6.0), y as f32 / (short / 6.0), f.seed ^ 0x5A6) - 0.5);
                         shade += 0.8 * sag * uneven * (sx * lx + sy * ly);
+                    }
+                    if cav > 0.0 {
+                        // CAVITY (see `Finish::cavity`): the shortfall below the surround, against the peak.
+                        let d = ((cav_mean[y * w + x] - self.height[y * w + x]) / peak).clamp(0.0, 1.0);
+                        if d > 0.0 {
+                            shade -= 0.5 * cav * d * if cav_face.is_empty() { 1.0 } else { cav_face[y * w + x] };
+                        }
                     }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {
@@ -3670,6 +3763,22 @@ pub struct Finish {
     /// facing to the fourth power) only where the paint stands above its 5×5 surround and high against the
     /// sheet's own peak, so the thick marks' crests glint under the lamp and the thin passages stay matte.
     pub gloss: f32,
+    /// GLOSS MAP (0..1, 0 = off; with `sheen`): the sheen's ROUGHNESS by the paint's thickness — the thin passages
+    /// (a glaze, a scumble: the height low against the sheet's peak) a satin, their highlight dim (down to 0.4 of
+    /// the sheen) and broad (the facing read over a two-pixel window); the thick ridges (the height at the peak)
+    /// a gloss, their highlight bright (up to 1.6) and sharp (the facing as it stands). A varnished picture is
+    /// not one roughness: the impasto's crests glint and the lessons of the glaze lie satin. By the key.
+    pub gloss_map: f32,
+    /// CAVITY (0..1, 0 = off): the relief's SELF-SHADING — where the paint stands below its surround (the height
+    /// against its mean over a window of a 300th of the short side, 3 px at least) the hollow is darkened by its
+    /// shortfall against the sheet's peak, up to 0.5·key, whatever the lamp's azimuth: the furrows between the
+    /// ridges and the pits of the impasto hold their own shadow in an evenly lit passage, where the raking
+    /// light's cast shadow does not reach. The crests are not lightened (the lamp does that). By the key.
+    pub cavity: f32,
+    /// CAVITY FACE (0..1, 1 = off): the cavity's share on the FACE — the self-shading cut to this fraction inside the
+    /// face cells of `face_cells` (the score's coarse hold mask, level 2), feathered over one cell's width: the skin
+    /// kept soft while the clothes and the ground keep their furrows. 1 leaves the cavity whole everywhere.
+    pub cavity_face: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -3714,7 +3823,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, gloss_map: 0.0, cavity: 0.0, cavity_face: 1.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, tone: 0.0, light: 0.0, phong: 0.0, spread: 0.0, peak: 0.0, age: 0.0, seed: 0 }
     }
 }
 
@@ -4766,6 +4875,110 @@ mod flow_tests {
         assert!(at(&peaked, 43) > at(&plain, 43) + 3.0, "and the low crest too ({} vs {})", at(&peaked, 43), at(&plain, 43));
         assert!((at(&peaked, 25) - at(&plain, 25)).abs() < 1.0, "the ground between is left alone ({} vs {})", at(&peaked, 25), at(&plain, 25));
         assert!((at(&glossed, 43) - at(&plain, 43)).abs() < 1.0, "the gloss passes the low crest over ({} vs {})", at(&glossed, 43), at(&plain, 43));
+    }
+
+    #[test]
+    fn the_gloss_map_glints_the_thick_ridge_and_lays_the_thin_one_satin() {
+        // Two ridges on a thin ground, a tall one on the left and a low one on the right, under the sheen. With
+        // the gloss map the tall ridge's lit flank is brighter than under the plain sheen and the low ridge's
+        // dimmer; at zero the finish is the plain sheen's, byte for byte.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = match x { 10..=12 => 2.0, 42..=44 => 0.5, _ => 0.1 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let plain = c.to_image_finished(&Finish { sheen: 1.0, impasto: 0.0, ..Default::default() });
+        let mapped = c.to_image_finished(&Finish { sheen: 1.0, gloss_map: 1.0, impasto: 0.0, ..Default::default() });
+        let zero = c.to_image_finished(&Finish { sheen: 1.0, gloss_map: 0.0, impasto: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&mapped, 10) > at(&plain, 10) + 2.0, "the thick ridge glints brighter ({} vs {})", at(&mapped, 10), at(&plain, 10));
+        // (A low ridge's highlight is under a level of eight bits here — its satin is read as "no brighter".)
+        assert!(at(&mapped, 42) <= at(&plain, 42), "the thin ridge lies satin, no brighter ({} vs {})", at(&mapped, 42), at(&plain, 42));
+        assert_eq!(zero.as_raw(), plain.as_raw(), "the key at zero is the plain sheen");
+    }
+
+    #[test]
+    fn the_cavity_darkens_the_trench_and_leaves_the_plain_alone() {
+        // A thick ground with a three-pixel trench down it, no lamp (impasto and sheen at nothing): with `cavity`
+        // the trench is darker than without, the plain far from it is the same, and at zero the finish is the
+        // plain one byte for byte.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = if (30..=32).contains(&x) { 0.2 } else { 2.0 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let plain = c.to_image_finished(&Finish { impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let shaded = c.to_image_finished(&Finish { cavity: 1.0, impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let zero = c.to_image_finished(&Finish { cavity: 0.0, impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        assert!(at(&shaded, 31) < at(&plain, 31) - 4.0, "the trench holds its shadow ({} vs {})", at(&shaded, 31), at(&plain, 31));
+        assert_eq!(at(&shaded, 10), at(&plain, 10), "the plain far from the trench is the same");
+        assert_eq!(zero.as_raw(), plain.as_raw(), "the key at zero is the plain finish");
+    }
+
+    #[test]
+    fn the_cavity_s_face_share_softens_the_face_cells_and_keeps_the_rest() {
+        // Two trenches in a thick ground, one off the face (x 14..16) and one on it (x 46..48, the right half of
+        // the coarse cells at level 2). With the share at 0.2 the face's trench is darkened a fifth as much as the
+        // other; at the share 1 the two are darkened alike and the finish is the plain cavity's byte for byte.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..32u32 {
+            for x in 0..64u32 {
+                let amt = if (14..=16).contains(&x) || (46..=48).contains(&x) { 0.2 } else { 2.0 };
+                c.deposit(x, y, &load, amt);
+            }
+        }
+        let cells = Some((4u32, vec![0u8, 0, 2, 2, 0, 0, 2, 2]));
+        let plain = c.to_image_finished(&Finish { impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let whole = c.to_image_finished(&Finish { cavity: 1.0, impasto: 0.0, sheen: 0.0, ..Default::default() });
+        let faced = c.to_image_finished_with(&Finish { cavity: 1.0, cavity_face: 0.2, impasto: 0.0, sheen: 0.0, ..Default::default() }, cells.as_ref());
+        let one = c.to_image_finished_with(&Finish { cavity: 1.0, cavity_face: 1.0, impasto: 0.0, sheen: 0.0, ..Default::default() }, cells.as_ref());
+        let at = |img: &RgbImage, x: u32| (8..24).map(|y| img.get_pixel(x, y).0[1] as f32).sum::<f32>() / 16.0;
+        let (d_off, d_on) = (at(&plain, 15) - at(&faced, 15), at(&plain, 47) - at(&faced, 47));
+        assert!(d_off > 4.0, "the trench off the face holds its shadow ({d_off})");
+        assert!(d_on < d_off * 0.4, "the face's trench is softened ({d_on} vs {d_off})");
+        assert!((at(&whole, 47) - at(&faced, 47)).abs() > 2.0 && (at(&whole, 15) - at(&faced, 15)).abs() < 0.5, "only the face changed");
+        assert_eq!(one.as_raw(), whole.as_raw(), "the share at one is the plain cavity");
+    }
+
+    #[test]
+    fn the_normal_map_is_flat_on_a_flat_sheet_and_leans_against_a_rise() {
+        // A flat sheet's normal is straight out (128,128,255); a ramp rising to the right leans the normal left
+        // (red under 128) and keeps green at 128.
+        let pal = palette::ZORN;
+        let flat = Canvas::white(16, 8, pal, 0.9);
+        let nf = flat.normal_image();
+        assert_eq!(nf.get_pixel(8, 4).0, [128, 128, 255]);
+        let mut ramp = Canvas::white(32, 8, pal, 0.9);
+        let n = ramp.n;
+        let mut load = vec![0f32; n];
+        load[1] = 1.0;
+        for y in 0..8u32 {
+            for x in 0..32u32 {
+                ramp.deposit(x, y, &load, 0.1 + 2.0 * x as f32 / 31.0);
+            }
+        }
+        let p = ramp.normal_image().get_pixel(16, 4).0;
+        assert!(p[0] < 120, "the normal leans against the rise ({:?})", p);
+        assert!((p[1] as i32 - 128).abs() <= 1, "no slope across ({:?})", p);
+        let r = ramp.roughness_image(1.0, 1.0);
+        assert!(r.get_pixel(30, 4).0[0] < r.get_pixel(2, 4).0[0], "the thick end is the glossier");
     }
 
     #[test]

@@ -100,6 +100,68 @@ pub struct PaintPlan {
     /// new painting, 0 otherwise.
     #[serde(default)]
     pub hotspot: Option<f32>,
+    /// POINT (0..1): the picture's isolated points of light (a star, a lamp, a glint, a catchlight) set last
+    /// with the point of the brush where the brushwork lost them. Absent = 0.
+    #[serde(default)]
+    pub point: Option<f32>,
+    /// MICRO (0..1): the fine brushes restate wherever the brushwork lost the picture's fine structure (the canvas's
+    /// local contrast against the source's within the brush's reach), in the shadows too. Absent = 0.
+    #[serde(default)]
+    pub micro: Option<f32>,
+    /// ADAPT (0..1): the brush adapted to the structure at its scale — the seed moved onto the cell's strongest
+    /// feature, the mark's length its extent, the flat cells withheld by the key. Absent = 0.
+    #[serde(default)]
+    pub adapt: Option<f32>,
+    /// POINT FIELD (0..1): how dense a field of points of light the point of the brush accepts. Absent = 0.
+    #[serde(default)]
+    pub point_field: Option<f32>,
+    /// SETTLE (0..1): a wet opaque paint settles into the paper's hollows — thin on the tooth's tops, thick in
+    /// its dips, until the tooth is filled (`BrushConfig::settle`). Absent = 0.
+    #[serde(default)]
+    pub settle: Option<f32>,
+    /// FRAY (0..1): the dry tail of a depleting mark falls apart into separate furrows — the spent hairs wander
+    /// across the mark (`BrushConfig::fray`). Absent = 0.
+    #[serde(default)]
+    pub fray: Option<f32>,
+    /// GLOSS MAP (0..1, with `sheen`): the sheen's roughness by the paint's thickness — thin passages satin, thick
+    /// ridges glossy (`Finish::gloss_map`). Absent = 0.
+    #[serde(default)]
+    pub gloss_map: Option<f32>,
+    /// PERIPHERY (0..1): off the focus the brush is broader, `micro`/`adapt` fall off and the detail passes thin —
+    /// the corners left unfinished (`PaintParams::periphery`). Absent = 0.
+    #[serde(default)]
+    pub periphery: Option<f32>,
+    /// CAVITY (0..1): the relief's self-shading — the hollows darkened by their depth against the surround,
+    /// whatever the lamp (`Finish::cavity`). Absent = 0.
+    #[serde(default)]
+    pub cavity: Option<f32>,
+    /// CHISEL (0..1): the flat brush held as it started — a bend laid on its edge (`BrushConfig::chisel`). Absent = 0.
+    #[serde(default)]
+    pub chisel: Option<f32>,
+    /// HASTE (0..1): the mark's speed — a long fast mark torn, unsettled and thin (`BrushConfig::haste`). Absent = 0.
+    #[serde(default)]
+    pub haste: Option<f32>,
+    /// PIGMENTS (2..64): how many pigments `palette: image` derives from the picture. Absent = 16.
+    #[serde(default)]
+    pub pigments: Option<usize>,
+    /// CAVITY FACE (0..1, 1 = off): the cavity's share on the face (`Finish::cavity_face`). Absent = 1.
+    #[serde(default)]
+    pub cavity_face: Option<f32>,
+    /// SIDELOAD (0..1): the brush loaded with two colours across its width (`BrushConfig::sideload`). Absent = 0.
+    #[serde(default)]
+    pub sideload: Option<f32>,
+    /// CHISEL TWIST (0..1): the flat turned in the fingers along the mark (`BrushConfig::chisel_twist`). Absent = 0.
+    #[serde(default)]
+    pub chisel_twist: Option<f32>,
+    /// ADVECT (0..1): the wet layer below a brush mark dragged along its motion (`BrushConfig::advect`). Absent = 0.
+    #[serde(default)]
+    pub advect: Option<f32>,
+    /// FILM FLAT (0..1): the glaze's film laid without height (`BrushConfig::film_flat`). Absent = 0.
+    #[serde(default)]
+    pub film_flat: Option<f32>,
+    /// PERIPHERY DRY (0..1): the brush drier toward the edges (`PaintParams::periphery_dry`). Absent = 0.
+    #[serde(default)]
+    pub periphery_dry: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1026,6 +1088,24 @@ impl Default for PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            point: None,
+            micro: None,
+            adapt: None,
+            point_field: None,
+            settle: None,
+            fray: None,
+            gloss_map: None,
+            periphery: None,
+            cavity: None,
+            chisel: None,
+            haste: None,
+            pigments: None,
+            cavity_face: None,
+            sideload: None,
+            chisel_twist: None,
+            advect: None,
+            film_flat: None,
+            periphery_dry: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1347,6 +1427,60 @@ impl PaintPlan {
         }
         if let Some(hs) = self.hotspot {
             o.push_str(&format!("hotspot: {hs:.2}\n"));
+        }
+        if let Some(pt) = self.point {
+            o.push_str(&format!("point: {pt:.2}\n"));
+        }
+        if let Some(v) = self.micro {
+            o.push_str(&format!("micro: {v:.2}\n"));
+        }
+        if let Some(v) = self.adapt {
+            o.push_str(&format!("adapt: {v:.2}\n"));
+        }
+        if let Some(v) = self.point_field {
+            o.push_str(&format!("point_field: {v:.2}\n"));
+        }
+        if let Some(v) = self.settle {
+            o.push_str(&format!("settle: {v:.2}\n"));
+        }
+        if let Some(v) = self.fray {
+            o.push_str(&format!("fray: {v:.2}\n"));
+        }
+        if let Some(v) = self.gloss_map {
+            o.push_str(&format!("gloss_map: {v:.2}\n"));
+        }
+        if let Some(v) = self.periphery {
+            o.push_str(&format!("periphery: {v:.2}\n"));
+        }
+        if let Some(v) = self.cavity {
+            o.push_str(&format!("cavity: {v:.2}\n"));
+        }
+        if let Some(v) = self.chisel {
+            o.push_str(&format!("chisel: {v:.2}\n"));
+        }
+        if let Some(v) = self.haste {
+            o.push_str(&format!("haste: {v:.2}\n"));
+        }
+        if let Some(v) = self.pigments {
+            o.push_str(&format!("pigments: {v}\n"));
+        }
+        if let Some(v) = self.cavity_face {
+            o.push_str(&format!("cavity_face: {v:.2}\n"));
+        }
+        if let Some(v) = self.sideload {
+            o.push_str(&format!("sideload: {v:.2}\n"));
+        }
+        if let Some(v) = self.chisel_twist {
+            o.push_str(&format!("chisel_twist: {v:.2}\n"));
+        }
+        if let Some(v) = self.advect {
+            o.push_str(&format!("advect: {v:.2}\n"));
+        }
+        if let Some(v) = self.film_flat {
+            o.push_str(&format!("film_flat: {v:.2}\n"));
+        }
+        if let Some(v) = self.periphery_dry {
+            o.push_str(&format!("periphery_dry: {v:.2}\n"));
         }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
@@ -1681,6 +1815,24 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            point: None,
+            micro: None,
+            adapt: None,
+            point_field: None,
+            settle: None,
+            fray: None,
+            gloss_map: None,
+            periphery: None,
+            cavity: None,
+            chisel: None,
+            haste: None,
+            pigments: None,
+            cavity_face: None,
+            sideload: None,
+            chisel_twist: None,
+            advect: None,
+            film_flat: None,
+            periphery_dry: None,
             technique: None,
             diffuse: None,
             splatter: None,

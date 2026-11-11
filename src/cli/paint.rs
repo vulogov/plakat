@@ -219,10 +219,11 @@ pub struct PlanArgs {
 pub struct ExportArgs {
     /// The `.strokes` score.
     pub score: PathBuf,
-    /// What to export: `separations` (one PNG per stage), `stages` (cumulative per stage), `height` (16-bit).
-    #[arg(value_parser = ["separations", "stages", "height"])]
+    /// What to export: `separations` (one PNG per stage), `stages` (cumulative per stage), `height` (16-bit), `pbr`
+    /// (the picture as a material: `<out>_albedo.png`, `<out>_height.png` 16-bit, `<out>_normal.png`, `<out>_roughness.png`).
+    #[arg(value_parser = ["separations", "stages", "height", "pbr"])]
     pub target: String,
-    /// Output directory (separations/stages) or file (height).
+    /// Output directory (separations/stages), file (height) or file stem (pbr).
     #[arg(short, long, default_value = "export")]
     pub out: PathBuf,
     #[arg(long)]
@@ -686,6 +687,83 @@ pub struct FromArgs {
     /// Default: 0.5 for a new painting, 0 otherwise.
     #[arg(long)]
     pub hotspot: Option<f32>,
+    /// THE POINT OF THE BRUSH (0..1, 0 = off): the picture's isolated points of light — a star, a lamp in a
+    /// window, a glint on the water, the catchlight in an eye — that no brush of the ladder lays (the broad
+    /// passes average them into the ground, the finest pass never comes to a flat dark passage), each set LAST
+    /// as one thick touch of its own colour lifted toward white, widened by the key, only where the brushwork
+    /// lost it. Plan: `point`
+    #[arg(long)]
+    pub point: Option<f32>,
+    /// MICRO (0..1, 0 = off): the fine brushes restate wherever the brushwork has LOST the picture's fine
+    /// structure — the canvas's local contrast within the brush's reach against the source's, in the shadows as in
+    /// the light (the restate floor judges a cell's tone, and a board's grain dark on dark is never wrong in tone).
+    /// The key is the share of the contrast that may be lost before the brush comes back. Plan: `micro`
+    #[arg(long)]
+    pub micro: Option<f32>,
+    /// ADAPT (0..1, 0 = off): the brush adapted to the structure at its scale — within each seed's cell the
+    /// strongest feature of the band the brush resolves: none, the mark withheld by the key; one, the seed moved
+    /// onto it and the mark's length its extent along the flow. One mark per cobble, not a grid of dashes. Plan: `adapt`
+    #[arg(long)]
+    pub adapt: Option<f32>,
+    /// POINT FIELD (0..1, 0 = as built): how dense a field of points of light the point of the brush accepts —
+    /// the ring round a point may hold 2 % + 28 % × key of bright pixels. Plan: `point_field`
+    #[arg(long)]
+    pub point_field: Option<f32>,
+    /// SETTLE (0..1, 0 = off): a wet opaque paint settles into the paper's hollows — thin on the tooth's tops,
+    /// thick in its dips, until the tooth is filled; the dry-brush skip's complement. Plan: `settle`
+    #[arg(long)]
+    pub settle: Option<f32>,
+    /// FRAY (0..1, 0 = off): the dry tail of a depleting mark falls apart into separate furrows — the spent hairs
+    /// wander across the mark by a slow noise. Plan: `fray`
+    #[arg(long)]
+    pub fray: Option<f32>,
+    /// GLOSS MAP (0..1, 0 = off; with `sheen`): the sheen's roughness by the paint's thickness — the thin passages
+    /// satin (dim, broad), the thick ridges glossy (bright, sharp). Plan: `gloss_map`
+    #[arg(long)]
+    pub gloss_map: Option<f32>,
+    /// PERIPHERY (0..1, 0 = off): where the eye does not go the brush is broader, `micro` and `adapt` fall off and
+    /// the detail passes thin — the corners of the picture left unfinished. Plan: `periphery`
+    #[arg(long)]
+    pub periphery: Option<f32>,
+    /// CAVITY (0..1, 0 = off): the relief's self-shading — the hollows between the ridges darkened by their depth
+    /// against the surround, whatever the lamp. Plan: `cavity`
+    #[arg(long)]
+    pub cavity: Option<f32>,
+    /// CHISEL (0..1, 0 = off): a flat brush held as it started — where the mark bends it is laid on its edge, a
+    /// wide passage into a thin line and back. Plan: `chisel`
+    #[arg(long)]
+    pub chisel: Option<f32>,
+    /// HASTE (0..1, 0 = off): the mark's speed (its length for its width) — a long fast mark torn off the tooth's
+    /// tops (by its dryness), settled less and laid thinner; a short slow one printed whole. Plan: `haste`
+    #[arg(long)]
+    pub haste: Option<f32>,
+    /// PIGMENTS (2..64, default 16): how many pigments `--palette image` derives from the picture. Plan: `pigments`
+    #[arg(long)]
+    pub pigments: Option<usize>,
+    /// CAVITY FACE (0..1, 1 = off): the cavity's share on the face — the self-shading cut inside the face, the skin
+    /// kept soft while the clothes and the ground keep their furrows. Plan: `cavity_face`
+    #[arg(long)]
+    pub cavity_face: Option<f32>,
+    /// SIDELOAD (0..1, 0 = off): the brush loaded with two colours across its width — one edge of the mark the
+    /// charge, the other the picture's tone at the mark's end, every hair its own mixture. Plan: `sideload`
+    #[arg(long)]
+    pub sideload: Option<f32>,
+    /// CHISEL TWIST (0..1, 0 = off; with `chisel`): the flat turned in the fingers along the mark — the held axis
+    /// follows the motion, so a long bend keeps its breadth. Plan: `chisel_twist`
+    #[arg(long)]
+    pub chisel_twist: Option<f32>,
+    /// ADVECT (0..1, 0 = off): a wet brush mark drags the wet paint below it a third of a width along its motion —
+    /// tails and marbling at the borders of contrasting colours. Plan: `advect`
+    #[arg(long)]
+    pub advect: Option<f32>,
+    /// FILM FLAT (0..1, 0 = off; with `film`/`over`): the glaze's film laid without height — colour over the dried
+    /// relief, the relief untouched. Plan: `film_flat`
+    #[arg(long)]
+    pub film_flat: Option<f32>,
+    /// PERIPHERY DRY (0..1, 0 = off; with `periphery`): toward the edges the brush runs drier, so the dry brush
+    /// skips, frays and tears there and the canvas shows through the loose edge. Plan: `periphery_dry`
+    #[arg(long)]
+    pub periphery_dry: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -2286,7 +2364,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         r
     };
     // Output at the requested size — replay the score up from the working canvas (resolution-independent).
-    let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image_finished(&result.score.header.finish()) } else { result.canvas.to_image_finished(&result.score.header.finish()) };
+    let image_out = if work != plan.size { result.score.header.render(&result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?) } else { result.score.header.render(&result.canvas) };
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
@@ -2429,7 +2507,7 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
-    canvas.to_image_finished(&score.header.finish()).save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    score.header.render(&canvas).save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
     println!("{}  rendered → {}", style("✓").green(), a.out.display());
     Ok(())
 }
@@ -2498,6 +2576,60 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         if a.hotspot.is_none() {
             a.hotspot = plan.hotspot;
+        }
+        if a.point.is_none() {
+            a.point = plan.point;
+        }
+        if a.micro.is_none() {
+            a.micro = plan.micro;
+        }
+        if a.adapt.is_none() {
+            a.adapt = plan.adapt;
+        }
+        if a.point_field.is_none() {
+            a.point_field = plan.point_field;
+        }
+        if a.settle.is_none() {
+            a.settle = plan.settle;
+        }
+        if a.fray.is_none() {
+            a.fray = plan.fray;
+        }
+        if a.gloss_map.is_none() {
+            a.gloss_map = plan.gloss_map;
+        }
+        if a.periphery.is_none() {
+            a.periphery = plan.periphery;
+        }
+        if a.cavity.is_none() {
+            a.cavity = plan.cavity;
+        }
+        if a.chisel.is_none() {
+            a.chisel = plan.chisel;
+        }
+        if a.haste.is_none() {
+            a.haste = plan.haste;
+        }
+        if a.pigments.is_none() {
+            a.pigments = plan.pigments;
+        }
+        if a.cavity_face.is_none() {
+            a.cavity_face = plan.cavity_face;
+        }
+        if a.sideload.is_none() {
+            a.sideload = plan.sideload;
+        }
+        if a.chisel_twist.is_none() {
+            a.chisel_twist = plan.chisel_twist;
+        }
+        if a.advect.is_none() {
+            a.advect = plan.advect;
+        }
+        if a.film_flat.is_none() {
+            a.film_flat = plan.film_flat;
+        }
+        if a.periphery_dry.is_none() {
+            a.periphery_dry = plan.periphery_dry;
         }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
@@ -2726,7 +2858,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
             // (The watercolour recipe's palette — more pigments, farthest-point seeded with per-hue accents —
             // is the WATERCOLOUR's; every other medium keeps its 16 from the picture.)
-            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if wc_brush_cli { 24 } else { 16 });
+            // PIGMENTS (plan `pigments`, `--pigments`): the count the picture's palette is derived at (16 unless set).
+            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if wc_brush_cli { 24 } else { a.pigments.map(|n| n.clamp(2, 64)).unwrap_or(16) });
             let p = if wc_brush_cli { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
             let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
             let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
@@ -2737,7 +2870,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             // A medium was chosen but no palette was named — DERIVE one from the image. A fixed medium palette
             // (e.g. a landscape palette) rarely fits an arbitrary photo (a portrait's skin, a plaid shirt …).
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let p = palette_from_image(&img, 16);
+            let p = palette_from_image(&img, a.pigments.map(|n| n.clamp(2, 64)).unwrap_or(16));
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
         }
@@ -2776,6 +2909,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
     params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
     params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
+    params.point = a.point.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.micro = a.micro.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.adapt = a.adapt.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.point_field = a.point_field.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.gloss_map = a.gloss_map.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.periphery = a.periphery.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.cavity = a.cavity.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.cavity_face = a.cavity_face.unwrap_or(1.0).clamp(0.0, 1.0);
+    params.periphery_dry = a.periphery_dry.unwrap_or(0.0).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
@@ -3496,6 +3638,30 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(sk) = a.skip {
         params.brush.skip = sk.clamp(0.0, 1.0);
     }
+    if let Some(v) = a.settle {
+        params.brush.settle = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.fray {
+        params.brush.fray = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.chisel {
+        params.brush.chisel = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.haste {
+        params.brush.haste = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.sideload {
+        params.brush.sideload = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.chisel_twist {
+        params.brush.chisel_twist = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.advect {
+        params.brush.advect = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = a.film_flat {
+        params.brush.film_flat = v.clamp(0.0, 1.0);
+    }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);
     }
@@ -3716,11 +3882,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     }
                     _ => params.silhouette_mask = Some(s.clone()),
                 }
-                // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
+                // THE CLOTHING CLIPPED TO THE SILHOUETTE (7.18.0): the subject is SAM's silhouette, and the
+                // clothing BOXES of the semantic pass count only within it — where SAM already is. A box is a
+                // box: the one OWL-ViT drew round a tunic reached from the raised hand to the feet and took the
+                // street and the houses behind the figure with it; unioned by `max`, SAM could never cut it
+                // back, and the background inside the box was painted as the subject — no loose hand, no
+                // knife, the full ladder, the lost and glazed seams along the box's edge: a rectangle of
+                // another painting round the figure. (A margin round the silhouette was tried and drew a
+                // contour of marks at its distance instead.) Without a usable SAM mask the union stands.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {
                         for (a, b) in sm.iter_mut().zip(&s) {
-                            *a = a.max(*b);
+                            *a = (*a * *b).max(*b);
                         }
                     }
                     _ => params.subject_mask = Some(s),
@@ -4184,7 +4357,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let result = painter::paint_from_image_progress(&img, &params, &|ev| paint_progress(&pb, ev));
     pb.set_position(result.strokes as u64);
     pb.finish_and_clear();
-    let out = result.canvas.to_image_finished(&result.score.header.finish());
+    let out = result.score.header.render(&result.canvas);
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
@@ -4286,6 +4459,24 @@ fn run_export(a: ExportArgs) -> Result<()> {
             }
             canvas.height_image().save(&out).with_context(|| format!("writing {}", out.display()))?;
             println!("{}  impasto height (16-bit) → {}", style("✓").green(), out.display());
+        }
+        "pbr" => {
+            // PBR (the eighth review): the picture as a MATERIAL for a 3D engine or a relief printer — the albedo (the
+            // paint's colour, unlit), the height (16-bit, the impasto against its peak), the normal (from the height's
+            // slope, the relight's own gradient) and the roughness (one less the gloss: the sheen by the paint amount,
+            // by the thickness where the gloss map is on). An export reads the replayed canvas; the painting is untouched.
+            let canvas = score.replay(w, h).context("replaying for pbr")?;
+            let f = score.header.finish();
+            let stem = if a.out.extension().is_some() { a.out.with_extension("") } else { a.out.clone() };
+            if let Some(p) = stem.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(p).ok();
+            }
+            let name = |s: &str| -> PathBuf { let mut q = stem.as_os_str().to_owned(); q.push(format!("_{s}.png")); PathBuf::from(q) };
+            canvas.to_image().save(name("albedo")).with_context(|| format!("writing {}", name("albedo").display()))?;
+            canvas.height_image().save(name("height")).with_context(|| format!("writing {}", name("height").display()))?;
+            canvas.normal_image().save(name("normal")).with_context(|| format!("writing {}", name("normal").display()))?;
+            canvas.roughness_image(f.sheen, f.gloss_map).save(name("roughness")).with_context(|| format!("writing {}", name("roughness").display()))?;
+            println!("{}  pbr: albedo, height (16-bit), normal, roughness → {}_*.png", style("✓").green(), stem.display());
         }
         "separations" | "stages" => {
             std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
