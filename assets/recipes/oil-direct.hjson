@@ -1,0 +1,81 @@
+# plakat house recipe — `--medium oil-direct`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — OIL, DIRECT (alla prima): the recommended settings for `--medium oil-direct`.
+# Every key below overrides the medium's own default; a key left out keeps it. Tune here, not in the source.
+# The oil review's four points as dials, with the SAM silhouette and the face tier the later media's plans share.
+# Without a plan the stock profile paints 1500 strokes at any size — a 2k sheet is unreadable.
+medium: oil-direct
+hdr: true           # the picture tone-mapped before painting: the lamps stop blowing out, the shadows lift
+palette: image
+style: legible
+
+# ── The painting from scratch (RFC PAINT-1): the face and figure tiers, found in the picture ──
+new: true
+armature: 768       # the ground read at 768 (the review set was painted with --armature 768 over the plan's 384)
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true           # the subject's silhouette from SAM (7.18.0: the clothing boxes clipped to it)
+families: true
+commit_shadows: 1.00
+value_key: 0.30     # a flat reference's tonal range expanded
+shadow_floor: 0.16
+detail_len: 0.50
+
+# ── The paint as PAINT (from the oil review: flawless blends, no relief): a thick impasto with bristle ridges in
+#    its relief, the fine passes allowed to disagree with the picture, and broader, longer marks ──
+impasto: 0.45
+ridges: 0.80            # striated relief; with ridges the relief also plows (steep lateral edges) and CASTS micro-shadows
+detail_restate: 0.12    # v4: the third review — the fine passes restate at a lower threshold: the cobbles, the rigging, the thaw back over the base
+stroke_width: 1.30
+stroke_length: 1.40
+
+# The paint's THICKNESS follows the picture (7.1.0): lights thick / shadows thin, subject thick / background
+# thin, coarse surfaces thick (beard, bark, cobbles) / smooth ones thin and blended (skin, sky, glass).
+impasto_map: 1.00
+# A linen under the paint, seen only where the paint is thin or bare; the built-up passages cover it.
+weave: 0.25
+# Wet, glossy ridges: an independent specular pass on the light-facing slopes (0 = matte).
+sheen: 0.35             # review: matte — more gloss on the light-facing slopes (wet oil)
+# Wet collision: after each broad pass the wet paint drags along its own striation where loaded strokes
+# meet — colours marble, ridges plow. Off the faces.
+collide: 0.50
+# Stroke depletion: a bristle with little paint skips the canvas tooth at the terminal end of a stroke.
+skip: 0.40
+
+# ── v2 (the first review, no code): the keys that already exist ──
+# the flow from the structure tensor where the picture gives nothing (the sky, the hull's planks)
+infill: follow
+turbulence: 0
+smooth: 0.7         # the calm passages (the sky, the sea's far field) laid in soft veils, not in dabs
+shade: 0.5          # in the shadows off the subject a mark lands only where the canvas is plainly wrong, longer and calm
+hotspot: 1.0        # a small bright plateau (a star, a glint on the water) re-modelled as its own mark: a thick dot of white on the dark
+glint: 0.6          # the top twentieth of values lifted toward white, narrower, dry, raised
+accent: 0.8         # thick short opaque dabs at the sharp contrasts
+blade_light: 225    # the raking lamp for the relief's relight, from the upper left (read by every medium)
+blade_phong: 0.5    # a Blinn–Phong highlight on the relief's normal: micro-shadows and glints on the ridges
+gloss: 0.3          # a glint on the peaks of the thick paint
+
+# ── v3: the points of light (the first review, point 4 — new code in 7.18.0) ──
+point: 1.0          # the stars, the lamps, the glints set last with the point of the brush where the brushwork lost them
+# v4 (the third review: the mesh of marks on the cobbles and the architecture uniform and mechanical — the brush not adaptive):
+vary: 0.35          # the mark's length spread as a Gaussian, wider where the picture is flat
+body_vary: 0.3      # each mark's body spread: thick and opaque, or thinner and wetter
+comma: 0.5          # the hand's pressure along the mark: swelling a third of the way, lifting at the ends
+loose: 0.4          # off the subject: longer, wider marks on the broad passes, the fine passes thinned — the big brush for the ground, the small for the figure
+aerial: 0.15        # the far passages (the architecture behind the figure) lose a little edge by depth
+# v4, in code (the third review): the brush adapted to the structure — one mark per cobble, not a grid of dashes
+adapt: 0.8          # the seed moved onto the cell's strongest feature, the mark's length its extent, the flat cells withheld
+micro: 0.5          # the fine brushes come back where half the local contrast is lost
+
+fray: 0.6          # v6: the dry tail of a depleting mark falls apart into furrows
+gloss_map: 0.7     # v6: the varnish by the thickness — the impasto crests glint, the thin passages satin
+periphery: 0.5     # v6: the corners left unfinished — the brush broader off the focus, micro/adapt falling off
+cavity: 0.5
+chisel: 0.5
+haste: 0.5
+cavity_face: 0.3
+sideload: 0.5
+chisel_twist: 0.5
+advect: 0.5
+periphery_dry: 0.5

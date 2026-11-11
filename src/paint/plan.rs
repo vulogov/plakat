@@ -3,8 +3,10 @@
 //! weight-free stroke engine then executes that plan. No pixel of the deliverable comes from a model (G1); the
 //! plan only decides STRUCTURE (focal region, per-region armature resolution, value key, reserve), never surface.
 //!
-//! This is the first, deterministic analyzer (face + measured contrast + medium). A model-driven art director
-//! (VLM / low-res diffusion block-in) can later produce the same `PaintPlan` behind this interface unchanged.
+//! This is the first, deterministic analyzer (face + measured contrast + medium). The second, `super::director`
+//! (`--make-plan`, 7.19.0), reads the picture with the crate's vision models and writes the whole plan — the
+//! medium's house recipe adjusted by the picture's facts — behind the same interface; a model-driven art director
+//! (VLM / low-res diffusion block-in) can produce the same `PaintPlan` likewise, the paint side unchanged.
 
 use serde::Deserialize;
 

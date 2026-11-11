@@ -1,0 +1,78 @@
+# plakat house recipe — `--medium pencil`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — pencil (7.11.0). Set 1: the charcoal's dry machinery (the light is the paper, the touch,
+# the eraser, the stump, the dust) borrowed through the plan for graphite: a thinner point, a lighter dark,
+# the marks along the form hatched, a light contour. Set 2: the line traced along the picture's edges (the bone)
+# instead of the armature's rippling iso-lines, the velvet held to a real dark, the hatch at the hand's slant where
+# the picture has no direction, the pencil's lighter key, the far ground left to the paper. Set 3: the line at a
+# pencil's weight and kept on the near objects, the hatch straight and slanted at the drawing's scale. Set 4
+# (the profile's new keys, not set here): the marks stopped at the picture's contours (clip 0.6), the hatching in
+# tonal layers — lights blank, half-tones single, shadows crossed, the block-in only in the deepest (tiers 0.7).
+medium: pencil
+palette: sumi
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 0.0      # no committed shadow mass (set 1: grey patches under the bird's wings)
+shadow_floor: 0.16
+detail_len: 0.5
+# infill: where the picture has no direction the mark at the hand's diagonal (set 2: follow, whorls in the rubble)
+infill: 45
+min_brush: 2.0
+dry: 1.0
+pickup: 0.0
+bleed: 0.0
+wash_in: 0.0
+wet_cap: 0.2
+scumble: 0.0
+deplete: 0.2
+granulate: 0.0
+contour: 0.15
+chalk: 1.0
+side: 0.2
+blend: 0.4
+skin: 0.5
+sfumato: 0.5
+small: 400
+small_min: 100
+anchor: 0.15
+trim: 0.5
+hatch: 1.0        # the hatch line straight end to end
+cross: 30
+span: 0.6
+edge: 0.6
+umbra: 1.0
+solid: 1.0
+loose: 0.15
+lost: 0.0
+paper: 1.0
+erase: 0.3        # a lighter eraser: at 0.6 its lifts curled as white whorls in the grass
+touch: 0.6
+velvet: 0.03
+velvet_dark: 0.3  # the velvet only where the tone is dark on the sheet (the bird's grey shadows went black)
+paper_top: 1.0
+sweep: 0.0
+stump: 0.3
+dust: 0.6
+stump_edge: 0.6
+stump_feather: 1.0
+paper_knee: 0.5
+bone: 1.0         # the contour as a drawn line along the picture's own edges, replacing the armature's iso-lines
+bone_coherence: 0.5 # a line only where the edge has a direction; gravel left to the shading
+bone_ryaku: 0.3   # a far line simplified to a few arcs
+bone_fade: 0.0    # the near wheel, the doll, the chair keep their line (set 2: 0.3 dropped them off the focus)
+slant: 1.0        # the hatch at the hand's diagonal where the picture has no direction (loops in the grass)
+grade: 0.4        # the pencil's lighter key: the half-tones lifted, the velvet kept
+ma: 0.4           # the far ground lifted toward the paper
+ma_focus: 0.4
+ma_flow: 0.6
+bone_wind: 0.5    # a winding chain (a stone's lobed edge) is texture, not a line
+weight: 1.0       # the line at a pencil's weight over the hatched tone (set 2: a grey hair lost in the hatching)
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

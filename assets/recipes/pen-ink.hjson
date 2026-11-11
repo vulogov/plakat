@@ -1,0 +1,117 @@
+# plakat house recipe — `--medium pen-ink`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — pen and ink (7.12.0). Set 1: the pencil's drawing machinery (the light is the paper, the line
+# traced along the picture's edges, the hatch straight along the form and at the hand's diagonal where there is no
+# direction, the marks stopped at the contours, the tone in layers) borrowed through the plan for a steel nib and
+# black ink: no grain (the ink fills the paper), no stump and no eraser (ink does not rub or lift), every line full
+# black (nib), the tone by the number of lines. Set 2: pens of three sizes in layers, broad to fine (nibs).
+# Set 3: the pens routed by the tone and the plane (nib_tone), the paper kept in the shadows (nib_white), the bone
+# line in full black at a flat nib's hard edge. Set 4: the pen's accents after the bone — cast-shadow anchors
+# (nib_anchor) and the shorthand dashes in the lights (nib_hint). Set 5: the face kept light (nib_face), the forms
+# parted by paper (nib_gap), the folds modelled (nib_relief), the far ground fine (nib_far), the broad nib under the
+# figure only (nib_occlude). Set 7: no gap and no relief on the fur. Set 8: the eyes kept and drawn (nib_eyes), the
+# fur thinned (nib_fur), the figure's half-tones lifted (nib_lift), the contact shadow under it (nib_contact).
+# Set 9: the figure in parallel hatching with its features and bold contours (nib_figure). Set 10: the hatching
+# along the form in cells, the darks solid with the folds white, the face read against its own range.
+# Set 11: the held umbrella outlined with the figure (nib_object), the near grass in tufts (nib_tuft), the figure's
+# outline closed over its gaps (nib_close).
+# Set 12: the dark grass merged into one mass (nib_mass), the figure's outline in a line of changing weight (nib_rim),
+# the contact shadows solid black under it (nib_pool), the far planes kept to a few fine lines (nib_air).
+# Set 13: every person found drawn as the figure, with or without a face (nib_people); the figure's tone
+# read against the whole picture, so clothing light in its scene stays light (nib_value).
+# Set 14: small faces with the finest pen (nib_fine_face), the grass found by CLIP and its tufts scattered in clumps
+# (nib_scatter), the contact shadow solid only at the contact (nib_falloff), the far planes by depth (nib_depth).
+# Set 15: the found grass grown thick by its darkness (nib_lush), the specular highlights kept white (nib_glint),
+# the hand's waver doubled so a long line breathes.
+medium: pen-ink
+palette: sumi
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 0.0
+shadow_floor: 0.16
+detail_len: 0.5
+# infill: where the picture has no direction the mark at the hand's diagonal
+infill: 45
+min_brush: 1.5
+dry: 1.0
+pickup: 0.0
+bleed: 0.0
+wash_in: 0.0
+wet_cap: 0.2
+scumble: 0.0
+deplete: 0.0
+granulate: 0.0
+contour: 0.0
+small: 400
+small_min: 100
+anchor: 0.15
+trim: 0.5
+hatch: 1.0
+cross: 45
+span: 0.6
+edge: 0.6
+umbra: 1.0
+solid: 1.0
+loose: 0.1
+lost: 0.0
+paper: 1.0
+erase: 0.0
+touch: 0.0
+velvet: 0.08
+velvet_dark: 0.25
+paper_top: 1.0
+paper_knee: 0.5
+bone: 1.0
+bone_coherence: 0.5
+bone_ryaku: 0.3
+bone_fade: 0.0
+bone_wind: 0.5
+weight: 1.0
+slant: 1.0
+clip: 0.6
+tiers: 0.8
+waver: 0.6
+ma: 0.3
+ma_focus: 0.4
+ma_flow: 0.6
+nib: 1.0          # a steel nib: every line full black, the tone by how many lines a cell takes, the width under the pass's nib
+grade: 0.8        # the pen's lighter key: a dark orange fur drawn in lines over the paper, not a black mass
+nibs: 3           # three pens in layers: a broad nib for the masses first, a middle one, a fine one for the detail last
+nib_tone: 1.0     # each pen only where the tone is dark enough for its width, read against the eye's attention: the broad nib in the near deep shadows, the fine one on the far ground, the lights blank
+nib_white: 0.2    # the deepest shadow keeps a fifth of the paper between its lines, not a flat black
+nib_anchor: 1.0   # the cast-shadow touches under the figure, the stones and the tufts: crossed black clusters at the middle pen
+nib_hint: 1.0     # the fine pen's rare short dashes in a sunlit passage with a sharp contrast of its own
+nib_face: 1.0     # the face with the finest pen alone, its cheek and nose left to the paper
+nib_gap: 0.4      # a sliver of paper along the long contours: the umbrella, the sleeve and the body parted
+nib_relief: 0.6   # the hatching thinned on the form's highlights: the coat's folds modelled
+nib_far: 0.5      # the sky and the far ground in the finest pen only, the far slope in light lines
+nib_occlude: 1.0  # the broad nib only in the cast shadows under the figure
+nib_eyes: 1.0     # an animal's eyes found by their catchlights, kept from the coat's hatching and drawn in pure black, the catchlight left white
+nib_fur: 0.6      # the coat's half-tones and lit bulges lifted: the fur thins on the body, the dark markings kept
+nib_lift: 1.0     # the figure's half-tones lifted: the coat and the face to their contours, the hatching in the deep folds
+nib_contact: 1.0  # the cast shadow under the seated figure deepened to a contact patch, so it rests on the ground
+nib_figure: 1.0   # the figure drawn as a pen draws it: hatching along the form, the darks closed to black with the folds white, the face left to the paper and its features drawn, bold contours
+nib_object: 1.0   # the umbrella and the stick the figure holds: off the landscape's marks, hatched with the figure, their contours firm black
+nib_tuft: 1.0   # the near grass as fans of blades from one root, doubled under the figure; the old marks there mostly dropped
+nib_close: 1.0   # the figure's outline: a gap under a 40th of the sheet between two drawn stretches closed with a thin line
+nib_mass: 1.0   # the dark grass: more tufts rooted anywhere in the cell, crossing into one dark mass
+nib_rim: 1.0   # the figure's silhouette outlined in one line, swelling on the shadow side, parting it from the ground
+nib_pool: 1.0   # the contact shadows under the figure and the umbrella closed to solid black with the broadest pen
+nib_air: 1.0   # off the eye's attention the passes' marks thinned, the far hills a few fine lines
+nib_people: 1.0   # every person the detector finds is the figure, a group whole, a back turned too
+nib_value: 1.0   # the figure's tone read against the whole picture: clothes light in their scene stay light
+nib_fine_face: 1.0   # a group's small faces with the finest pen, their eyes and noses traced
+nib_scatter: 0.5   # the tufts in clumps and clearings, not on a grid
+nib_falloff: 1.0   # the contact shadow black only where the figure meets the ground, then broken dashes fading out
+nib_depth: 0.6   # the far hills and the horizon by the picture's depth: the finest pen, a few lines
+nib_lush: 1.0   # the grass grown thick where it is dark, its clumps crossing into one deep mass
+nib_glint: 1.0   # the specular highlights on metal, glass and glaze kept to the paper
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

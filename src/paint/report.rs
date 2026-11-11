@@ -72,7 +72,7 @@ fn source_of(key: &str, plan_text: Option<&str>, argv: &[String]) -> &'static st
 }
 
 /// The PAINT_CONTROLS row for a key (the table cell that explains it), if there is one.
-fn control_row(key: &str) -> Option<String> {
+pub(crate) fn control_row(key: &str) -> Option<String> {
     let needle = format!("| `{key}` ");
     let needle2 = format!("| `{key}`|");
     CONTROLS.lines().find(|l| l.starts_with(&needle) || l.starts_with(&needle2)).map(|l| {

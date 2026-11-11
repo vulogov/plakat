@@ -1,0 +1,78 @@
+# plakat house recipe — `--medium gouache`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — gouache (7.9.0). Set 0: the pre-7.9.0 gouache profile, with the shared structure keys only.
+# Set 1: the layered machinery borrowed through the plan — every layer dry before the next (the acrylic's), the
+# colours premixed in value steps (the tempera's dishes), opaque flat matte patches, no gloss and no relief.
+# Set 2: the dried layer rewetted, the dishes drawn along the mark (ramp), the value settled toward the middle on
+# drying, the lights chalky with white, the flat passages in a flat brush's square patches.
+# Set 3: the long thin lines in a liner's single stroke (the rigger off — it traced a wheat field's curls), the
+# paper's grain under the paint, the figures and the ground read at 768.
+# Set 4: the fine brush in the focus only (focus_detail): the fog, the bushes, the clothes broad and general.
+medium: gouache
+palette: image
+style: legible
+new: true
+armature: 768     # the ground read finer: the village's small figures and the roofs' edges
+armature_face: 768
+armature_body: 768 # the figures read finer: a cat's fur, a shirt's check, a face's wrinkles
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.0       # off: the rigger traced the wheat field's ridges as thin light curls
+liner: 0.5        # the long thin lines (a rigging line, a stay) traced along themselves and laid as one thin mark
+hotspot: 0.3
+
+# ── The layers: gouache dries in minutes, each layer opaque over the one beneath ──
+dry: 1.0          # the sheet dries between passes
+pickup: 0.0       # the wet canvas's pickup off: the layers are dry
+rewet: 0.3        # gouache's gum stays soluble: a wet mark lifts a share of the dried layer beneath — the layers fuse at their seams, not cut-out shapes
+bleed: 0.0
+wash_in: 0.3      # the block-in a thinner wash
+wet_cap: 0.45     # a later mark a flat opaque patch on the dried layer
+scumble: 0.5      # the finest pass partly dragged dry
+skip: 0.2         # the dry brush skips on the paper's tooth
+deplete: 1.2
+dishes: 10        # the colours premixed in value steps, as a gouache painter does
+dither: 0.0       # the steps not broken into a chequer: the ramp carries the gradation
+ramp: 0.7         # the mark's colour drawn along its path toward the picture's — two premixed steps dragged into each other, a sky graded, not banded
+hiding: 0.0       # every pigment covers: a light over a dark
+broken: 0.1
+
+# ── The hand ──
+turbulence: 4
+loose: 0.3
+vary: 0.3
+comma: 0.3
+body_vary: 0.1
+smooth: 1.0       # the calm passages (a sky, still water) laid in soft graded veils
+lost: 0.0
+glaze: 0.0
+glaze_pass: 0.0
+
+# ── The body: matte, flat ──
+impasto: 0.05
+ridges: 0.0
+impasto_map: 0.0
+sheen: 0.0
+focus_detail: 0.5 # the crisp detail tier fired only inside the focal region (the faces, the cat): the fog, the bushes, the far ground stay broad — a painter's fine brush goes to the centre of interest
+granulate: 0.12   # the paper's grain under the paint: a gouache on paper or board is never a flat digital fill
+dry_shift: -0.08  # gouache's value settles on drying: the darks a shade lighter, the lights a shade darker (negative: the compression toward the middle)
+chalk_tint: 0.5   # the lights mixed with white lose chroma: chalky, matte
+flat_brush: 0.5   # the flat passages laid by a flat brush: square chisel ends, straighter marks — a field, a wall, a sail in patches
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)
+settle: 0.6        # v6: the wet gouache settles into the paper's hollows — thin on the tooth's tops (sheen 0: matte, gloss_map inert)
+fray: 0.3          # v6: the dry tails fray
+periphery: 0.4     # v6: the corners left unfinished
+cavity: 0.3
+chisel: 0.4
+haste: 0.5
+sideload: 0.3
+chisel_twist: 0.5
+advect: 0.3
+periphery_dry: 0.4

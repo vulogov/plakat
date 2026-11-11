@@ -1,0 +1,92 @@
+# plakat house recipe — `--medium oil-indirect`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — OIL, INDIRECT (layered: imprimatura, underpainting, glazes): the recommended settings for `--medium oil-indirect`.
+# Every key below overrides the medium's own default; a key left out keeps it. Tune here, not in the source.
+# The direct oil's backbone (the SAM silhouette, the face tier), and on top of it the layered method: every sitting dry before the next, a dark warm imprimatura,
+# the lights scumbled over it, the shadows glazed as a film. Without a plan the stock profile paints 1500 strokes.
+medium: oil-indirect
+hdr: true           # the picture tone-mapped before painting: the lamps stop blowing out, the shadows lift
+palette: image
+style: legible
+
+# ── The painting from scratch (RFC PAINT-1): the face and figure tiers, found in the picture ──
+new: true
+armature: 768
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true           # the subject's silhouette from SAM (7.18.0: the clothing boxes clipped to it)
+families: true
+commit_shadows: 1.00
+value_key: 0.30
+shadow_floor: 0.16
+detail_len: 0.50
+
+# ── The paint as PAINT: the oil-direct base ──
+impasto: 0.45       # under the glazes the relief is lower than alla prima's 0.8: the films level the surface
+ridges: 0.60
+detail_restate: 0.10    # v4: the third review — microcontrast lost under the glazes; the fine passes restate at a third of the threshold
+stroke_width: 1.30
+stroke_length: 1.40
+impasto_map: 1.00
+weave: 0.25
+sheen: 0.35
+collide: 0.20       # the layers are dry: little wet collision, only within a sitting
+skip: 0.40
+
+# ── The layers: each sitting dry before the next — the dark-to-light build of the old method ──
+dry: 1.0            # the canvas dries fully between passes: nothing beneath is stirred
+wash_in: 0.5        # the block-in a thin wash: 1 − 0.7·wash_in of the charge
+imprimatura: 0.3    # the block-in laid darker and warmer (toward burnt umber): the underpainting that shows between the later marks
+wet_cap: 0.5        # a later mark goes on a dried layer
+scumble: 0.35       # v4: more of the dry lights dragged over the dark underpainting
+split: 0.4          # the dry marks comb into bristle bundles with the layer beneath showing between
+tint: 0.3           # the bundles of a split mark differ a little in tone
+
+# ── The glazes over the dried underpainting ──
+sfumato: 0.4        # v4: the face fused less — the beard's hairs
+glaze: 0.6          # along the subject's silhouette the finest pass lays thin wet overlaps that may cross it
+glaze_pass: 0.15    # v4: the unifying film thinner
+film: 0.45          # v4
+lost: 0.2           # v4
+aerial: 0.1         # v4
+sink: 0.0           # a thin cool wash that settles only in the furrows of the shadow's broken relief
+hiding: 0.6         # each pigment covers by its own hiding power: the lakes and the ultramarine glaze, the lead white hides
+
+# ── v2 (the first review, no code): the keys that already exist; the sky's haze taken down (scumble, imprimatura, aerial, lost, sink, film) ──
+infill: follow
+turbulence: 0
+smooth: 0.4         # v4: fewer soft veils — the thaw, the cobbles, the rigging need marks
+shade: 0.5
+hotspot: 1.0
+glint: 0.6
+accent: 0.6
+blade_light: 225
+blade_phong: 0.5
+gloss: 0.3
+
+# ── v3: the points of light (the first review, point 4 — new code in 7.18.0) ──
+point: 1.0          # the stars, the lamps, the glints set last with the point of the brush where the brushwork lost them
+# v4 (the third review: the glazes a low-pass filter, the cobbles, the rigging, the thaw blurred — a hierarchical restoration of the high frequencies over the base):
+crest: 0.5          # one more pass after the glaze: a dry fine brush over the ridges' tops, the texture lit without a new shape
+liner: 0.5          # the long thin lines (a stay, a halyard) traced along themselves and laid as one thin mark
+vary: 0.3           # the mark's length spread as a Gaussian
+body_vary: 0.2      # the mark's body spread
+loose: 0.3          # off the subject the broad passes longer and wider, the fine passes thinned
+# v4, in code (the third review): the high frequencies restored over the glazed base by measure
+micro: 0.6          # the fine brushes come back where more than 40% of the local contrast is lost: the cobbles, the rigging, the thaw
+adapt: 0.5          # the brush adapted to the structure at its scale
+point_field: 0.5    # the star field denser: the ring round a point may hold 16% of bright pixels
+
+fray: 0.4          # v6: the scumbles' dry tails fray
+gloss_map: 0.6     # v6: the glazes satin, the lights' impasto glossy
+periphery: 0.5     # v6: the corners left unfinished
+cavity: 0.4
+chisel: 0.4
+haste: 0.4
+cavity_face: 0.3
+sideload: 0.3
+chisel_twist: 0.5
+advect: 0.3
+film_flat: 1.0
+periphery_dry: 0.4

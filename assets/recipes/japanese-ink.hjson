@@ -1,0 +1,104 @@
+# plakat house recipe — `--medium japanese-ink`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — japanese-ink (7.10.0). Set 0: the pre-7.10.0 japanese-ink profile, with the shared structure keys only.
+# Set 1: borrowed through the plan — the charcoal's paper (the ink only darkens, the light is the paper, the
+# pressure follows the value), the gouache's liner and focus, a dry brush that skips and runs out along the mark.
+# Set 2: the five tones of ink (dishes 5), the brush loaded in two tones (tsuke), the empty space (ma), the flying
+# white (kasure), the ink feathering into the paper (nijimi); the skip off (it laid a square texture).
+# Set 3: the brush lifted on a turn (turn), the flat passages left blank (yohaku), four tones, the subject's shadows
+# not committed, the black register to the darkest thirtieth (sumi_dark).
+# Set 4 (the ruins and the hillside were a trowel's smears of cement, no fine line): the line register — the
+# structure's contours as calligraphic brush lines, weighted and inked by the darker side (bone); the block-in and
+# three passes after it as washes, even width, soft edge, one horizontal sweep of the hake off the subject
+# (boneless, hake); the fine brush in a narrower focus; the loose marks off.
+# Set 5: the washes bled into one another (bleed — its replay exact now that the replay dries before the bone
+# and the ink as the painter does); the wash's ends faded; no white — the hotspot's white dots and the liner's
+# white lines were the pale dashes on the ground; the bone's chains on the subject twice as long and lighter.
+# Set 6 (the pale dashes and the broken-glass panes were the bare wedges a polyline's square stamps leave at
+# every bend of a wide wash): the stamps fanned around a bend (join); a winding bone chain is texture, not a line
+# (bone_wind), half of them the tenbyō's dots (bone_dot).
+# Set 7: the dots thrown off their chain into clusters (bone_scatter); the join lays each pixel once and fills
+# the lanes' gaps (the arcs across the washes were a moiré of the rounded lanes under a turning stamp).
+# Set 8 (the white specks in the washes were not the flying white — they were pinholes of the rasteriser, a
+# lattice of rounded stamps turned against the pixel grid, and pixels claimed by silenced lanes): the join's
+# swath a 4-connected fill; a bone chain drawn only where the gradients around it agree (bone_coherence) — the
+# grass ridges were thin lines.
+# Set 9 (the composition: the far ground as strong as the subject): the bone line's ends as the calligrapher's —
+# the tome where a line meets another, the harai where it fades (bone_end); the black register only where the
+# eye goes (sumi_focus) — the ruins' debris and the hillside's rocks were black shapes competing with the figure;
+# the empty space reaching in toward the focus (ma_focus) — the far ground drew the eye as strongly as the cat.
+# Set 10: the focus's halo along the picture's lines from the silhouette alone (ma_flow).
+# Set 11 (ryakuga — the far detail a pale but exact drawing): off the focus the bone line simplified to a few
+# arcs (bone_ryaku), absent at the edge of the empty space (bone_fade), and the marks wetter (bokashi).
+medium: japanese-ink
+palette: sumi
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 0.0  # the subject's shadows not committed to solid dark: a woman in a dark coat is modelled, not one black shape
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+min_brush: 3.0
+rigger: 0.0
+liner: 0.5        # the long thin lines in one stroke: a whisker, a branch, a wire
+focus_detail: 0.3 # the fine brush in a narrow focus only: the rest the washes and the bone — the empty space kept
+hotspot: 0.0      # no white: the hotspot's dots of titanium were pale dashes on the ground — in sumi-e the light is the paper
+
+# ── Dry, replayed to the bit ──
+dry: 1.0
+pickup: 0.0
+bleed: 0.3        # the wet bands of a wash flow into one another (replay exact: the sheet dried before the bone and the ink in the replay too)
+wash_in: 0.6       # the broad passes a wet wash: the block-in thin and flooded (its 140-px marks were dry streaky wedges — a square texture)
+wet_cap: 0.6       # a later mark goes on wet enough to feather
+contour: 0.0
+
+# ── The paper is the light (the charcoal's machinery) ──
+paper: 1.0
+touch: 0.6
+velvet: 0.03      # only the darkest thirtieth a full black
+paper_top: 1.0
+paper_knee: 0.5
+
+# ── The brush ──
+deplete: 1.0      # the ink runs out along the mark
+skip: 0.0         # off: the dry skip on the paper's relief laid a square texture — the flying white is kasure's
+comma: 0.5        # the pressure swells and lifts along the mark
+turbulence: 0
+loose: 0.0        # off: the longer, wider marks off the subject were the trowel's smears
+vary: 0.4
+granulate: 0.05
+
+# ── Sumi-e ──
+dishes: 4         # four tones of ink: the value held to fewer steps, a figure kept apart from its ground
+dither: 0.0
+tsuke: 0.6        # tsuketate: the brush's tip in thick ink, its body in thin — one mark dark along one edge, pale along the other, the dark edge to the shadow
+ma: 0.8           # the empty space: where the eye does not go the value lifted toward the paper — the periphery a stroke or two
+kasure: 0.5       # the flying white: the hairs part as the brush runs, the paper streaking along the stroke
+nijimi: 0.8       # the ink feathering into the absorbent sheet, and the water evening the hairs: a broad wet stroke a wash, not a comb
+turn: 0.6         # the brush lifted on a turn: a mark thins round its bend — a wing's edge, a curl of fur — not a straight slab
+yohaku: 0.7       # the blank white: a flat passage off the subject (a fog, a pale sky, a white ground) left bare paper
+sumi_dark: 0.03   # the black register only the darkest thirtieth: at the eighth it drew the ruins' debris as black worms and the woman as one black shape
+bone: 0.6         # the line register: the structure's contours as brush lines over the washes — a dead tree, a wire, the coat's edge, the umbrella — a near dark form a full black line, a far pale one a grey hair
+boneless: 3       # the block-in and the three passes after it as flooded washes (even width, soft edge, the two tones and the flying white evened by the water): the masses a wash, not a heap of dry wedges
+hake: 1.0         # the washes one horizontal sweep of the broad flat brush, off the subject: parallel bands, not bars crossing at every angle (crossed, each a translucent pane — broken glass)
+join: 1.0
+bone_wind: 0.6
+bone_dot: 0.6
+bone_scatter: 0.7
+bone_coherence: 0.7   # a line only where the gradients around the chain agree on a direction: grass, foliage and gravel are texture — dots or nothing
+bone_end: 0.6         # the tome where a line stops against another (a press, the ink pooling), the harai where it fades (the brush sweeping off to a hair)
+sumi_focus: 0.5       # the black masses only where the eye goes: in the far ground the dark is left to the washes
+ma_focus: 0.4         # the empty space reaching in toward the focus: the debris and the near ground of middling saliency dissolve into the paper, the figure alone
+ma_flow: 0.6          # the focus's halo running along the picture's lines and stopping at its edges, the silhouette kept whole: a round blur of the mask (a coat's detected box in it) was a dark island round the woman, and paled the cat's paws
+bone_ryaku: 0.6       # ryakuga: a bone line off the focus generalised to a few arcs — a far wheel one sweep, not every corner
+bone_fade: 0.3        # at the edge of the empty space no line at all: the far detail left to the washes (0.5 took the dead trees' lines too)
+bokashi: 0.6          # toward the edge of the focus the brush carries water: the fading image dissolved into the paper, its flying white gone
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

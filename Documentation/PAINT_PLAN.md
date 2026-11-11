@@ -193,11 +193,75 @@ the stroke engine and the tuning knobs ([PAINT_CONTROLS.md](PAINT_CONTROLS.md),
 [PAINT_WATERCOLOR.md](PAINT_WATERCOLOR.md)). This separation is deliberate: the art director plans, the painter
 paints.
 
+### `--make-plan` — the art director with eyes (7.19.0)
+
+`--plan auto` writes the **structure** only and leaves every dial of the medium to its stock profile. The review
+cycles settled, medium by medium, a *house recipe* — the plan the reviews accepted, 50–130 keys — and the rule that
+a medium is tuned in its plan, never in the source. `--make-plan` puts the recipe together with a reading of the
+picture and writes the **whole plan**, every dial with its reason:
+
+```bash
+# write <out>.plan.hjson from the picture and the medium's house recipe, then paint from it
+plakat paint from photo.jpg --medium oil-direct --make-plan -o out.png
+# name the plan file
+plakat paint from photo.jpg --medium gouache --make-plan plans/photo.gouache.hjson -o out.png
+# the plan alone, to read and edit before painting
+plakat paint plan photo.jpg --medium watercolour --director --out photo.plan.hjson
+plakat paint from photo.jpg --plan photo.plan.hjson -o out.png
+```
+
+The director composes the plan in three layers, written as three sections of the file:
+
+1. **The structure** — `plan_from`'s own reading (the armature tiers, the face tier, families, the measured value
+   key, the budget), as `--plan auto` writes it.
+2. **The house recipe** — `assets/recipes/<medium>.hjson`, shipped with the binary as a *plan*, not as code: the
+   medium's accepted dials with their own comments. A key the recipe names is a dial the medium **uses**; the
+   director moves no dial the medium does not use, and turns on none the recipe holds at 0 (a watercolour's
+   `hotspot: 0` is the medium's decision, not a gap). (A medium the cycles have not tuned yet — `line-and-wash`,
+   `early-book-illustration`, `durer`, `black-pencil` — has a three-key recipe and gets the structure only.)
+3. **The picture's adjustments** — the rules, each universal, each written with its fact and measurement, e.g.
+   `shadow_floor: 0.1   # nocturne: mean luma 0.18, darks 71% — the shadow family may sit deeper … (was 0.16)`.
+   The recipe's line a rule moved stays in the file as a comment, so the reader sees what the picture changed.
+
+The facts the rules read, and where they come from:
+
+| fact | source | what it moves |
+|---|---|---|
+| mean luma, luma σ, dark/light shares | pixels | the key (`value_key`, measured — the recipe's yields); a **nocturne** (mean < 0.3) deepens `shadow_floor`, sets `point`/`point_field`/`glint`, cuts `cavity`; a **high key** (mean > 0.72) lifts `shadow_floor`, `reserve 0.95` on paper; a **flat** picture (σ < 0.12) raises `lost`/`aerial`/`sfumato`/`aqua_soft`/`aqua_bloom`, cuts `micro`/`detail_restate` |
+| structure (Laplacian σ), calm and busy shares (the local luma σ over a 9×9 window at 1024 px: under 0.02 calm, over 0.08 busy) | pixels | **busy** → `micro`, `adapt`, `detail_restate`, `aqua_detail`, `aqua_crisp`; **calm fields** → `smooth`, `settle`, `vary`, less `collide`/`fray` |
+| mean chroma, warmth | pixels | `pigments` 8 for a near-monochrome picture, 20 for a wide palette (`palette: image`, opaque media) |
+| points of light on a dark ground per megapixel (100 or more) | the point pass's own detector, the ground under 0.25 | `point`, `point_field`, `hotspot` |
+| faces and their share | SCRFD | `cavity_face 0.3`, `periphery`, `advect` cut (the drag blurs the modelling), `loose` on a close portrait |
+| the subject's share and centre | U²-Net matte | a compact subject → `periphery`, `loose`; none → `periphery` down |
+| the far ground's share (relative depth: the nearest thing at 1; a portrait's wall is far as a landscape's distance is) | Depth-Anything-V2 | `aerial`, `lost`, `nib_depth`, `aqua_vignette` |
+| genre (portrait / figure / landscape / townscape / still life / interior / animal) | CLIP zero-shot over the sheet | still life → `hotspot`, `glint`; interior → `shade`, `lost`; animal → `semantic`; landscape → `aerial` |
+| sky, water, foliage, stone shares | CLIP zero-shot over a 4×4-ish grid of crops | water → `glint`, `hotspot`, `smooth`; foliage → `fray`, `vary`, `haste`, `nib_tuft`; stone/townscape → `adapt`, `chisel`, `micro` |
+
+Every model fact is optional: a model that cannot run (no weights, no device) leaves its fact unknown, the header
+says so, and the rules that need it stand down. `PLAKAT_PAINT_DIRECTOR_PIXELS=1` reads the pixel facts only.
+Explicit flags still win over the plan, as always; `--make-plan` and `--plan` exclude each other.
+
+**The model's pass** (`--make-plan-model <provider>`, or `paint plan --director --model <provider>`): a vision
+model (`gemini`, `deepseek`, `auto`) is shown the picture, the facts, the composed plan and the glossary of the
+dials it may move, and answers in the insights' own form — `## Insights` and a `## Recommendations` block of
+`key: value   # reason` lines. Its lines pass the same gate as the rules: only dials the plan names, never the
+structure (armature, tiers, budget, medium, palette, the switches), never a face's dial, values clamped to the
+dial's range; the accepted lines are written as their own section with the provider named, the refused ones as
+comments with the reason. A hosted provider means the picture leaves the machine, and the terminal says so. The
+local LLM has no vision model and the pass is skipped with a message; the plan stands without it.
+
+What `--make-plan` does **not** do: it changes nothing in the painter. A run without the flag is byte-identical
+to before; a run with it is a run with a `--plan <file>`, replayable from the file. And nothing scene-specific
+is baked in: a rule moves a dial only on a fact of the picture, writes the fact next to the value, and leaves
+every dial the recipe does not name alone. The recipes are the place to tune a medium; the rules are the place
+to tune the reading of a picture.
+
 ### Extending the art director
-The v1 analyzer is deterministic (face + contrast + medium). A **model‑driven** art director — a vision model or
-a low‑resolution diffusion block‑in that proposes semantic regions, value masses, focal point and per‑region
-armature resolutions (RFC §5, §12.2) — plugs in behind the same `PaintPlan` interface, with **no change to the
-paint side**. The model only ever writes the plan.
+The v1 analyzer is deterministic (face + contrast + medium); `--make-plan` (above) is the second: the same
+`PaintPlan` interface, the picture read by the crate's vision models, the medium's recipe as the base. A further
+**model‑driven** art director — a vision model or a low‑resolution diffusion block‑in that proposes semantic
+regions, value masses, focal point and per‑region armature resolutions (RFC §5, §12.2) — plugs in behind the same
+interface, with **no change to the paint side**. The model only ever writes the plan.
 
 ---
 

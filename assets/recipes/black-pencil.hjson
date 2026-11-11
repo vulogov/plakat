@@ -1,0 +1,6 @@
+# plakat house recipe — `--medium black-pencil`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — black-pencil v5: the stock medium plus the three keys of 7.18.0
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

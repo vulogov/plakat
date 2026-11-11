@@ -1,0 +1,145 @@
+# plakat house recipe — `--medium watercolour`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — watercolour cycle 7.16.0. Set 0 was the recipe of 7.1.0 with the documented flags (aqua 0).
+medium: watercolour
+palette: image
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+# The brush engine's own finishing passes (a new painting's defaults: rigger 0.35, hotspot 0.5, splatter 0.25) lay
+# covering loads that read as ink on the transparent film — off while the washes are the tool.
+rigger: 0.0
+hotspot: 0.0
+splatter: 0.2        # set 5: the spatter back on, at the end, on the background off the faces (the engine's own pass)
+
+# the technique: wet-on-wet / wet-on-dry / dry-on-dry (HJSON: a comment after a quoteless string is part of it — keep it on its own line)
+technique: wet-on-dry
+# Set 4: the pigment's drift in the bleed off — on a sheet that never dries (wet-on-wet, dry 0.12) the technique's 0.35
+# gathered the drawing's pigment into a lattice of beads along every plane (the rim does the gathering now, by the water)
+diffuse: 0.0
+bleed: 0.6
+dry_shift: 0.08
+granulate: 0.12
+opacity: 0.6
+reserve: 0.9
+# Set 1: the wash as the medium's own tool (aqua): the picture laid as washes — value planes over its own range,
+# lightest first, each glazed over the darker (the darks the stack of transparent glazes on the film), a plane cut
+# into hue families, every mass one wash; the recipe's brush ladder off; the drawing after the washes.
+aqua: 1.0           # THE WASH AS THE TOOL
+aqua_planes: 6      # six sessions, the brush halving from a tenth of the sheet (set 17's three sessions rolled back with its clusters)
+aqua_reserve: 1.0   # the lightest plane bare paper, as shapes
+aqua_wet: 0.8       # the water after every plane and the wet edge (the technique multiplies)
+aqua_grade: 1.0     # three bands of value within a mass, fused wet
+aqua_detail: 0.2    # the fine brushes' drawing after the washes at 20% of their budget (0.4 restated the photo)
+aqua_soft: 1.0      # the wet edge by the picture's gradient: soft where the picture is soft, hard at its edges
+# Set 2 (the review of set 0 / the look of set 1: the pigment's behaviour invisible, outlines by morphology
+# refused — the physics instead, the drawing's marks oil-like): the tide line as a key, backruns in the drying
+# washes, granulation in the water on the paper's tooth, the drawing as a watercolour brush where the picture has
+# structure.
+aqua_rim: 0.8       # the tide line at 1.6 (twice the key; 0.4 = the classic technique's 0.8)
+aqua_bloom: 0.35    # backruns: a 35% chance of a cauliflower per three-reach cell of every wet plane (0.6 with the lip read as polka dots)
+aqua_grain: 0.6     # the heavy pigments settle into the tooth where the wash pooled
+aqua_mark: 1.0      # the fine strokes an even wet mark, no streak, no pickup; off the faces only on structure
+# Set 3 (the review of set 2: sand in the shadows, soft backruns, the darks a mush, speckle on the wetted sheet):
+# the granulation a bell of the lightness, the grain blurred where the sheet is wet, the backrun's hard outer lip,
+# the deep shadows closed into flat masses.
+aqua_grain_mid: 0.75 # the grain's amplitude sin(πL)^1.5 — full in the midtones, gone in the deep darks and the lights
+aqua_grain_wet: 1.0  # on a wetted sheet the fine speckle is diffused, the coarse mottle kept (half on a wash over dry paper)
+aqua_lip: 0.8        # the cauliflower's hard outer edge, a slow fade inward
+aqua_mass: 0.6       # the planes in the lowest 0.3 of the picture's range closed by 0.6% of the sheet into flat masses (faces kept); the drawing holds back in them
+# Set 4 (the review of set 3: a chain of beads along the planes of a wet-on-wet sheet, the deep masses a poster's
+# flat): the tide line scaled by the step of wetness across it, the deep masses graded washes.
+aqua_barrier: 0.8    # no line between two washes laid wet into wet; full against a drier sheet (the rim × the wetness step, by 0.8)
+aqua_body: 0.6       # the dark masses heavier toward the lower edge (18%), 12% of the picture's broad form through them, in 3 bands
+# Set 5 (two reviews): the mass split at a face, the dry-brush edge, the surface tension within a stage, the
+# absolute paper gate, the picture's hierarchy, and the engine's own spatter at the end.
+aqua_cut: 1.0        # a face cuts a hole in a deep mass instead of dropping the mass (the tunnel's one dark was never graded)
+aqua_ragged: 0.6     # the dry-brush edge where a wash meets the bare sheet: tooth peaks above 0.73 skipped over 2 px + half the wet edge
+aqua_tension: 0.7    # two wet washes of different pigments keep a line (the colour step restores the barrier by 0.7)
+aqua_paper: 0.8      # the absolute paper gate: linear luma above 0.8 (about 0.91 sRGB) is never washed or marked (0.7 bleached the pale skies)
+aqua_focus: 0.6      # off the subject (the salient third when none) the planes merge in twos and 60% of the drawing is withheld
+# Set 6 (the review of set 5): the white as an active colour, the line before the wash, the hand loosened off the focus.
+aqua_resist: 1.0     # the masking fluid over the paper gate's lights: no wash, no water, no spill there (the gate alone let the washes' edges run over them)
+aqua_line: 1.0       # the dry graphite skeleton before the washes (set 6: 0.5; set 14: 1.0 — under the lines' resist the pencil keeps its own tone, so it must be dark enough to ring: transmittance 0.35 on a black edge, 0.56 on a faint one)
+aqua_loose: 0.6      # off the focus the wet edge 2.2x wider, on it 0.7x: the ground in loose soft pools, the subject crisp
+# Set 7 (the architecture note: a grid fluid engine): the water and the pigment simulated after every wash plane
+# instead of blurred and outlined; the flow's blur yields to the solver by the key.
+aqua_fluid: 1.0      # the grid solver: the water flows by its level and the relief, evaporates, the pigment travels and settles; mass conserved
+aqua_evap: 1.0       # the puddle's edge dries 5x faster than its interior: the interior feeds the pinned edge, the tide line from the physics
+aqua_weight: 0.8     # the pigment's weight from its chroma: the earths settle early and into the hollows, the dyes travel
+# Set 8 (the review of set 7: the solver serves a parser that cuts the picture into hundreds of isolated polygons —
+# the digital appliqué): the ground flooded as one pool and underpainted, the washes laid wet into wet mingling, the
+# brush's charge laid unevenly and left to the water.
+aqua_under: 1.0      # the ground (off the focus) one pool at 0.95 before the first plane, each hue family one wash at its 70th-percentile lightness, the wet edge 4x
+aqua_pool: 1.0       # a wash laid into the wet runs its edge out to twice its reach; in the solver's flooded pool every pigment mingles across the cells
+aqua_charge: 0.6     # the brush's charge at the shape's body falling off to its edges (1.4x the mean at the body, 0.76x at the far corners), the water with it
+# Set 9 (the review of set 8: the engine serves the parser; semantics as physical walls; the underpainting killing
+# the light; polygons under the charge): THE WATER ENGINE — the parser gives the brush's touches, the water decides
+# the shape; one logic over the whole sheet, the subject only drier; the sessions light to dark by a ceiling. The
+# polygon washes' keys above are not read while it is on (aqua_evap/aqua_weight/aqua_pool steer its drying; the
+# paper gate, the resist, the line and the detail stand).
+aqua_engine: 1.0     # the picture laid by a brush on water: touches on a jittered grid, aqua_planes wet sessions, the brush halving each
+# Set 10 (the review of set 9: the appliqué gone, the structure lost — masts, rigging, the hull's contours blurred by
+# isotropic touches that diffuse every way): the dry-brush gate, connected flow, pigment-induced viscosity.
+aqua_crisp: 0.34     # the last two sessions of six laid dry: no water on the sheet or the brush, no solver, the touch lands through the tooth
+aqua_stroke: 6.0     # a touch on a coherent structure aimed at the ridge, narrowed to its half-width and walked along it up to 6 radii each way
+aqua_visc: 1.0       # the pigment's concentration thickens the water: flow x 1/(1 + 4c); a dense charge holds its edge on a wet sheet
+# Set 11 (the review of set 10: the dry mast a dotted line, the seams a pencil's, the sheet lighter for the tooth's
+# rejects): pressure-based grain, the dry-brush pigment boost, the liner's tip.
+aqua_press: 0.6      # within 0.6 of a touch's radius the tooth's gate is off (solid down the axis), rising to the full dry threshold at the rim
+aqua_dry_boost: 1.0  # the dry share the tooth rejects laid on the pixels that passed (the touch's mass kept, the density at most tripled)
+aqua_tip: 2.0        # a stroke along a structure never narrower than a 2 px radius: the liner's soft line, not a one-pixel scratch
+# Set 12 (the review of set 11: every contour traced, the strokes regular and dense — a digital stylisation): line
+# breaking, dynamic line width, the asymmetric edge.
+aqua_skip: 0.25      # a quarter of the strokes along a structure withheld by the seed's hash: the contour left unsaid in places
+aqua_taper: 0.6      # a stroke's radius falls to 0.4 of itself at its ends (the brush lifting off), full in the middle
+aqua_bias: 0.7       # the pressure's solid share grown by 0.7 of the rest toward the left of the travel, shrunk toward the right
+# Set 13 (the review of set 12: the tapered seams read as beads, the rigging drawn in fluid paint, the sky filled wall
+# to wall, every passage worked alike): the taper's threshold, line and wash decoupled, the parser's economy, the brush run dry.
+aqua_taper_min: 3.0  # a stroke along a structure shorter than 3 brush radii is no stroke: the plain touch instead (no bead)
+aqua_fine: 3.0       # the thin dark structure (narrower than ~12 px at 2048: rigging, seams) drawn by the graphite skeleton, closed out of the engine's picture
+aqua_fade: 0.25      # off the focus a target under 12.5% darker than the paper owes nothing (bare paper), the debt back in full at 25%
+aqua_sweep: 0.8      # a stroke's pigment falls from its middle to 0.2 at its ends: the brush charged where it touched, run dry as it lifts
+# Set 14 (the review of set 13: the sheet worked alike everywhere, the pencil lost under the washes; Zubkovic's wet
+# against dry): the pencil protected, the directional wash, the centre of interest.
+aqua_line_resist: 0.0 # OFF for set 14: along a line the fluid left a light scratch wherever the pencil was lighter than the wash (the mast top, the deck, the sea) — see the cycle note; the key stays for a later set
+aqua_light: 0.8       # at an edge facing the light the touch carries up to 1.8x its water (soft into the paper), at an edge turned from it down to 0.2 (dry, through the tooth)
+aqua_light_dir: 45    # the light from the upper left (0 the left, 90 the top)
+aqua_vignette: 0.7    # from the second session on 70% of the debt let go off the attention ellipse (the focus's centroid, twice its spread): the periphery stays the first tint
+
+# Set 15 (the review of set 14: the pencil faint under the washes, the light not read as light and shade, no
+# wet-against-dry contrast as in Zubkovic): the pencil laid direct, the grain settling against the light, the sheet
+# dried under the focus's accents. Measured first: the brush's deposit landed a fifth of the line's nominal density
+# (transmittance 0.80 for a nominal 0.35) — the footprint's falloff, the tooth, one hit per pixel.
+aqua_line_density: 2.0  # the pencil as graphite, direct: the line's tone (0.35 on a black edge at aqua_line 1.0) squared → 0.12, a hard dark line; 1 = the nominal tone, 3–4 = black
+aqua_grain_dir: 0.6     # the landed pigment weighted 1 ± 0.6 by the tooth's slope against the light (aqua_light_dir 45): the shadow side of every fibre takes more
+aqua_spot_dry: 0.8      # (0.5 fired once on the schooner: the steps across a 100-px brush are ~0.1–0.3 of the range) from the second wet session on, a focus touch on a value step of a fifth of the picture's range or more dries the sheet under it and lands without water: a hard edge over the dried underpainting
+aqua_fine_calm: 0.3     # the fine skeleton only where the closed picture's mean slope over eight radii (as a step across the line's radius) is under 0.3 of the step threshold: the sky and the sails yes, the sea's ripple troughs and the deck's clutter no (measured: sky 0.002–0.005, stays 0.013, seam 0.02, sea 0.05–0.17, deck 0.25 on the closed grey)
+# ---- set 16: the pencil's hand (the marker's even 5-px band gone)
+aqua_line_press: 0.7    # the hand's pressure along every graphite line: the ends fall to a quarter over 8 radii, the body wobbles ±0.2 at 12 radii; radius 0.3+0.7·press, density = press; 0.7 of the way from the even line
+aqua_line_tooth: 0.6    # dry graphite on the relief's peaks: a pixel takes the line where the tooth stands above 0.6·(1 − coverage·press·darkness) — the hard core whole, the edges and the light ends broken into the fibres' tops
+aqua_line_lift: 0.5     # the lead lifts: gaps where a 5-radius noise falls under 0.5·(0.1 + 0.4·run/24 radii), the run since the heading turned 0.35 rad — a long straight stay or waterline breaks in places, a curve hardly
+# ---- set 17 (the touches clustered: aqua_cluster, aqua_overlap) ROLLED BACK by its review: the clusters broke the
+# structure into blots and the techniques stayed alike — the keys are gone from the code
+# ---- set 18: the technique's grip on the engine (why wet-on-wet, wet-on-dry and dry-on-dry looked alike: the technique
+# reached the engine only as the brush's water ×1.2/1/0.5 and the prewet 1/0.7/0, the solver's rates the same for all)
+aqua_tech: 0.8          # wet-on-wet: rim evaporation ×0.2 (the viscosity kept since set 19), reach ×1.8, permeability ×2.6 (tech=1.6,0), brush water ×1.8, silhouette 80% less dry, wet grid ×1.8 wider; wet-on-dry: prewet ×0.2, the dry paper 80% sealed (tech=0,0.8): the pool holds its footprint, hard edge; dry-on-dry: 4 wet sessions → 1, a dry touch off a ridge only in the top 20% of the brush-width contrast
+# ---- set 19 (the review of set 18: the parser blind to the pigment's consistency — it paid the dark debt at a tint's
+# water; a dark mix is a thick mix; wet-on-wet keeps the concentration's viscosity, which is what holds a thick charge)
+aqua_thick: 0.8         # a touch's water × (1 − 0.8 × darkness), the darkness 1 − exp(−the charge's log debt): a tint keeps ~92% of the session's water, a near-black ~36%; the pigment's mass as the debt decides; the clear water before a session untouched
+# ---- set 20 (the review of set 19: the thick charge's rim still diffuses into the clean water as soft blots beside the
+# masts; in the sheet a dense paint's surface tension blocks its boundary; the particles land before they drift; the
+# mark creeps one way): the solver's thick-charge physics, in the header's tech= third to fifth values
+aqua_hold: 0.8          # the flow and the mingling between two cells × exp(−6.4 × the concentration step): a dark charge against clean water passes ~0.2%, alike cells as before
+aqua_sink: 0.6          # a cell's settling rate × (1 + 5.4 × 4c/(1 + 4c)): a thick charge lands up to 6.4× as fast, a tint as before
+aqua_drift: 0.3         # each step a flooded cell gives 1.5% × the wetness below of its suspended pigment to the cell below: the mark creeps down the sheet, the heavy pigments less
+# ── 7.17.0 SET 1: THE SIGHT — the engine's focus toward the semantic saliency map (U²-Net matte, near depth, faces,
+# contrast fused; build with --features aqua-sight). 1 = the map alone.
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

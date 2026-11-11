@@ -1,0 +1,100 @@
+# plakat house recipe — `--medium pointillism`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — pointillism (7.15.0). Set 0 would be the stock profile without a plan.
+# Set 1: the dot as the medium's own tool (dot): the picture laid as a field of small, equal, hard-edged round
+# touches of pure pigment at a Poisson-disc sampling of the sheet — no stroke, no path, no blending on the canvas,
+# the mixing in the eye; the ladder's passes not laid, the dots on the bare white ground. The divisionist palette
+# (no black, no earths); each dot's colour the picture's mean over its reach, separated into ONE pure pigment by
+# the additive mix (dot_pure); the spacing closed in the darks (dot_dense) and where the picture is busy (dot_busy).
+medium: pointillism
+palette: divisionist
+style: legible
+
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.0
+liner: 0.0
+hotspot: 0.0
+
+dry: 1.0
+pickup: 0.0
+bleed: 0.0
+wash_in: 0.0
+wet_cap: 1.0
+scumble: 0.0
+skip: 0.0
+deplete: 1.0
+
+turbulence: 0
+accent: 0.0
+loose: 0.0
+vary: 0.0
+comma: 0.0
+body_vary: 0.0
+broken: 0.0
+shade: 0.0
+imprimatura: 0.0
+
+sfumato: 0.0
+glaze: 0.0
+glaze_pass: 0.0
+lost: 0.0
+aerial: 0.0
+crest: 0.0
+sink: 0.0
+film: 0.0
+split: 0.0
+tint: 0.0
+twist: 0.0
+knife: 0.0
+skim: 0.0
+hiding: 1.0       # each pigment covers by its own hiding power: a dot is a dot
+
+# Set 1
+dot: 1.0          # THE DOT AS THE TOOL: the picture a Poisson-disc field of equal round touches, no ladder
+dot_size: 10      # the dot's diameter, px (the sheets are 2048²): every dot the same
+dot_space: 0.65   # the spacing in diameters: the dots overlap a little (set 2: 0.7 → 0.65, the field closed)
+dot_dense: 0.3    # the spacing closed in the darks (set 2: 0.5 → 0.3 — the lights were left too open)
+dot_busy: 0.5     # the spacing closed up to a quarter where the picture is busy
+dot_pure: 1.0     # every dot ONE pure pigment, drawn from the colour's additive separation
+dot_ground: 0.0   # no underpainting: the dots on the bare white ground
+# Set 2 (the review of set 1: the faces lost in a fixed dot, the light passages a scatter diagram, the gradients
+# copied as averaged colour): the dot sized by the picture's detail (dot_edge), the gaps filled (dot_fill), the
+# pure colours alternated by error diffusion (dot_diffuse), the dot drawn out along the contours (dot_flow).
+dot_edge: 0.6     # the dot 1.3× on the flat, 0.64× at the sharpest edge (set 3: 1.0 → 0.6 — the fine field takes the detail)
+dot_fill: 1.0     # every gap the Poisson field leaves takes a dot of 0.6 the local size: the ground covered
+dot_diffuse: 0.8  # the pure dots chosen by error diffusion along serpentine bands: yellow, red, yellow — not clumps
+dot_flow: 0.7     # the dot an ellipse along the structure tensor's direction, to 1.7:1 on a clean edge
+# Set 3 (the review of set 2: the shadows a screen of one violet, the sky's white dots lost on the white ground,
+# the detail wanting a finer field without halftoning the whole): the darks shared among the palette's dark
+# pigments with a charge on repetition (dot_shadow), no pure white on the flat passages (dot_white), a second fine
+# field of small dots at the sharp edges only, laid last (dot_fine).
+dot_shadow: 1.0   # a shadow dot may take any dark (violet, ultramarine, rose, viridian, red); repeating one is charged
+dot_white: 0.6    # on the flat (sky, calm water) 60% of the would-be white dots go lemon / cerulean / rose instead
+dot_fine: 1.0     # the sharp edges (the gradient's top tenth, widened by a radius) take dots of 0.4 the size at 0.4 the spacing
+# Set 4 (the review of set 3: the ultramarine idle in the shadows, the 16-gon's specks, the sky's white dots lost on
+# the white ground): the pigment chosen by the eye's distance in CIELAB, lightness first (dot_lab), the fill's
+# coverage read on the dot's true ellipse shrunk a tenth (dot_lap), the ground toned to the complement of the
+# picture's mean (dot_tone).
+dot_lab: 1.0      # in the darks, the nearest pigment by L* at full weight and chroma at a quarter: the ultramarine enters
+dot_lap: 1.0      # the gap scan sees the ellipse shrunk by 10%: the fillers overlap, no specks
+dot_tone: 0.6     # a light ground in the complement of the mean (an ochre under the schooner's blue): the white dots ring
+
+impasto: 0.15     # a dot stands off nothing (the fill lays no height); the relight idles
+ridges: 0.0
+impasto_map: 0.0
+sheen: 0.1
+gloss: 0.0
+sag: 0.0
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

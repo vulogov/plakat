@@ -8,6 +8,56 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.19.0 — The art director with eyes — the picture read by the vision models, the medium's house recipe, the plan written with every dial's reason
+
+`--plan auto` wrote the structure of a painting (some fifteen keys) and left every dial of the medium to its
+stock profile; the review cycles settled a **house recipe** per medium — the plan the reviews accepted, fifty to
+a hundred and thirty keys — and the rule that a medium is tuned in its plan, never in the source. This cycle
+puts the two together: an **art director** that reads the picture with the crate's own vision models, takes
+the medium's house recipe, and writes the whole plan with every adjustment's reason beside it. The painter is
+untouched; every run without the flag is byte-identical.
+
+### `plakat paint`
+
+- **`paint from <image> --medium M --make-plan [path]`**: the director composes the plan, writes it as
+  `<out>.plan.hjson` (or to the path), prints its notes and then reads it exactly as `--plan <file>` does — the
+  report names it, a replay reads it. `--plan` and `--make-plan` exclude each other.
+  **`paint plan <image> --medium M --director`** writes the plan alone.
+- **Three layers, three sections of the file.** The structure (`plan_from`, as `--plan auto` writes it); the
+  **house recipe** (`assets/recipes/<medium>.hjson`, eighteen media, shipped as plans, not code — the v9 plans
+  of the verification set for the oils, acrylic, gouache and tempera, the knife's v7, the v5 plans of the
+  drawing and water media; a key the recipe names is a dial the medium uses, so the director moves no dial the
+  medium does not use and turns on none the recipe holds at 0); and **the picture's adjustments** — the rules,
+  each universal, each line written with its fact and measurement, the recipe's line a rule moved kept as a
+  comment (the parser refuses a duplicate key).
+- **The facts** (`SceneFacts`): from the pixels — the key, the value spread, the dark and light shares, the calm
+  and busy shares by the local σ over 9×9 (the review cycles' own measure, calibrated on the seven verification
+  pictures), mean chroma and warmth, the points of light on a dark ground (the point pass's own detector), the
+  structure; from the models, each optional and each saying in the header whether it ran — the faces and their
+  share (SCRFD), the subject's share and centre (U²-Net), the far ground's share (Depth-Anything-V2), the genre
+  (CLIP zero-shot: portrait, figure, landscape, townscape, still life, interior, animal) and the shares of sky,
+  water, foliage and stone over a grid of crops. `PLAKAT_PAINT_DIRECTOR_PIXELS=1` reads the pixel facts only.
+- **The rules**: the key measured, not inherited; a nocturne deepens the shadow floor, keeps the points of light
+  and cuts the cavity (on the face too); a high key lifts the floor and reserves the paper; a flat picture
+  raises the lost edges, the aerial fall-off and the soft water and cuts the microcontrast; a busy one raises
+  the microcontrast, the adaptive brush and the crisp water; calm fields raise the settling and cut the collision
+  and the fray; a face softens the cavity, raises the periphery, cuts the wet drag (it blurs the modelling) and
+  loosens a close portrait; a compact subject raises the periphery; the far ground raises the aerial fall-off,
+  the nib's depth and the water's vignette; a near-monochrome picture takes eight pigments, a wide one twenty;
+  water raises the glints and the smoothing, foliage the fray and the tufts, stone and a townscape the chisel
+  and the adaptive brush; a still life, an interior, an animal, a landscape each their own.
+- **The model pass** (`--make-plan-model <provider>`, `paint plan --director --model <provider>`): a vision model
+  (Gemini or a DeepSeek-compatible endpoint; the local LLM has no vision and the pass is skipped with a message)
+  is shown the picture, the facts, the composed plan and the glossary of the dials it may move
+  (`assets/prompts/paint_director.md`), answers as insights and recommendations, and its lines pass a **gate**:
+  only dials the plan names, never the structure, never a key of the face or the eyes, values clamped; written
+  as their own section with the provider named, the refused lines as comments with the reason; a hosted
+  provider is disclosed.
+- Documented in `Documentation/PAINT_PLAN.md` (the layers, the facts and the dials they move, the gate).
+  Fourteen tests: every medium's recipe parses with no key twice, the facts of synthetic pictures, each rule
+  group, a named palette over the recipe's, the gate, the prompt's pinned rules; and an ignored calibration test
+  that prints real pictures' facts.
+
 ## What's new in 7.18.0 — The painted surface under review — the points of light, the lost microcontrast, the relief's own shadow, the brush's morphology and wet drag, the painting as a material
 
 A cycle of nine reviews of the opaque media on one verification set (seven pictures — a Riga street, a
