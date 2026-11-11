@@ -1,0 +1,60 @@
+# plakat house recipe — `--medium charcoal`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — charcoal (7.8.0). Set 1: the pastel's dry-chalk machinery (chalk, side, finger)
+# borrowed through the plan, in a monochrome box. Set 3: the stick does not run out along the mark. Set 4: the light is the paper, the eraser lifts, the touch follows the value, the darkest share one velvet black. Set 5: the light end is the paper, the flats in calm sweeps, the darks rubbed with a stump. Set 6: the dust in the hollows, the stump held at a contrast and soft at a face, the sweeps on an arc, the lights' knee.
+medium: charcoal
+palette: sumi
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+min_brush: 3.0
+dry: 1.0
+pickup: 0.0
+bleed: 0.0
+wash_in: 0.0
+wet_cap: 0.2
+scumble: 0.0      # no dry drag at a thinner charge: the paper's residual charge is solved for the mark as laid
+deplete: 0.3      # a stick of charcoal barely runs out along a mark: at the pastel's 1.5 a black mark faded to a grey within its length, and on a white sheet a black coat stayed a light grey (the tunnel: 98 for a target of 8)
+granulate: 0.0
+contour: 0.0      # no line pass over the edges: the medium's own 0.3 drew every hair, ripple and tile as a black worm of a line (a plan key from 7.8.0)
+chalk: 1.0
+side: 0.5
+blend: 0.6
+skin: 0.5
+sfumato: 0.7
+small: 400
+small_min: 100
+anchor: 0.15
+trim: 0.5
+hatch: 0.6
+cross: 30
+span: 0.6
+edge: 0.6
+umbra: 1.0
+solid: 1.0
+loose: 0.15
+lost: 0.0
+paper: 1.0        # the light is the paper: every mark in the black alone, charged for the residual over what is there, nothing laid where the sheet is already as dark as asked (the sumi box painted the lights in titanium white — a grey oil)
+erase: 0.6        # the kneaded eraser: where the sheet went darker than the picture's lights ask, the mark is a lift taking the film back toward the value
+touch: 0.6        # the pressure follows the value: a light tone a light touch on the raised grain, a dark one a hard press into the hollows
+velvet: 0.08      # the darkest twelfth of the range one velvet black at a full press (the tunnel's dark was a grey porridge)
+paper_top: 1.0    # the picture's light end is the paper: the elder's near-white ground stays bare paper (it was a grain of grey that stopped at a line where the photograph's ground crossed the tolerance)
+sweep: 0.9        # a flat passage off the figures turned onto calm horizontal side-of-the-stick sweeps (the lion's sky was hatched along the whirls of a flat field's flow)
+stump: 0.5        # after the finest pass the dark masses rubbed with a stump: the paper's white specks in the darks filled with the charcoal around them
+dust: 0.85        # the charcoal's dust settles into the paper's hollows: a pressed half-tone fills them (the hollows below the stick's reach stayed white under every layer — specks across the blanket and the snow)
+stump_edge: 0.6   # the stump holds where the perceived local contrast stands — a lapel, a sleeve against the dark kept
+stump_feather: 1.0 # the stump fades toward a face and the hair, and crosses a lost edge of the silhouette (a found one stops it)
+sweep_wave: 4.0   # the sweeps turned by a slow wave of up to 4° — an arm's arc, not a ruler
+paper_knee: 0.5   # the top of the curve bent toward the paper in a light picture: a broad light mass (snow) is paper with a touch of grain
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

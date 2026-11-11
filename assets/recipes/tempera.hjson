@@ -1,0 +1,80 @@
+# plakat house recipe — `--medium tempera`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — TEMPERA (7.6.0), the recommended settings for `--medium tempera`.
+# Every key below overrides the medium's own default; a key left out keeps it. Tune here, not in the source.
+medium: tempera
+palette: image
+style: legible
+
+# ── The painting from scratch (RFC PAINT-1): the face and figure tiers, found in the picture ──
+new: true
+armature: 768     # the background tier read at 768 px: its finest brushes 4 and 2 px (at 384 the ground stopped at 7 px — coarse veils in a sky)
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0   # the dark masses committed: a subject's black is solid paint (the calm ground gives half of the extra back)
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.35
+hotspot: 0.2      # a blown highlight barely re-modelled into a dome — a star is a crisp dot, not a ring
+
+# ── The layers: egg tempera dries in seconds — every mark a dry one on a dry one ──
+dry: 1.0          # the panel dries fully between passes — nothing beneath is picked up or stirred
+wash_in: 0.15     # the block-in a wash over the white gesso, nearly full: 1 − 0.7·wash_in of the charge — the panel covered before the hatching
+wet_cap: 0.3      # the wettest a later mark goes on — tempera never blends, it hatches
+deplete: 1.2      # a mark's charge runs out along it a little
+hatch: 0.8        # the restating marks hatch lines: straight, one width end to end, longer, dry, semi-opaque (1 − 0.3·hatch of the charge), each pass crossed 45° off the last; grows with the ladder from its middle, the broad restatements masses along the form, the finest pass all hatching
+verdaccio: 0.6    # the flesh underpainted in the greenish grey (terre verte, white, ochre, black): the block-in and the first restatement on a face, the half-tones pulled to it and thinned over it
+dishes: 5         # Cennini's dishes: each colour mixed in advance in this many value steps between the picture's darkest and lightest, every mark (the block-in's flat local tones too) in the nearest one; the veils keep the gradation
+lights: 0.5       # on the finest pass, on the subject's top values: this share of the marks hatched in toward white, narrower and thinner
+cross: 15         # degrees: the hatching off the FORM (the local flow) by this step a hatched pass — along it, then +15°, −30°, +45° — a net that wraps the volume, not one grid turned 45° a pass
+dither: 0.7       # the dishes drawn between the two nearest by the value's fraction (not the block-in): the bands between the steps break into a mixture of marks of both
+solid: 0.7        # the hatch's charge keyed to the value: a veil (1 − 0.3·hatch) in the picture's lightest value, covering (up to 1 + 0.3·hatch) in its darkest — the deep shadows built solid in layers
+flesh: 0.8        # the verdaccio held to the warm colours: taken away by this share where the picture's own colour is cold or neutral (CIELAB a*, b*)
+span: 0.6         # the hatch's length by how busy the form is within the brush's reach: up to 1 + 0.5·span on a flat passage (sky, wall), down to 1 − 0.5·span on a face, a hand, small folds
+edge: 0.7         # near a plain contour the crossing turn is taken back toward the edge's own direction by this share and the mark stops sooner on a change of colour — the hatching parallel to the silhouette, no fringe across it
+glint: 0.6        # the pure lights set last: on the finer half of the ladder, in the picture's top twentieth of values, the mark lifted toward white (0.4·glint), narrower (1 − 0.3·glint), dry, the full covering charge (1 + 0.3·glint), standing thicker
+smooth: 0.9       # the calm passages (a sky, a wall, still water) built up in soft veils, not hatched: by this share of the passage's flatness the dishes relax to the picture's own gradation (the block-in's too), the hatching gives way, the mark goes on wetter at 1 − 0.6·calm of its charge — the glints stay crisp dots, the contours (edge) sharp
+bole: 1.0         # the imprimatura by LOCAL SHADOW tone: before the block-in the sheet is laid thin with a continuous field of the shadow tone (cells of a 32nd of the short side, their tones smoothed and interpolated between them) of the ground's mean colour pulled this far toward the mean of each cell's darker quarter — a gap between broad marks shows the local shadow tone, not a flat brown, and the block-in's marks mix toward the tone they lie on (stage ground in the score); below 1 the flat mean colour is mixed in
+ramp: 0.7         # a mark's colour FOLLOWS the picture along its path: the charge drifts from the seed's colour toward the picture's colour at the mark's end by this share — the broad passes model the gradient instead of laying flat planks; fades as the hatching takes over, off the glazes, lost edges, hair, accents, glints
+umbra: 1.0        # the shadow is one modelled mass: within this share of the darkest dish's interval the tone is laid as it is, continuous (a night's whole foreground fell in the first of five steps and was a chequer of black and dark-grey planks); the dishes step the lights above it; off the subject the shadow mass is laid calm (as smooth lays a sky) however busy the picture is there
+
+# ── The hand: the short hatched mark ──
+turbulence: 4     # a slight turn of the flow by a low noise (halved on a face)
+loose: 0.1        # off the subject: barely longer and wider on the broad passes — the panel painter's hand is even
+shade: 0.1        # in the shadows: a mark lands only where the panel is plainly wrong, the marks calmer
+vary: 0.2         # a Gaussian spread of the mark's length
+body_vary: 0.1    # a slight spread of each mark's body
+broken: 0.05      # barely any drift of hue from mark to mark — the dishes are mixed once (0.2 made a chequer of brown and navy in a night sky)
+
+# ── The skin and the seams ──
+glaze: 0.3        # along the subject's silhouette the finest pass lays thin overlaps that may cross it
+glaze_pass: 0.0   # the velatura pass after the ladder is OFF: its mid-size flat marks were laid over the finished dark masses and were the planks no veil hid (a night's foreground, the dab structure under the sky); the ladder's own veils are the tempera's glazing, the silhouette glaze (glaze) stays
+film: 0.6         # the veils lay this share of their paint as a translucent film over the dried layer
+lost: 0.3         # along the silhouette in shadow the edge is lost
+aerial: 0.3       # the lost edges by depth
+twist: 0.3        # the brush turned along the hair strands
+hiding: 0.0       # the tempera's pigments ground in egg cover alike: a dark is built in layers, not left a lake over the gesso
+
+# ── The body of the paint: tempera cannot be laid thick — a smooth matte skin on the gesso ──
+impasto: 0.05
+ridges: 0.0
+impasto_map: 0.0
+sheen: 0.05
+
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)
+
+settle: 0.6        # v6: the egg tempera settles into the gesso's grain (sheen 0.05: matte, no gloss_map)
+fray: 0.3          # v6: the dry hatching's tails fray
+periphery: 0.4     # v6: the corners left unfinished
+cavity: 0.3
+chisel: 0.4
+haste: 0.5
+sideload: 0.3
+chisel_twist: 0.5
+periphery_dry: 0.4

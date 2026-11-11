@@ -213,6 +213,14 @@ pub struct PlanArgs {
     /// Plan a NEW painting (from scratch, RFC §1.1): coarse armature tiers, `new: true` in the plan.
     #[arg(long = "new", num_args = 0..=1, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
     pub new_painting: bool,
+    /// THE ART DIRECTOR WITH EYES (7.19.0): the medium's house recipe adjusted to the picture's measured facts
+    /// (see `paint from --make-plan`) — the full plan, every dial with its reason, not the structure alone.
+    #[arg(long)]
+    pub director: bool,
+    /// With `--director`: a vision model (`gemini` / `deepseek` / `auto`) sees the picture and proposes dial lines,
+    /// gated and written as their own section (a hosted provider: the picture leaves this machine).
+    #[arg(long, value_name = "PROVIDER")]
+    pub model: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1004,6 +1012,20 @@ pub struct FromArgs {
     /// path to a `plan.hjson` (from `plakat paint plan`) to paint from a saved/edited plan. Explicit flags win.
     #[arg(long)]
     pub plan: Option<String>,
+    /// THE ART DIRECTOR WITH EYES (7.19.0): write the plan FIRST — the medium's house recipe
+    /// (`assets/recipes/<medium>.hjson`, the plan the review cycles accepted) adjusted to THIS picture by its
+    /// measured facts (key, contrast, calm and busy passages, chroma, points of light; the faces by SCRFD, the
+    /// subject by U²-Net, the far ground by Depth-Anything, the genre and the stuff — sky, water, foliage, stone —
+    /// by CLIP), every adjustment with its reason — then paint from it as from any `--plan <file>`. Optional
+    /// value: where to write the plan (default `<out>.plan.hjson`). Explicit flags still win over the plan.
+    /// `PLAKAT_PAINT_DIRECTOR_PIXELS=1` reads the pixel facts only (no vision model runs).
+    #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PATH", conflicts_with = "plan")]
+    pub make_plan: Option<String>,
+    /// With `--make-plan`: a vision model (`gemini` / `deepseek` / `auto`) SEES the picture, the facts, the plan and
+    /// the dial glossary and proposes dial lines, gated like the rules (the medium's dials only, never the structure
+    /// or the faces, values clamped) and written as their own section. A hosted provider: the picture leaves this machine.
+    #[arg(long, value_name = "PROVIDER", requires = "make_plan")]
+    pub make_plan_model: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1747,21 +1769,191 @@ async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str, from
 }
 
 async fn run_plan(a: PlanArgs) -> Result<()> {
-    let analysis = analyze_image(&a.input, &a.medium, &a.palette, a.new_painting).await?;
-    let plan = crate::paint::plan::plan_from(&analysis);
-    let text = plan.to_hjson();
+    let (text, notes) = if a.director || a.model.is_some() {
+        let d = make_plan(&a.input, &a.medium, &a.palette, a.new_painting, a.model.as_deref()).await?;
+        (d.text, d.notes)
+    } else {
+        let analysis = analyze_image(&a.input, &a.medium, &a.palette, a.new_painting).await?;
+        let plan = crate::paint::plan::plan_from(&analysis);
+        (plan.to_hjson(), plan.notes)
+    };
     match a.out.as_deref() {
         Some(p) if p.as_os_str() == "-" => print!("{text}"),
         _ => {
             let out = a.out.unwrap_or_else(|| a.input.with_extension("plan.hjson"));
             std::fs::write(&out, &text).with_context(|| format!("writing {}", out.display()))?;
             println!("{}  painting plan → {}", style("✓").green(), out.display());
-            for n in &plan.notes {
+            for n in &notes {
                 println!("{}  {n}", style("·").dim());
             }
         }
     }
     Ok(())
+}
+
+/// THE DIRECTOR WITH EYES: the picture's facts for `crate::paint::director` — the pixel facts on a reduced copy
+/// (every one a share or a density), the structure at the picture's own size, and each vision model in turn,
+/// none of them fatal: a model that cannot run leaves its fact unknown and says so in the plan's header.
+/// `PLAKAT_PAINT_DIRECTOR_PIXELS=1` skips the models. Returns the v1 analysis too (one face pass for both).
+async fn analyze_for_director(path: &std::path::Path, medium: &str, palette: &str, from_scratch: bool) -> Result<(crate::paint::plan::Analysis, crate::paint::director::SceneFacts)> {
+    use crate::paint::director::{stuff_shares, Genre, SceneFacts, STUFF_LABELS};
+    let img = image::open(path).with_context(|| format!("opening {}", path.display()))?.to_rgb8();
+    let (w, h) = img.dimensions();
+    let scale = (1024.0 / w.max(h) as f32).min(1.0);
+    let (sw, sh) = (((w as f32 * scale).round() as u32).max(1), ((h as f32 * scale).round() as u32).max(1));
+    let small = if scale < 1.0 { image::imageops::resize(&img, sw, sh, image::imageops::FilterType::Triangle) } else { img.clone() };
+    let mut f = SceneFacts::from_pixels(&small);
+    f.width = w;
+    f.height = h;
+    f.structure = crate::paint::plan::structure_of(&img);
+    let pixels_only = std::env::var_os("PLAKAT_PAINT_DIRECTOR_PIXELS").is_some();
+    // The faces, once, for the analysis and the facts.
+    let face = if pixels_only { None } else { build_face_mask_ext(path, sw, sh).await.unwrap_or(None) };
+    if let Some((mask, _)) = &face {
+        f.faces = 1;
+        f.face_share = mask.iter().sum::<f32>() / mask.len().max(1) as f32;
+        f.sources.push("faces: SCRFD".into());
+    } else if pixels_only {
+        f.sources.push("faces: not looked for (PLAKAT_PAINT_DIRECTOR_PIXELS)".into());
+    } else {
+        f.sources.push("faces: SCRFD found none".into());
+    }
+    let surface_white = crate::paint::medium::MediumProfile::by_name(medium).map(|m| m.white_source == crate::paint::medium::WhiteSource::Surface).unwrap_or(false);
+    let analysis = crate::paint::plan::Analysis {
+        faces: f.faces,
+        luma_stddev: luma_stddev(&img),
+        luma_mean: img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0).sum::<f32>() / (w * h).max(1) as f32,
+        medium: medium.to_string(),
+        palette: palette.to_string(),
+        short_side: w.min(h),
+        long_side: w.max(h),
+        surface_white,
+        structure: f.structure,
+        from_scratch,
+    };
+    if pixels_only {
+        f.sources.push("subject, depth, CLIP: not run (PLAKAT_PAINT_DIRECTOR_PIXELS)".into());
+        return Ok((analysis, f));
+    }
+    let device = match crate::device::select("auto") {
+        Ok(d) => d,
+        Err(e) => {
+            f.sources.push(format!("subject, depth, CLIP: not run (no device: {e})"));
+            return Ok((analysis, f));
+        }
+    };
+    let n = (sw as usize * sh as usize).max(1) as f32;
+    // THE SUBJECT: U²-Net's matte — its share of the sheet and its centre.
+    match crate::pipelines::matting::Matter::load(&device).await {
+        Ok(matter) => match matter.matte(&small) {
+            Ok(alpha) => {
+                let (mut cnt, mut sx, mut sy) = (0usize, 0f64, 0f64);
+                for (x, y, p) in alpha.enumerate_pixels() {
+                    if p.0[0] > 127 {
+                        cnt += 1;
+                        sx += x as f64;
+                        sy += y as f64;
+                    }
+                }
+                f.subject_share = Some(cnt as f32 / n);
+                f.subject_centre = (cnt > 0).then(|| ((sx / cnt as f64 / sw as f64) as f32, (sy / cnt as f64 / sh as f64) as f32));
+                f.sources.push("subject: U²-Net matte".into());
+            }
+            Err(e) => f.sources.push(format!("subject: the matter failed ({e})")),
+        },
+        Err(e) => f.sources.push(format!("subject: the matter did not load ({e})")),
+    }
+    // THE DEPTH: the far ground's share.
+    match crate::pipelines::depth::DepthPipeline::load(device.clone()).await {
+        Ok(depth) => match depth.depth_map(path, sw, sh) {
+            Ok(d) => {
+                f.far_share = Some(d.iter().filter(|v| **v < 0.35).count() as f32 / d.len().max(1) as f32);
+                f.sources.push("depth: Depth-Anything-V2 small".into());
+            }
+            Err(e) => f.sources.push(format!("depth: failed ({e})")),
+        },
+        Err(e) => f.sources.push(format!("depth: did not load ({e})")),
+    }
+    // THE GENRE AND THE STUFF: CLIP's zero-shot over the sheet, then over a coarse grid of crops.
+    match crate::pipelines::clip_embed::ClipEmbedder::load(&device).await {
+        Ok(clip) => {
+            let mut probe = || -> Result<()> {
+                let whole = clip.embed_image(path)?;
+                let scores: Vec<(Genre, f32)> = Genre::LABELS.iter().map(|(g, t)| clip.embed_text(t).map(|e| (*g, crate::pipelines::clip_embed::cosine(&whole, &e)))).collect::<Result<_>>()?;
+                f.genre = Genre::from_scores(&scores);
+                let texts: Vec<Vec<f32>> = STUFF_LABELS.iter().map(|(_, t)| clip.embed_text(&format!("a photo of {t}"))).collect::<Result<_>>()?;
+                let side = sw.max(sh) as f32;
+                let crop = (side / 4.0).round().max(32.0) as u32;
+                let stride = (side / 6.0).round().max(16.0) as u32;
+                let tmp = tempfile::Builder::new().prefix("plakat-paint-director-").suffix(".png").tempfile().context("director scratch file")?;
+                let (mut acc, mut cnt) = ([0f32; 4], 0usize);
+                let mut y0 = 0u32;
+                while y0 + crop / 2 < sh {
+                    let mut x0 = 0u32;
+                    while x0 + crop / 2 < sw {
+                        let (cw, ch) = (crop.min(sw - x0), crop.min(sh - y0));
+                        image::imageops::crop_imm(&small, x0, y0, cw, ch).to_image().save(tmp.path()).context("saving a director crop")?;
+                        let e = clip.embed_image(tmp.path())?;
+                        let cos: Vec<f32> = texts.iter().map(|t| crate::pipelines::clip_embed::cosine(&e, t)).collect();
+                        let (sky, water, fol, stone) = stuff_shares(&cos);
+                        acc[0] += sky;
+                        acc[1] += water;
+                        acc[2] += fol;
+                        acc[3] += stone;
+                        cnt += 1;
+                        x0 += stride;
+                    }
+                    y0 += stride;
+                }
+                if cnt > 0 {
+                    f.sky_share = Some(acc[0] / cnt as f32);
+                    f.water_share = Some(acc[1] / cnt as f32);
+                    f.foliage_share = Some(acc[2] / cnt as f32);
+                    f.stone_share = Some(acc[3] / cnt as f32);
+                }
+                f.sources.push(format!("genre and stuff: CLIP ViT-L/14 over the sheet and {cnt} crops"));
+                Ok(())
+            };
+            if let Err(e) = probe() {
+                f.sources.push(format!("CLIP: failed ({e})"));
+            }
+        }
+        Err(e) => f.sources.push(format!("CLIP: did not load ({e})")),
+    }
+    Ok((analysis, f))
+}
+
+/// THE DIRECTOR WITH EYES: the plan for `input` in `medium` — the facts, the house recipe, the rules, and the
+/// model's pass when a provider is named (the picture shown to it; its lines gated).
+async fn make_plan(input: &std::path::Path, medium: &str, palette: &str, from_scratch: bool, model: Option<&str>) -> Result<crate::paint::director::Directed> {
+    if crate::paint::medium::MediumProfile::by_name(medium).is_none() {
+        anyhow::bail!("unknown medium {medium:?} — one of {}", crate::paint::medium::EXECUTABLE.join(", "));
+    }
+    println!("{}  director: reading the picture for {medium}…", style("◆").cyan());
+    let (analysis, facts) = analyze_for_director(input, medium, palette, from_scratch).await?;
+    for l in facts.describe() {
+        println!("{}  {l}", style("·").dim());
+    }
+    let source = input.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| input.display().to_string());
+    let mut d = crate::paint::director::direct(&analysis, &facts, &source)?;
+    if let Some(provider) = model {
+        let label = crate::prompt::vision::resolve_vision_provider(provider);
+        if label == "gemini" || label == "deepseek" {
+            println!("{}  director: showing the picture and the plan to {label} (a hosted vision provider — the picture leaves this machine)", style("·").yellow());
+        } else {
+            println!("{}  director: model pass via {label}", style("·").dim());
+        }
+        let brief = crate::paint::director::model_brief(&d, &facts, medium);
+        match crate::prompt::vision::describe_image(provider, input, &brief).await {
+            Ok(reply) => {
+                let (ok, no) = crate::paint::director::accept_model_lines(&reply, &d);
+                println!("{}  director: the model moved {} dial(s); {} line(s) refused by the gate", style("·").dim(), ok.len(), no.len());
+                d = crate::paint::director::apply_model(&d, &label, &ok, &no)?;
+            }
+            Err(e) => println!("{}  director: the model pass failed: {e:#} — the plan stands without it", style("·").yellow()),
+        }
+    }
+    Ok(d)
 }
 
 fn run_new(a: NewArgs) -> Result<()> {
@@ -2525,6 +2717,24 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let mut plan_path: Option<std::path::PathBuf> = None;
     // The plan's LAYER dials (see `PaintPlan::dry`…), applied over the medium's own once the medium is set.
     let mut layer_plan: Option<crate::paint::plan::PaintPlan> = None;
+    // THE DIRECTOR WITH EYES (`--make-plan`): the plan written first — the medium's house recipe adjusted to the
+    // picture's facts — beside the output, then read as any `--plan <file>` (so the report names it, a replay
+    // reads it, and the painter is untouched).
+    if let Some(dest) = a.make_plan.clone() {
+        let medium = a.medium.clone().unwrap_or_else(|| "watercolour".into());
+        let palette = if a.palette == "zorn" { "image" } else { a.palette.as_str() };
+        let d = make_plan(&a.input, &medium, palette, a.new_painting, a.make_plan_model.as_deref()).await?;
+        let path = if dest.is_empty() { a.out.with_extension("plan.hjson") } else { PathBuf::from(dest) };
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&path, &d.text).with_context(|| format!("writing the plan {}", path.display()))?;
+        println!("{}  plan (director) → {}", style("◆").cyan(), path.display());
+        for n in &d.notes {
+            println!("{}  {n}", style("·").dim());
+        }
+        a.plan = Some(path.to_string_lossy().to_string());
+    }
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;

@@ -1,0 +1,220 @@
+# plakat house recipe — `--medium ink-wash`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — ink-wash (7.13.0). Set 0: the stock ink-wash profile, no plan.
+# Set 1: ink AND wash — the ladder laid twice (nib_wash): first the washes of the japanese-ink plan (the nib
+# and the hatching off), the washes carrying eight tenths of the tone; then, over the dried sheet, the pens of the
+# pen-ink plan (three nibs in layers, each where the tone is dark enough for it, the paper kept in the shadows, the
+# hatch along the form stopped at the contours), the bone a pen line, the pen's accents after it.
+# Set 2: the washes faithful to the picture's masses — the empty space of sumi-e cut back (ma, yohaku, ma_focus,
+# bokashi, bone_fade); the pens' hatching held to the darks, the half-tones left to the washes (nib_wash_dark); the
+# people drawn by the pen as in pen-ink (nib_people, nib_figure, nib_value, nib_fine_face, nib_close, nib_rim).
+# Set 3 ("the contours read but there is no detail at all"): the wash stops short of the picture's own structure and
+# the finer pens draw it (nib_wash_detail); the bone traced from the picture, not the smoothed armature (nib_wash_line),
+# and no longer simplified as sumi-e's (bone_ryaku, bone_dot, bone_scatter, bone_end off, bone_wind and bone_coherence low).
+# Set 4 (review: a contour sketch with directional hatching, not ink and wash): the washes no longer cut at every
+# contour (the pens' clip had reached them — the "washes" of sets 1-3 were heaps of dabs); the washes from the picture's
+# low band (nib_wash_soft) carrying the whole tone, wetter and bled; the pens' hatching only in the deepest darks;
+# the detail only on lines, not on texture (nib_wash_detail); the line swelling with its edge (nib_wash_swell); the
+# far planes soft light washes, the line fading into them (nib_wash_air, by the depth map).
+# Set 5 (review: the sheet 0.04-0.18 paler than the picture, the flat darks hatched): the washes' density raised
+# by a gamma before the bleed spreads them (nib_wash_gamma, γ 1.25); the pens' hatching only where a dark has an
+# edge or a texture (nib_wash_flat); the detail's hatching off (nib_wash_detail 0: its straight strokes across a
+# cliff's strata were the parasitic hatching) — the detail is the line's, traced from the picture.
+# Set 6 (review: the gamma's power pulled every dark to one black, the sheet still pale): the gamma replaced by a
+# contrast S-curve on the eye's scale (nib_wash_scurve, a 2.0); the deepening held back where the picture is busy by
+# its local variance (nib_wash_vary); the ink's mass kept across the bleed — each wash after the block-in deepened by
+# the measured loss of darkness against the picture (nib_wash_mass).
+# Set 7 (review: the ink from the dark hair run over the light faces, the mass not given back where it was lost):
+# a wash held at the picture's hard edges toward a light by the ink's conductance e^(-|grad I|/K) (nib_wash_hold);
+# the ink's loss measured only where the sheet is still lighter than the picture (nib_wash_debt).
+# Set 8 (review: halos round the figures, the figures torn, the ruins a fractal noise): the hold tested on the mark's
+# line only (at its sides too, a mark beside a figure was cut by its silhouette — the halo); the gradient on the picture
+# smoothed over a 400th of the sheet, the conductance Tukey's biweight; held everywhere the ruins were the dab heap
+# again (0.69) — the figures only stays. The mass kept as a gamma of the measured loss on the eye's scale, not a
+# scaling of the depth clamped to black (that was what blackened the lit faces, not the S-curve).
+# Set 9 (review: the figures dark blots, the foregrounds one mass, the mass conservation pooling the ink to black in
+# every closed contour): the hard conservation of mass dropped (nib_wash_mass, nib_wash_debt, and the S-curve, off);
+# the washes left light as they are laid and the sheet corrected at output by a global tone mapping — the mid-tones
+# pulled until the sheet's mean meets the picture's (nib_wash_tone); the dark register laid by a separate dry-brush
+# pass that hardly spreads — the washes' fine passes reading the picture itself, below 0.45 only (nib_wash_dry);
+# the sheet's capacity — a wash never darker than the picture's own value, no mark where the sheet has reached it
+# (nib_wash_cap).
+# Set 10 (user: "a smear of ink — nothing of the pictures, no detail; is this the algorithm's limit?"): the pens
+# shared one tone budget with the washes — laid after them, a pen's mark passed the sheet's gate only where the wash
+# had stopped short (a station's pens laid a ninth of their strokes; with nib_wash_dark 1.0 the pen ladder laid 464,
+# the lines were the bone alone) — and the washes tracked the blurred picture with a soft brush. Now the DRAWING FIRST
+# (nib_wash_draw): the pens on the bare sheet as pen-ink lays them, hatching what is darker than a half of the value
+# (nib_wash_dark 0.6); then the washes as FLAT PLANES (nib_wash_planes 4): the picture quantised to the paper and
+# three tones, laid as area fills light to dark, stacking — pools with sides, the modelling within them the pens'.
+# The dry brush off (its register is the pens' now).
+# Set 11 (review: the planes poster-flat — hard-edged cut-outs, a sky's gradation cut into camouflage blots; no air on
+# the planes, the far hills as dark as the near; the lightest plane over nearly the whole sheet): a plane's wet edge
+# wide where the picture's gradient is gentle under its boundary and the base 500th where the picture has an edge,
+# recorded per ring point (nib_wash_edge); air on the planes — the far lifted into lighter bands by the depth map
+# before the quantising (nib_wash_depth); the lightest plane from the coarsest smoothing (a 64th of the sheet), the
+# darkest from the finest (a 1024th), each kept within the lighter (nib_wash_scale); both at a half in the end.
+# Set 12 (user: the station's cliffs one grey plane; review: blurred blots for dark strokes, a grey fog on the interiors,
+# the faces not drawn): the planes' thresholds moved to the picture's quantiles — the cliffs lay within one even step
+# (nib_wash_levels, a half: at the full quantiles the planes' tones crowd together), five planes; a face lifted into a
+# lighter plane and its hatching freed of the dark gate (nib_wash_faces); a plane's contour torn — a dry brush's ragged
+# edge (nib_wash_rag; bristle tracks out along the normal were a comb of rays round every light hole). And the planes'
+# washes the INK ALONE: a grey's mixture carried titanium white (a fog over the pens), and a light grey's was white
+# alone — laid as a slab lighter than the paper (the white river on the hillside at five planes).
+# Set 13 (user: why does the ink-wash lose nearly all the detail; review: the pen's hatching dominating through the
+# transparent washes, the faces a wire net, the torn contours a jelly's rim): the pen kept out of the darkest plane,
+# the mass the wash's blot alone (nib_wash_mask); the half-tones' pen — the finest, one way along the form, on the
+# near planes where the picture has a texture (nib_wash_half); the small darks kept in the planes past the opening
+# and the least area (nib_wash_grain); two sub-steps of tone within each plane, fifteen tones to five planes
+# (nib_wash_grade); every face drawn as a small one, its crossing layer dropped (nib_wash_profile); the tear drawn
+# out along the brush's sweep (nib_wash_streak). nib_wash_detail stays 0: at 0.5 the cliffs took a rain of strokes.
+# Set 14 (review: the planes a posterisation ceiling, jelly edges, flat blots; asks stroke washes along the flow, a
+# dry brush by the paper's grain, a water layer the ink seeps through): a plane as wide wet marks along the flow
+# (nib_wash_sweep) FAILED twice — beads, then black worms, the structure lost — and stays 0; the dry brush by the
+# grain and the speed (katsu) is built and changes a pen sheet by nothing visible — 0; the WATER works: the sheet
+# wetted round each plane and the pass's ink seeping through it (nib_wash_water), the geometric wet edge and the
+# torn contour it replaces turned off (nib_wash_edge, nib_wash_rag, nib_wash_streak 0) — crisper planes, a halo
+# the water's own, the structure's correlation up on every landscape.
+# Set 15 (user: no fundamental improvement; review: the mark must look at the sheet — E(t) = k·max(0, T − C)):
+# the MARK-AGENT (nib_wash_agent) — a swept plane's mark carries the picture's value along its path and every hair
+# gives its ink by the residual against the sheet under it, so the overlaps stop darkening and the swept planes
+# (nib_wash_sweep, failed twice alone) become washes: graded masses with the brush's grain, no terrace, the tone
+# held. The target between the plane's flat tone and the picture (nib_wash_grade, a half: at 1 a photograph
+# through frosted glass), the marks drier with uneven hairs (katsu). The medial-axis path was not needed: the
+# agent removes the overlap the skeleton was to avoid, and the streamlines already follow the form.
+medium: ink-wash
+palette: sumi
+style: legible
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 0.0  # the subject's shadows not committed to solid dark: a woman in a dark coat is modelled, not one black shape
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+min_brush: 3.0
+rigger: 0.0
+liner: 0.5        # the long thin lines in one stroke: a whisker, a branch, a wire
+focus_detail: 0.3 # the fine brush in a narrow focus only: the rest the washes and the bone — the empty space kept
+hotspot: 0.0      # no white: the hotspot's dots of titanium were pale dashes on the ground — in sumi-e the light is the paper
+
+# ── Dry, replayed to the bit ──
+dry: 1.0
+pickup: 0.0
+bleed: 0.5   # the washes bled into one another
+wash_in: 0.3   # the washes flooded but loaded: at 0.8 six passes never reached the tone (the rubble came out paper)
+wet_cap: 0.6       # a later mark goes on wet enough to feather
+contour: 0.0
+
+# ── The paper is the light (the charcoal's machinery) ──
+paper: 1.0
+touch: 0.6
+velvet: 0.05
+paper_top: 1.0
+paper_knee: 0.5
+
+# ── The brush ──
+deplete: 0.5
+skip: 0.0         # off: the dry skip on the paper's relief laid a square texture — the flying white is kasure's
+comma: 0.5        # the pressure swells and lifts along the mark
+turbulence: 0
+loose: 0.0        # off: the longer, wider marks off the subject were the trowel's smears
+vary: 0.4
+granulate: 0.05
+
+# ── Sumi-e ──
+dishes: 4         # four tones of ink: the value held to fewer steps, a figure kept apart from its ground
+dither: 0.0
+tsuke: 0.6        # tsuketate: the brush's tip in thick ink, its body in thin — one mark dark along one edge, pale along the other, the dark edge to the shadow
+ma: 0.0
+kasure: 0.3   # the flying white halved: the pens share the brush, and a pen line broke
+nijimi: 0.7
+turn: 0.6         # the brush lifted on a turn: a mark thins round its bend — a wing's edge, a curl of fur — not a straight slab
+yohaku: 0.0
+sumi_dark: 0.03   # the black register only the darkest thirtieth: at the eighth it drew the ruins' debris as black worms and the woman as one black shape
+bone: 1.0   # the bone a pen line: full black at the finest nib, over the washes
+boneless: 3       # the block-in and the three passes after it as flooded washes (even width, soft edge, the two tones and the flying white evened by the water): the masses a wash, not a heap of dry wedges
+hake: 1.0         # the washes one horizontal sweep of the broad flat brush, off the subject: parallel bands, not bars crossing at every angle (crossed, each a translucent pane — broken glass)
+join: 1.0
+bone_wind: 0.3
+bone_dot: 0.0
+bone_scatter: 0.0
+bone_coherence: 0.3
+bone_end: 0.0
+sumi_focus: 0.5       # the black masses only where the eye goes: in the far ground the dark is left to the washes
+ma_focus: 0.0
+ma_flow: 0.6          # the focus's halo running along the picture's lines and stopping at its edges, the silhouette kept whole: a round blur of the mask (a coat's detected box in it) was a dark island round the woman, and paled the cat's paws
+bone_ryaku: 0.0   # the far line exact, not generalised: the detail is the pen's
+bone_fade: 0.0
+bokashi: 0.2
+
+# ── The pens (the pen-ink plan) ──
+nib: 1.0
+nib_wash: 1.0   # ink and wash: the washes carry the whole tone, the pens the line, the detail and the deepest darks
+nibs: 3
+nib_tone: 1.0
+nib_white: 0.2
+hatch: 1.0
+cross: 45
+span: 0.6
+edge: 0.6
+solid: 1.0
+tiers: 0.8
+slant: 1.0
+clip: 0.6
+weight: 1.0
+waver: 0.6
+grade: 0.8
+nib_anchor: 1.0
+nib_hint: 1.0
+nib_face: 1.0
+nib_eyes: 1.0
+nib_glint: 1.0
+nib_wash_dark: 0.6   # the pens hatch what is darker than a half of the value (set 10; 1.0 in sets 2-9 left the pen ladder empty — 464 strokes on the station)
+nib_people: 1.0
+nib_figure: 1.0
+nib_value: 1.0
+nib_fine_face: 1.0
+nib_close: 1.0
+nib_rim: 1.0
+nib_wash_detail: 0.0   # off: its pens drew straight strokes across a cliff's strata; the detail is the line's
+nib_wash_line: 1.0   # the bone from the picture itself: under --new the armature has no face, no beard, no spine
+nib_wash_soft: 1.0   # the washes from the low band: soft tonal pools, the edges and the texture the pens'
+nib_wash_swell: 1.0   # the line swelling where its edge is hard
+nib_wash_air: 1.0   # the far planes light soft washes, the line fading out
+nib_depth: 0.6   # the depth map (for nib_wash_air), and the far ground the finest pen's
+nib_air: 1.0
+nib_wash_gamma: 0     # set 5: γ 1.25 (replaced by the S-curve in set 6)
+nib_wash_scurve: 0    # set 6-8: S-curve a 2.0; off in set 9 — the washes left light, the contrast at output (nib_wash_tone)
+nib_wash_vary: 0      # (with the curves off there is no deepening to hold back)
+nib_wash_mass: 0      # sets 6-8; off: the hard conservation of mass pooled the ink to black in every closed contour
+nib_wash_hold: 1.0    # a wash's line cut at a figure's hard edge lighter than it by 0.15; smoothed gradient, Tukey
+nib_wash_debt: 0      # (with the mass)
+nib_wash_flat: 1.0   # a flat dark is the wash's pool: the pen only where the dark has an edge or a texture
+nib_wash_dry: 0      # set 10: off — the dark register is the pens' (set 9: the dark register (under 0.45) laid by the dry brush on the 7px wash pass, from the picture blurred by the radius, the ink the picture's own value; the mark a level drag off the figures (along the texture's flow: curls at 3px, ropes at 7px); toward the far planes its ink lightened by 0.35 and its register narrowed to 0.34 (nib_wash_air)
+nib_wash_cap: 1.0    # the sheet's capacity: a wash never darker than the picture's own value, no mark where the sheet has reached it
+nib_wash_tone: 1.0   # the sheet corrected at output: the mid-tones pulled until its mean meets the picture's
+nib_wash_draw: 1.0   # set 10: the drawing first — the pens on the bare sheet, the washes over the dried drawing
+nib_wash_planes: 5   # set 12: five (set 10: four — the paper and three washes); the planes the ink alone, laid as area fills light to dark
+nib_wash_edge: 0  # set 14: off — the halo is the water's (set 11: a plane's wet edge up to 13 times the base where the picture is flat under it)
+nib_wash_depth: 0.5  # set 11: air on the planes — the value lifted toward the paper by a quarter at the farthest plane before the quantising (at 1.0 the mid-slope grass of the hillside went to paper)
+nib_wash_scale: 0.5  # set 11: the lightest plane from the picture smoothed over a 102nd of the sheet, the darkest over a 640th (at 1.0, a 64th, the sunlit grass band of the hillside merged into one white river)
+nib_wash_levels: 0.5  # set 12: the planes' thresholds halfway to the picture's quantiles, the tones halfway to the bands' means (the cliffs of the station lay within one even step; at 1.0 the tones crowd)
+nib_wash_faces: 1.0   # set 12: a face lifted by a half toward the paper before the quantising; the pen's hatching on it without the dark gate
+nib_wash_rag: 0  # set 14: off — the torn contour read as a jelly's rim (set 12: the plane's contour torn by the plane's darkness)
+nib_wash_mask: 1.0    # set 13: no pen in the darkest plane — the mass the wash's blot alone (the lines and the faces kept)
+nib_wash_half: 1.0    # set 13: the half-tones' pen — the finest, along the form, near, on texture; asked a half of the residual
+nib_wash_grain: 1.0   # set 13: the small darks (two darkest bands, pieces over 65 px) kept in every plane, no bloom on them
+nib_wash_grade: 0.5  # set 15: on a swept plane the mark's target halfway between the plane's flat tone and the picture (set 13: two sub-steps of tone within a filled plane)
+nib_wash_profile: 1.0 # set 13: every face drawn as a small one at the finest width, one way along the form; the ladder's face gate for the finest pen alone
+nib_wash_streak: 0    # set 14: off with the rag (set 13: the tear drawn out along the horizontal sweep, the noise sharpened to teeth)
+nib_wash_sweep: 1.0  # set 15: a plane as wide wet marks along the flow — with the agent, a wash (alone: beads, then black worms)
+katsu: 0.5  # set 15: the dry brush by the paper's grain — the swept marks drier, their hairs uneven, their ends on the grain (nothing on a pen's line)
+nib_wash_water: 0.5   # set 14: the sheet wetted a 128th of the sheet round each plane, the pass's ink seeping 12 steps through the water at the pass's end
+nib_wash_agent: 1.0   # set 15: the mark looks at the sheet — its ink by the residual against the target under it, five times the share
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)

@@ -1,0 +1,96 @@
+# plakat house recipe — `--medium acrylic`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — ACRYLIC (7.5.0), the recommended settings for `--medium acrylic`.
+# Every key below overrides the medium's own default; a key left out keeps it. Tune here, not in the source.
+medium: acrylic
+palette: image
+style: legible
+
+# ── The painting from scratch (RFC PAINT-1): the face and figure tiers, found in the picture ──
+new: true
+armature: 768       # v2: the ground read finer: the people on deck, the masts, the halyards get the finer brushes
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 0.5   # v3: the third review — the deck and the shaded hull went to a flat mass; half the commitment, the darks keep their own tones
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.5
+hotspot: 1.0      # v2: the glints on the water as domes
+
+# ── The layers: each dry before the next ──
+dry: 1.0          # the canvas dries fully between passes — nothing beneath is picked up or stirred
+wash_in: 0.5      # the block-in a thin flooded wash: 1 − 0.7·wash_in of the charge
+imprimatura: 0.6  # the block-in laid darker and warmer (toward burnt umber): the underpainting that shows between the later marks
+wet_cap: 0.45     # the wettest a later mark goes on — a flat patch on a dried layer
+scumble: 1.0      # the finest pass dragged dry off the faces (a thinner charge, raked, no pickup)
+skip: 0.3         # the dry brush skips on the canvas's tooth
+deplete: 1.8      # a mark's charge runs out along it: thick at the start, a dry tail
+
+# ── The hand ──
+turbulence: 8     # the flow turned by a low-frequency noise, ±8° (halved on a face)
+accent: 1.0       # thick short opaque dabs at the sharp contrasts, off the flow at their own angle
+loose: 0.3        # off the subject: longer, wider marks on the broad passes, the fine passes thinned
+shade: 0.15       # v3: the calm long marks in the shadows were what flattened the boards and the cloth; the shadows painted like the light
+vary: 0.35        # a Gaussian spread of the mark's length (σ in log length), wider where the picture is flat
+comma: 0.5        # the hand's pressure along the mark: width and deposit swell a third of the way along, lift toward the ends
+body_vary: 0.3    # a Gaussian spread of each mark's body (σ in its log): thick and opaque, or thinner, wetter, translucent
+spatter: 0.5      # the thickest marks in the light fling a drop or three off their lift-off: round thick dots of their own paint
+tail: 0.6         # a drop's shape follows the mark's speed (its length for its width): a fast mark's drop flies farther and smears ahead into a tail
+broken: 0.15      # a little drift of hue from mark to mark
+
+# ── The skin and the seams ──
+sfumato: 0.5      # on a face, where the picture is smooth: fewer fine marks, broad, wet, half-charged, fused
+glaze: 0.6        # along the subject's silhouette the finest pass lays thin wet overlaps that may cross it
+glaze_pass: 0.1   # one more pass after the ladder: a mid brush, every mark a thin wet film over everything but the faces and hair
+lost: 0.1         # v3
+aerial: 0.1       # v3: the far passages lose less — the hull's rivets, the deck's boards are the picture
+crest: 0.6        # v3: more of the dry brush over the ridges — the texture of the dark passages lit, not re-drawn
+sink: 0.25        # v3: half the cool wash into the furrows — it levelled the shadow's relief
+film: 0.3         # the glaze marks (glaze pass, sink, lost, the silhouette overlaps) lay this share of their paint as a translucent film OVER the dried layer (two-layer Kubelka-Munk), not mixed into it
+split: 0.5        # the dry marks (scumble, crest in the light, hair anywhere) comb into 2–4 bristle bundles with bare canvas between as they dry out and the faster they go
+tint: 0.4         # the bundles of a split mark differ a little in tone: the paint not mixed to one colour on the palette
+knife: 0.3        # off the subject, on the broad passes, this share of the marks are a palette knife: a flat blade that shears the paint under it to a plateau and lays its own flat and thick
+skim: 0.4         # this share of the knife marks skim: the blade at a low angle with little paint, pressed less, catching only the relief's tops — a torn, holed plane
+twist: 0.5        # the brush turned in the fingers along every hair strand and this share of the finest marks off the faces: the width runs from the brush's breadth to a line
+hiding: 0.5       # each pigment covers by its own hiding power: a light opaque pigment hides what is under it, a dark saturated one (a lake, an ultramarine) stays a glaze laid thick
+
+# ── The body of the paint ──
+impasto: 0.3      # the relief relit at output
+ridges: 0.3       # bristle ridges in the relief
+impasto_map: 1.0  # thickness follows the picture: lights thick, shadows thin, a face laid smooth
+sheen: 0.2        # a satin gloss on the relief
+gloss: 0.5        # a sharp glint on the peaks of the thick paint only: acrylic dries glossy on the crests of a heavy mark
+sag: 0.4          # the stretched canvas gives under the thick paint: a broad shallow dip under every heavy passage and a slow unevenness of the cloth, a gentle swell of the light over the sheet
+
+# ── v2 (the acrylic review, 2026-11-05): the dried layers kept hard, the detail where the picture is busy, the points of light ──
+# the review's quadtree = the armature tiers and the fine brushes at the busy passages: armature 768 above, and
+# the fine passes only where the picture is busy (focus_detail off the subject would starve the deck — vary keeps
+# the long marks for the flat sky and the short ones for the rigging)
+# the review's bilateral / hard edges = the structure-tensor flow the engine has, with the edge-softening keys
+# taken down: lost 0.2, aerial 0.2, sfumato 0.5
+# the review's hard alpha = dry 1.0 (already), the glaze film nearly off: glaze_pass 0.1, film 0.3
+liner: 0.5          # the long thin lines (a stay, a halyard) traced along themselves and laid as one thin mark
+point: 1.0          # the review's top-hat: the stars set last as opaque dots with the point of the brush
+detail_restate: 0.05  # v3: the fine passes restate at a lower threshold (the default 0.08): the high frequencies over the base
+# v3, in code (the third review): the fine structure restated by measure and the brush adapted to the structure
+micro: 0.6         # the fine brushes come back where more than 40% of the local contrast within their reach is lost — the deck, the shaded hull, in the shadows too
+adapt: 0.7         # the brush adapted to the structure at its scale: the seed on the feature, the mark its extent, the flat cells withheld
+
+settle: 0.3        # v6: the loaded wet marks settle into the canvas tooth
+fray: 0.4          # v6: the dry tails fray
+gloss_map: 0.6     # v6: the thick marks glossy, the thin satin
+periphery: 0.5     # v6: the corners left unfinished
+cavity: 0.5
+chisel: 0.5
+haste: 0.5
+collide: 0.30
+cavity_face: 0.3
+sideload: 0.5
+chisel_twist: 0.5
+advect: 0.4
+film_flat: 1.0
+periphery_dry: 0.5

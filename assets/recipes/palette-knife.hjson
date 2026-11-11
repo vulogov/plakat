@@ -1,0 +1,166 @@
+# plakat house recipe — `--medium palette-knife`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat paint plan — palette-knife (7.14.0). Set 0 would be the stock profile without a plan.
+# Set 1: the knife as the medium's own tool (blade): every mark on every pass, the subject and the faces included,
+# a flat blade full width with square ends that shears the paint standing under it to a plateau and lays its own
+# flat, thick and nearly dry; no pickup, no bleed, no glaze, no scumble, no finger — nothing of a brush. The paint
+# hides by its own power (hiding), the relief thick and relit with a sheen and a glint on the crests.
+medium: palette-knife
+palette: image
+style: legible
+
+new: true
+armature: 384
+armature_face: 768
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.0
+hotspot: 0.0
+
+dry: 1.0          # the paint dries between passes: a slice sits on the one under it, nothing stirred
+pickup: 0.0       # the blade carries no paint back
+bleed: 0.0
+wash_in: 0.0      # the block-in with the knife too, full charge
+wet_cap: 0.3      # every slice nearly dry
+scumble: 0.0
+skip: 0.0
+deplete: 0.5      # a slice runs out a little along its length
+
+turbulence: 0
+accent: 0.0
+loose: 0.3        # off the subject the slices longer and wider
+vary: 0.3
+comma: 0.0        # no pressure swell along the slice: the blade is rigid
+body_vary: 0.0
+broken: 0.1
+shade: 0.0
+imprimatura: 0.0
+
+sfumato: 0.0
+glaze: 0.0
+glaze_pass: 0.0
+lost: 0.0
+aerial: 0.0
+crest: 0.0
+sink: 0.0
+film: 0.0
+split: 0.0
+tint: 0.0
+twist: 0.0
+
+# Set 2: the picture cut into flat planes of value (blade_planes, the cuts halfway between even steps and the
+# picture's quantiles), each slice a flat tone with its own hue; the slice's size by the flatness under it (blade_size):
+# wide slabs on the sky and the sea, small hard ones at the detail.
+blade: 1.0        # THE KNIFE AS THE TOOL: every mark on every pass is a knife slice
+blade_planes: 6   # the reference cut into six flat planes of value — no slice blends a gradation
+blade_levels: 0.5 # the cuts halfway from even steps toward the picture's quantiles
+blade_size: 1.0   # the slice's length and width by the flatness under it: ×3 on a flat passage, ×0.6 at a sharp detail
+# Set 3: the thickness profile of a slice (blade_bevel): thin where the blade is pressed down, the paint pushed ahead
+# building to a sharp ridge at the lift-off and squeezed out to the blade's edges — the impasto z-buffer's step.
+blade_bevel: 1.0  # the slice thin at the start, a ridge at the lift-off, the paint squeezed to the blade's two edges
+# Set 4: the lamp the relief is relit under — its azimuth (blade_light, from the upper left) and a Blinn–Phong
+# highlight on the relief's normal (blade_phong), so the slabs' fascias catch the light.
+blade_light: 225  # the raking lamp from the upper left (0 = the right, 90 = below, 180 = the left, 270 = above)
+blade_phong: 0.5  # a narrow highlight on every facet of the thick paint that faces the lamp
+# Set 5 (the review of set 4: flat, a universal size, chaotic direction, no volume, averaged colour): the slices
+# along the PICTURE's form, not the planes' edges, and straight (blade_flow); the restating passes leave the flat
+# slabs alone (blade_rest); the relief's slope read over a window of the picture's scale, a band of light and
+# shadow on every slab's flank (blade_relief); two colours across the blade, unmixed (blade_mix).
+blade_flow: 1.0   # the flow from the picture before the planes (the fur, the shoreline); every slice a straight quad
+blade_rest: 0.7   # on a flat passage the finer passes skip 70% of their marks: the sky stays the broad slabs
+blade_relief: 1.0 # the slab's flank read over a 160th of the short side: a band, not a hairline
+blade_mix: 0.6    # the slice's second colour from the picture under it, laid in unmixed bands across the blade
+# Set 6 (the review of set 5: the sea a comb, the grass a brush, the face soft, the relief even): the flatness
+# read along the flow (blade_along); the straight slice through the noise to a hard stop (blade_inertia); the face
+# cut into its own planes (blade_facet); the paint running out along the slice (blade_fade).
+blade_along: 1.0   # the rest and the size judge the flatness along the flow: a long slab along a wave's bed
+blade_inertia: 0.7 # the slice keeps its direction through the local noise, to 70% of the brush's full reach
+blade_facet: 0.5   # the face smoothed (half as much as at 1) and cut into six planes of its own range (set 7: 1.0 → 0.5)
+blade_fade: 0.6    # the paint runs out along the slice: the relief fades toward the tail, the deposit by a third
+# Set 7 (the review of set 6: the sea a mosaic, the grass flat, the face hewn too hard): the colour stop rising
+# along the flow (blade_visc); the relief accumulating where the slices cross (blade_pile); the face's terraces
+# softened on the smooth skin (blade_soft, with blade_facet lowered to 0.5); the blade at low pressure riding
+# the peaks of the paint beneath (blade_skid).
+blade_visc: 1.0    # along the flow the hard stop triples: the blade drags its colour the length of a wave
+blade_pile: 0.6    # the shear taken back by 60%, the added height saturating: peaks and clots where slices crowd
+blade_soft: 0.6    # on the smooth skin the terrace gives way toward the picture's own slope by 60%
+blade_skid: 0.8    # toward the tail the paint is laid only on the peaks beneath: the skidding knife
+# Set 8 (the user: the detail is formed by knives of different widths and vanishes now): the ladder of knives
+# (blade_knives), the narrow knives keeping the detail by planes over the local range (blade_detail), the impasto
+# layers — the knives thinning with the ladder and shearing less (blade_layers), the blade's edge drawing the
+# busy passages (blade_edge).
+blade_knives: [120, 56, 26, 12, 5]  # the ladder of knife widths, px at 2048²: the wide, the medium, the narrow, the edge
+blade_detail: 1.0  # on the narrow knives an eye, a mouth, a crest keep planes of their own range
+blade_layers: 0.8  # the narrow knife a film over the thick slabs, shearing a fifth of what the wide one shears
+blade_edge: 0.8    # the busy passages drawn with the blade's edge: narrower, longer slices on the finer passes
+# Set 9 (the review of set 8: the 120 px knife a digital blur on the sky, the grass a brush of unrelated touches,
+# the thin marks an appliqué): the wide knife's edge bead (blade_rim), its uneven pressure (blade_slip), a fine
+# texture laid as one pull of the medium knife (blade_tuft), the thin knives riding the relief beneath (blade_bed).
+blade_rim: 0.8     # the wide slice's section a U: beads of paint along the slab's two sides
+blade_slip: 0.6    # the wide blade's uneven pressure: torn edges and holes inside the slab
+blade_tuft: 0.8    # grass and foliage: the narrow knives keep off, the medium knife one upright pull of several greens
+blade_bed: 0.8     # the thin slices bend up over the dried lumps of the wide layers
+# Set 10 (the review of set 9: the tensor instead of CLIP for the grass, the tuft by the slope, the wide plates broken):
+# the tensor's anisotropy gate (blade_aniso), the tuft's pull by the hill (blade_slope), the wide knives' slices cut by
+# a global slow noise (blade_break).
+blade_aniso: 1.0   # the grass read from the structure tensor's mean incoherence, no scene detector
+blade_slope: 0.8   # on a steep bank the tuft follows the hill, on a flat meadow it pulls up
+blade_break: 0.7   # the two widest knives leave the canvas on their own: the sky a cascade of overlapping slabs
+# Set 11 (the review of set 10: the detector and the tensor routed by the fineness, the tuft's angle scattered, the
+# broken plates' hue drifting): blade_route, blade_scatter, blade_tint.
+blade_route: 1.0   # CLIP decides on the fine contrasty textures (the fur), the tensor on the coarse ones (the meadow)
+blade_scatter: 1.0 # the tuft's pull scattered ±10° about the slope's line
+blade_tint: 1.0    # where the wide plates are broken, each slab's hue drifts up to ±2% of the circle
+# Set 12 (the review of set 11: the painting's focus, the specular on the local crests, the canvas weave in the
+# bare pixels): blade_focus, blade_peak — and the finish's own weave key (it already shows the linen only where
+# the local paint height is near nothing: the slip's holes, the fade's tails).
+blade_focus: 1.0   # the periphery in wide, thick, abstract slabs; the narrow knives kept to the fine textures' centre
+blade_peak: 0.8    # the top tenth of the local relief glints: the sky's rims and the wave crests, not only the clots
+weave: 0.4         # the linen's threads in the relight where the paint is bare or thin (the holes, the fade's tails)
+# Set 13 (the review of set 12: the focus as a band of the perspective, the cloth's friction on the fading blade,
+# the crests' gloss by the age of the paint): blade_band, blade_drag, blade_age.
+blade_band: 1.0    # the focus a horizontal band: the whole near ground in focus, the far hills and the sky out of it
+blade_drag: 0.7    # the fading blade's paint settles on the cloth's tops: a grainy scumbled tail, not a comb
+blade_age: 1.0     # the wide plates' glint broad and matte, the fine finishing marks' narrow and bright
+# Set 14 (the review of set 13: the paint's surface tension over the cloth, the bead at the lift-off, the broken
+# colour in the drag's voids): blade_bridge, blade_liftoff, blade_broken.
+blade_bridge: 1.0  # the thick paint spans the furrows while it lasts; the cloth shows in ragged breaks, not a gradient
+blade_liftoff: 1.0 # a slice cut hard at a colour's edge ends in a bead across the blade — a peak for the relight
+blade_broken: 1.0  # the drag's voids take the lower layer's peaks' colour, not the ground's
+# Set 15 (the review of set 14: the bead asymmetric — a lip at the very end; the mix's bands marbled; the fresh
+# paint's height settling at the slab's edges): blade_lip, blade_marble, blade_slump.
+blade_lip: 1.0     # the lift-off's bead drawn out to the last pixels of the slice, a trough behind it
+blade_marble: 1.0  # the two colours' bands wander, pinch and swell along the slice
+blade_slump: 0.7   # the slab's edges sag over a pixel or two; the body and the chopped form kept
+# Set 16 (the review of set 15: the blade rolled across its motion, the bead parted into threads, the wet layer
+# below dragged along a slice laid over it): blade_tilt, blade_stiction, blade_wet.
+blade_tilt: 0.7    # each slice rolled by a slow noise: one edge scraped to the ground, the other a dominant bead
+blade_stiction: 1.0 # the lift-off's bead broken into discrete peaks across the blade
+blade_wet: 0.6     # a slice over a still-wet layer drags it 0.3 of its width along; dries with the passes
+# Set 17 (the review of set 16: the heel's print at the first contact, the dirty knife's residue, the slice's
+# sides torn): blade_heel, blade_dirty, blade_tear.
+blade_heel: 1.0    # a sharp bump of height where the knife comes down, on the pressed edge under the tilt
+blade_dirty: 0.6   # the blade keeps half of what it carried; the next slice starts in that colour, fading by halves
+blade_tear: 0.7    # the plates' flanks cut in by a noise at a quarter-width's period, more on the fast slices
+knife: 1.0        # (the older key: the knife off the subject on the broad passes — subsumed by blade)
+skim: 0.0
+hiding: 1.0       # each pigment covers by its own hiding power
+
+impasto: 0.8      # the relief relit at output
+ridges: 0.0       # no bristle ridges: a blade leaves a plane
+impasto_map: 0.0
+sheen: 0.3
+gloss: 0.3        # a glint on the crests of the thick paint
+sag: 0.0
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)
+gloss_map: 0.7     # v6: the slabs' crests glint, the scraped passages satin
+periphery: 0.4     # v6: the corners left unfinished
+cavity: 0.6

@@ -1,0 +1,73 @@
+# plakat house recipe — `--medium pastel`: the medium's accepted plan (the review cycles' verification set), read by
+# `paint plan --director` / `paint from --make-plan` as the base the picture's facts adjust. Tune here, not in the source.
+# plakat painting plan — PASTEL (7.7.0, in development), the settings for `--medium pastel`.
+# Every key below overrides the medium's own default; a key left out keeps it. Tune here, not in the source.
+medium: pastel
+palette: image
+style: legible
+
+# ── The painting from scratch (RFC PAINT-1): the face and figure tiers, found in the picture ──
+new: true
+armature: 384
+armature_face: 768
+min_brush: 4.0    # the stick's own limit: a stick of chalk cannot make a one-pixel mark — the ladder's finest rung and the floor under every mark 4 px on a 2048 sheet (at the CLI's 2 the last pass laid one-pixel pale dashes, a crap on the cheek; the face tier's own floor fell below a pixel for a small face)
+armature_body: 384
+semantic: true
+sam: true
+families: true
+commit_shadows: 1.0
+shadow_floor: 0.16
+detail_len: 0.5
+infill: follow
+rigger: 0.35
+hotspot: 0.3
+
+# ── The layers: chalk is dry the moment it is laid ──
+dry: 1.0          # nothing beneath is wet — a layer of chalk over a layer of chalk
+pickup: 0.0       # the stick picks up nothing from the layer beneath (the brush's dirty pickup carried the broad passes' sea-and-skin teal into the face's marks as dashes)
+bleed: 0.0        # no wet diffusion between the marks — chalk does not run
+wash_in: 0.0      # no wash: the block-in is laid with the side of the stick (side), not flooded
+wet_cap: 0.2      # a mark never goes on wet
+scumble: 0.8      # the finest pass dragged lightly over the tooth
+skip: 0.0         # the dry-brush skip is off: the chalk's own law on the tooth (chalk) breaks the mark on the grain
+deplete: 1.5      # the stick's charge runs out along the mark
+granulate: 0.0    # no mottle laid over the finish: the grain is the chalk's own on the paper's relief (a mottle on top read as noise on a blur)
+chalk: 1.0        # the mark is a stick of chalk on the tooth: a light touch catches the raised grain only and the hollows keep the sheet's colour, a hard press fills them; past three fifths full the tooth holds no more and the chalk slides
+side: 0.4         # on the broad passes this share of the marks (all of it on the block-in, falling with the ladder) are laid with the stick's SIDE: wide flat sweeps at a light touch, 1 − 0.3·side of the charge, dry (at 0.6 the lighter touch left the paper's tooth bare in the dark sea as pink specks)
+blend: 0.6        # after each pass of the broad half of the ladder the calm passages (a sky, a sea, a wall; the subject at three tenths, never a face or the hair) are rubbed with a finger: the underpainting fused into soft masses, the fine strokes over it left discrete
+skin: 0.5         # the finger on the faces after the finest pass, inside the face and stopping at its edges: the skin's hatched half-tones fused into modelling, the eyes and the mouth left
+sfumato: 0.7      # a face's smooth passages: the fine passes thin there with the ladder and what remains is laid broad and thin — the dark half-tone strokes across a lit cheek (brown, read as cold against the orange) give way to soft modelling
+carnation: 1.0    # the flesh in WARM sticks: on a face the mixture is solved over the warm and neutral melks alone (the sea's teal, the blues, the greens left in the box — a half-tone darkened with umber or black, never greyed cold) and the lights lifted along their own hue, not toward white (a Naples yellow over the cheek, not a chalky grey)
+small: 400        # a face under 400 px across (the detector's box) drawn at its own scale, k = 1 − extent/400 (the shore's 203 px face k 0.49, the festival's 73 px faces 0.82): the stick's tip, the hatching thinned and one way along the form (no cross turn — a net on a small face was grit), the half-tones held near the local tone (a dark stroke across a lit cheek read as a cold scar), more of it blended
+anchor: 0.15      # on a small face the darkest sixth around a mark (below the local mean by the normal quantile of the local spread) is neither held to the local tone nor blended — the eyes, the nostrils, the mouth's line; the sfumato's widening falls off with the local contrast, so a lip or the eye's slit keeps a dry stroke
+trim: 0.5         # the face is the detector's box CUT BY THE FIGURE (the subject matte), and the ground's marks keep half a brush clear of it: the box's corners in front of a profile are sea, not flesh, and the sea's broad block-in marks no longer run across the cheek — both came through the chalk's tooth as a pale grey-green crackle (a full brush's clearance left a halo of ground round the profile)
+small_min: 100    # a crowd's face under 100 px (the festival's 73 px singers) is left to the plain ladder — small, anchor, trim and the warm glint off: at that scale a feature is the stick's width, and softening wiped the mouths and eyes
+
+# ── The final strokes over the rubbed layers: the pastelist's linear feathering (the tempera's hatch keys) ──
+hatch: 0.8        # the restating marks straight directional strokes along the structure tensor's flow, growing with the ladder: the drawing over the blended underpainting
+cross: 25         # degrees: each hatched pass turned off the form by its step, alternating — a feathering net that wraps the volume
+span: 0.6         # long strokes on the flat (a sky), short where the form is busy (a face, the ears of wheat)
+edge: 0.6         # near a plain contour the strokes run parallel to it and stop at it
+glint: 0.4        # the pure lights set last: dry, covering, narrower, standing up
+lights: 0.3       # on the finest pass the subject's top values lifted toward white — the stick of white chalk
+dishes: 0         # the tones continuous (six dishes dithered laid the darker step across a lit cheek as dark strokes — the sample's face is modelled in continuous tones; the limited box is the palette's own)
+dither: 0.0       # no dither without dishes
+solid: 1.0        # the hatch's charge keyed to the value: a veil in the lights, covering in the darks — the dark sea built solid, the paper's tooth filled
+umbra: 1.0        # the dark masses continuous: within the darkest dish the tone is laid as it is and never dithered up (a pink speck of the lighter dish on the dark sea), the dishes step the lights above it
+
+# ── The hand ──
+turbulence: 6
+loose: 0.15       # off the subject the fine passes thin only a little with the ladder (at 0.4 the sea's fine strokes were sparse and the paper's pink showed through the chalk's hollows as specks)
+shade: 0.3
+vary: 0.3
+body_vary: 0.2
+broken: 0.05      # barely any hue drift from mark to mark (0.3 put cold teal dabs on the warm skin — a crap, not an optical mixture)
+
+# ── The seams ──
+lost: 0.0         # no lost edges: a pastel's silhouette is drawn, not rubbed into its ground (at 0.3 the marks along the jaw in shadow took the mean of the skin and the sea — grey-teal strokes on the chin)
+aerial: 0.0       # no edges lost by depth either
+hiding: 0.0       # chalk covers by its body, not by its pigment
+
+micro: 0.5          # v5: the fine brushes come back where half the local contrast within their reach is lost
+adapt: 0.5          # v5: the seed on the cell's strongest feature, the mark its extent, the flat cells withheld
+point_field: 0.5    # v5: the ring round a point of light may hold 16% of bright pixels (needs `point` to act)
