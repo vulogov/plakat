@@ -8,6 +8,73 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.20.0 — The critic and the measurement — the review's numbers as one command, the director's loop closed with the same eyes, the picture's light as the relief's lamp
+
+7.19.0 gave the painter an art director: the picture read by the crate's vision models, the medium's house
+recipe, every dial's reason beside it. The plan was written once and never read back against the painting.
+This cycle closes the loop. The numbers the review cycles took by hand — a mean luma and its spread, a crop's
+local σ, a chroma, an RMSE — are now a **measurement** both the critic and the user share; the **critic**
+measures the painted sheet against the source with the director's own facts and moves the plan's dials by the
+deficit, in bounded steps, under the model's gate; and the loop paints again. The painter is untouched but for
+a lamp key held at 0; every run without the new flags is byte-identical.
+
+### `plakat paint`
+
+- **`paint compare <source> <sheet>... [--focus mask] [-o table.md] [--sheet contact.png --thumb N]`**: the
+  review's numbers as one command. Both pictures are reduced to the director's working size (the source's
+  aspect at 1024) and measured alike — the key, the value spread, the dark and light shares, the calm and busy
+  fields by the local σ over a 128th of the long side, the chroma and its 90th percentile, the points of light on
+  a dark ground (the point pass's own detector), the bare white, the edge energy — and compared: what the sheet
+  **kept** of the picture. The tone histograms' overlap, the key shift, the value range's ratio, the local
+  contrast kept in the focus (a mask, or the central half) and on the periphery, the calm fields kept calm and
+  the busy passages kept busy, the strong edges carried within a pixel at half the strength, the points of
+  light laid, the chroma ratio; and a *closeness* — the mean of the kept shares, labelled a summary and not a
+  judgement. Every number a share or a ratio, so a 2k oil and a 1k pen drawing of one picture sit on one table
+  (the source's column, one per sheet) with a contact sheet labelled in a built-in 5×7 bitmap font. On the
+  verification set the table discriminates as the reviews did: riga1's oil-direct ladder v2→v9 shows the fourth
+  review's microcontrast as the focus's contrast kept 0.80 → 0.94 and the edges carried 81 → 93%; the night
+  schooner's points of light are laid over in oil and not at all in tempera (its recipe holds `point` at 0);
+  the paper media read a key shift of +0.3 (the paper is the light), the sumi media a chroma ratio of 0.1
+  (monochrome by decision) — the table reports, it does not flatter.
+- **The critic** (`paint plan <image> --medium M --director --verdict <sheet> [--plan <file>]`): the sheet
+  measured against the source, every reading written into the plan as a comment, and the dials the plan names
+  moved by the deficit in bounded steps — a fifth of a 0..1 dial, a tenth of the key, a twentieth of the floor —
+  under the model's gate: only dials the plan names, never the structure but the key and the floor, never a
+  face's dial, never a dial the medium holds at 0. The rules, each from one reading: the key shifted moves
+  the shadow floor; the spread moves the value key; the focus's contrast lost or the busy passages gone quiet
+  raise the microcontrast, the adaptive brush, the restated detail, the crisp water, the fine dots; too much
+  of it cuts them; the calm fields lost or the periphery too busy raise the settling and the soft water and cut
+  the fray and the collision; the edges lost raise the adaptive brush and the chisel and cut the lost edges and
+  the sfumato; the points of light not laid raise the points and the hotspots; the chroma off by a third moves
+  the pigments by four — only with `palette: image` (a named palette, sumi or limited, is the medium's colour by
+  decision); the bare white beyond the source's lights cuts the reserve. The moved line is kept as a comment.
+- **`paint from --make-plan --make-plan-iterate N`**: paint from the director's plan, let the critic amend it
+  from the sheet, paint again — N more times at most, stopping when the critic moves nothing; one plan file
+  for the loop (`<out>.plan.hjson`), the intermediate sheets kept as `<stem>.i<k>.<ext>`, each verdict
+  appended, so the final plan tells the whole story. On the night schooner in oil the loop ran three paintings
+  in 3½ minutes: the critic read the sheet +0.12 lighter than the source and its chroma 1.9 of it, moved
+  `shadow_floor` 0.1 → 0.05 → 0 and `pigments` 8 → 6, and the closeness stood at 0.77 → 0.76 — the oil's
+  lightness on a nocturne is not the floor's dial, and the plan says so in its own comments. On riga1's accepted
+  v9 the critic found one move, `value_key` 0 → 0.1.
+- **The picture's light**: a plane fitted to the luma over the sheet — it rises toward the light; the share of
+  the variance it explains is the coherence (a storm sky 261° at 0.72, a lamplit hull 294° at 0.67, a street
+  0.10, a portrait 0.11; a gradient-sum version read 0.06–0.09 on every photograph and was replaced). Written
+  into the plan's facts with its compass word; the director sets the relief's lamp from it when the coherence
+  is over 0.25 and the medium has a relief — `blade_light` where the recipe names it, else the new plan key
+  **`light`** (degrees in the finish's convention: 0 from the right, 90 from below, 180 from the left, 270 from
+  above; also `--light` on the command line; at 0 the old fixed lamp, byte for byte).
+- **The depth rule gated**: a portrait's wall is as far as a landscape's distance in a relative depth and is not
+  one — the rule stands down with a face or a large subject unless CLIP calls the picture a landscape or a
+  townscape (the 7.19.0 caveat closed).
+- Documented in `Documentation/PAINT_PLAN.md` (the critic's section with its table of readings and moves, the
+  compare command, the light and depth rows) and `PAINT_CONTROLS.md` (the `light` key). Eight tests: a sheet
+  identical to its source keeps everything; a blurred lighter copy loses its edges and its focus and shifts its
+  key, and a larger copy meets the source at the working size; the focus mask selects the region it names; the
+  table and the contact sheet render and every glyph is 5×7; the light read from a lit gradient sets the lamp;
+  the depth rule stands down on a portrait and fires on a landscape; the critic moves the plan's dials by the
+  deficit and no others; a plan read back from its text keeps its keys. Ten media checked byte-identical
+  against their reference sheets (the four that differ differ exactly by the 7.18.0 SAM fix, unchanged).
+
 ## What's new in 7.19.0 — The art director with eyes — the picture read by the vision models, the medium's house recipe, the plan written with every dial's reason
 
 `--plan auto` wrote the structure of a painting (some fifteen keys) and left every dial of the medium to its
