@@ -195,6 +195,32 @@ pub enum PaintCmd {
     Palette(PaletteArgs),
     /// Analyze an image (art director) and write a PAINTING PLAN — the structural decisions the paint stage runs.
     Plan(PlanArgs),
+    /// Measure painted sheets against their source — the review cycles' numbers as one table (the key, the value
+    /// spread, the calm and the busy fields, the edges and the points of light kept, the chroma) and a contact sheet.
+    Compare(CompareArgs),
+}
+
+/// `plakat paint compare <source> <sheet>...`
+#[derive(Args, Debug)]
+pub struct CompareArgs {
+    /// The source picture.
+    pub source: PathBuf,
+    /// The painted sheets (one or more; any size — each meets the source at the director's working size).
+    #[arg(required = true, num_args = 1..)]
+    pub sheets: Vec<PathBuf>,
+    /// A 0..1 focus mask (a grey image of any size — the face, the subject) for the focus/periphery contrast;
+    /// without it the focus is the central half of the sheet.
+    #[arg(long, value_name = "PATH")]
+    pub focus: Option<PathBuf>,
+    /// Write the table (Markdown) here as well as to the terminal.
+    #[arg(short, long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Write a contact sheet — the source and the sheets in a row, labelled — here.
+    #[arg(long, value_name = "PATH")]
+    pub sheet: Option<PathBuf>,
+    /// The contact sheet's thumbnail height in pixels.
+    #[arg(long, default_value_t = 384)]
+    pub thumb: u32,
 }
 
 #[derive(Args, Debug)]
@@ -221,6 +247,14 @@ pub struct PlanArgs {
     /// gated and written as their own section (a hosted provider: the picture leaves this machine).
     #[arg(long, value_name = "PROVIDER")]
     pub model: Option<String>,
+    /// THE CRITIC: a sheet painted from this picture — measured against it, the readings and the dials moved by the
+    /// deficit appended to the plan (the director's, or `--plan`'s) and the plan written.
+    #[arg(long, value_name = "SHEET")]
+    pub verdict: Option<PathBuf>,
+    /// With `--verdict`: the plan the sheet was painted with (default: the director's plan composed afresh; the
+    /// verdict is written back to this file unless `-o` names another).
+    #[arg(long, value_name = "PLAN", requires = "verdict")]
+    pub plan: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -550,7 +584,7 @@ pub struct ReplayArgs {
     pub until: Option<u32>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct FromArgs {
     /// The reference image to repaint.
     pub input: PathBuf,
@@ -772,6 +806,10 @@ pub struct FromArgs {
     /// skips, frays and tears there and the canvas shows through the loose edge. Plan: `periphery_dry`
     #[arg(long)]
     pub periphery_dry: Option<f32>,
+    /// LIGHT (degrees, 0 = the old fixed lamp): where the relight's lamp comes from — 0 the right, 90 below, 180
+    /// the left, 270 above. The director reads it from the picture (`--make-plan`). Plan: `light`
+    #[arg(long)]
+    pub light: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -1026,6 +1064,11 @@ pub struct FromArgs {
     /// or the faces, values clamped) and written as their own section. A hosted provider: the picture leaves this machine.
     #[arg(long, value_name = "PROVIDER", requires = "make_plan")]
     pub make_plan_model: Option<String>,
+    /// THE CRITIC (with `--make-plan`): after the painting, measure the sheet against the picture, move the plan's
+    /// dials by the deficit (bounded steps, each with its measurement, written into the plan) and paint again — up
+    /// to N more times, stopping when the critic moves nothing. The intermediate sheets are kept as `<out>.i<k>`.
+    #[arg(long, value_name = "N", default_value_t = 0, requires = "make_plan")]
+    pub make_plan_iterate: u32,
 }
 
 #[derive(Args, Debug)]
@@ -1049,7 +1092,9 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::New(a)) => run_new(a),
         Some(PaintCmd::Show(a)) => run_show(a, false),
         Some(PaintCmd::Lint(a)) => run_show(a, true),
+        Some(PaintCmd::From(a)) if a.make_plan_iterate > 0 && a.make_plan.is_some() => run_from_iterate(a).await,
         Some(PaintCmd::From(a)) => run_from(a).await,
+        Some(PaintCmd::Compare(a)) => run_compare(a),
         Some(PaintCmd::Replay(a)) => run_replay(a),
         Some(PaintCmd::Export(a)) => run_export(a),
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
@@ -1769,7 +1814,27 @@ async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str, from
 }
 
 async fn run_plan(a: PlanArgs) -> Result<()> {
-    let (text, notes) = if a.director || a.model.is_some() {
+    let (text, notes) = if let Some(sheet) = &a.verdict {
+        // THE CRITIC: the plan the sheet was painted with (or the director's, composed afresh), the sheet measured
+        // against the picture, the verdict appended.
+        let d = match &a.plan {
+            Some(p) => crate::paint::director::Directed::from_text(&std::fs::read_to_string(p).with_context(|| format!("reading the plan {}", p.display()))?)?,
+            None => make_plan(&a.input, &a.medium, &a.palette, a.new_painting, a.model.as_deref()).await?,
+        };
+        let source = image::open(&a.input).with_context(|| format!("reading {}", a.input.display()))?.to_rgb8();
+        let painted = image::open(sheet).with_context(|| format!("reading the sheet {}", sheet.display()))?.to_rgb8();
+        let c = crate::paint::measure::compare(&source, &painted, None);
+        let medium = d.keys.get("medium").cloned().unwrap_or_else(|| a.medium.clone());
+        let v = crate::paint::director::verdict(&c, &d, &medium);
+        let label = format!("the sheet {}", sheet.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+        let d2 = crate::paint::director::apply_verdict(&d, &label, &v)?;
+        let mut notes = v.readings.clone();
+        if v.moves.is_empty() {
+            notes.push("the critic moves nothing".into());
+        }
+        notes.extend(v.moves.iter().map(|m| format!("{}: {}  — {}", m.key, m.value, m.why)));
+        (d2.text, notes)
+    } else if a.director || a.model.is_some() {
         let d = make_plan(&a.input, &a.medium, &a.palette, a.new_painting, a.model.as_deref()).await?;
         (d.text, d.notes)
     } else {
@@ -1780,7 +1845,7 @@ async fn run_plan(a: PlanArgs) -> Result<()> {
     match a.out.as_deref() {
         Some(p) if p.as_os_str() == "-" => print!("{text}"),
         _ => {
-            let out = a.out.unwrap_or_else(|| a.input.with_extension("plan.hjson"));
+            let out = a.out.or_else(|| a.plan.clone()).unwrap_or_else(|| a.input.with_extension("plan.hjson"));
             std::fs::write(&out, &text).with_context(|| format!("writing {}", out.display()))?;
             println!("{}  painting plan → {}", style("✓").green(), out.display());
             for n in &notes {
@@ -1954,6 +2019,97 @@ async fn make_plan(input: &std::path::Path, medium: &str, palette: &str, from_sc
         }
     }
     Ok(d)
+}
+
+/// `plakat paint compare`: the sheets measured against the source (`crate::paint::measure`), one table, a
+/// contact sheet when asked. Nothing is painted.
+fn run_compare(a: CompareArgs) -> Result<()> {
+    let source = image::open(&a.source).with_context(|| format!("reading {}", a.source.display()))?.to_rgb8();
+    let focus = match &a.focus {
+        Some(p) => {
+            let g = image::open(p).with_context(|| format!("reading the focus mask {}", p.display()))?.to_luma8();
+            Some((g.pixels().map(|px| px.0[0] as f32 / 255.0).collect::<Vec<f32>>(), g.width(), g.height()))
+        }
+        None => None,
+    };
+    let mut rows: Vec<(String, crate::paint::measure::Comparison)> = Vec::new();
+    let mut imgs: Vec<(String, image::RgbImage)> = Vec::new();
+    for s in &a.sheets {
+        let img = image::open(s).with_context(|| format!("reading the sheet {}", s.display()))?.to_rgb8();
+        let name = s.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| s.display().to_string());
+        let c = crate::paint::measure::compare(&source, &img, focus.as_ref().map(|(m, w, h)| (m.as_slice(), *w, *h)));
+        rows.push((name.clone(), c));
+        imgs.push((name, img));
+    }
+    let table = crate::paint::measure::table(&rows);
+    print!("{table}");
+    if let Some(out) = &a.out {
+        std::fs::write(out, &table).with_context(|| format!("writing {}", out.display()))?;
+        println!("{}  table → {}", style("✓").green(), out.display());
+    }
+    if let Some(sheet) = &a.sheet {
+        let img = crate::paint::measure::contact_sheet(&source, &imgs, a.thumb.max(32));
+        img.save(sheet).with_context(|| format!("writing {}", sheet.display()))?;
+        println!("{}  contact sheet → {}", style("✓").green(), sheet.display());
+    }
+    Ok(())
+}
+
+/// `--make-plan --make-plan-iterate N`: paint from the director's plan, let the critic measure the sheet against
+/// the picture and move the plan's dials by the deficit, paint again from the amended plan — N more times at most,
+/// stopping when the critic moves nothing. Each verdict is appended to the plan beside the output; the
+/// intermediate sheets are kept as `<stem>.i<k>.<ext>`, the last one is the output.
+async fn run_from_iterate(a: FromArgs) -> Result<()> {
+    let n = a.make_plan_iterate;
+    let dest = a.make_plan.clone().unwrap_or_default();
+    let plan_path = if dest.is_empty() { a.out.with_extension("plan.hjson") } else { PathBuf::from(dest) };
+    let stem = a.out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "out".into());
+    let ext = a.out.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "png".into());
+    let source = image::open(&a.input).with_context(|| format!("reading {}", a.input.display()))?.to_rgb8();
+    for k in 0..=n {
+        let mut ak = a.clone();
+        ak.make_plan_iterate = 0;
+        ak.out = if k == n { a.out.clone() } else { a.out.with_file_name(format!("{stem}.i{k}.{ext}")) };
+        if k > 0 {
+            ak.make_plan = None;
+            ak.plan = Some(plan_path.to_string_lossy().to_string());
+        } else {
+            // The one plan file for the whole loop, named outright (the first sheet is `<stem>.i0`).
+            ak.make_plan = Some(plan_path.to_string_lossy().to_string());
+        }
+        let out_k = ak.out.clone();
+        run_from(ak).await?;
+        if k == n {
+            break;
+        }
+        let sheet = image::open(&out_k).with_context(|| format!("reading the sheet {}", out_k.display()))?.to_rgb8();
+        let c = crate::paint::measure::compare(&source, &sheet, None);
+        let text = std::fs::read_to_string(&plan_path).with_context(|| format!("reading the plan {}", plan_path.display()))?;
+        let d = crate::paint::director::Directed::from_text(&text)?;
+        let medium = d.keys.get("medium").cloned().or_else(|| a.medium.clone()).unwrap_or_else(|| "watercolour".into());
+        let v = crate::paint::director::verdict(&c, &d, &medium);
+        println!("{}  the critic on {} (iteration {k}):", style("◆").cyan(), out_k.display());
+        for r in &v.readings {
+            println!("{}  {r}", style("·").dim());
+        }
+        let label = format!("iteration {k}, the sheet {}", out_k.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+        let d2 = crate::paint::director::apply_verdict(&d, &label, &v)?;
+        std::fs::write(&plan_path, &d2.text).with_context(|| format!("writing the plan {}", plan_path.display()))?;
+        if v.moves.is_empty() {
+            println!("{}  the critic moves nothing — the sheet stands: {} → {}", style("✓").green(), out_k.display(), a.out.display());
+            std::fs::copy(&out_k, &a.out).with_context(|| format!("copying {} to {}", out_k.display(), a.out.display()))?;
+            let score = out_k.with_extension("strokes");
+            if score.exists() {
+                std::fs::copy(&score, a.out.with_extension("strokes")).ok();
+            }
+            break;
+        }
+        for m in &v.moves {
+            println!("{}  {}: {}  — {}", style("·").dim(), m.key, m.value, m.why);
+        }
+        println!("{}  plan amended → {}; painting again", style("◆").cyan(), plan_path.display());
+    }
+    Ok(())
 }
 
 fn run_new(a: NewArgs) -> Result<()> {
@@ -2841,6 +2997,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.periphery_dry.is_none() {
             a.periphery_dry = plan.periphery_dry;
         }
+        if a.light.is_none() {
+            a.light = plan.light;
+        }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
         }
@@ -3128,6 +3287,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.cavity = a.cavity.unwrap_or(0.0).clamp(0.0, 1.0);
     params.cavity_face = a.cavity_face.unwrap_or(1.0).clamp(0.0, 1.0);
     params.periphery_dry = a.periphery_dry.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.light = a.light.unwrap_or(0.0).rem_euclid(360.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
