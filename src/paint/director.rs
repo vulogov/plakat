@@ -333,6 +333,11 @@ pub struct SceneFacts {
     /// megapixel of the sheet — the stars, the lamps, the glints on a night sea (268 on the verification set's
     /// night sea, 168 on its lamplit harbour, 40–70 on its daylight pictures).
     pub points_per_mpx: f32,
+    /// The picture's LIGHT: the azimuth it comes from in degrees (the finish's convention — 0 from the right, 90
+    /// from below, 180 from the left, 270 from above) and the COHERENCE — the share of the luma's variance one
+    /// plane over the sheet explains (`light_of`; 0 no one direction, 1 one light). Always read; the rules trust
+    /// it over 0.25.
+    pub light: (f32, f32),
     /// Faces found (SCRFD, the animal boxes dropped). 0 when the detector did not run.
     pub faces: usize,
     /// The faces' share of the sheet (the focal mask's mean), 0 without a face.
@@ -353,6 +358,46 @@ pub struct SceneFacts {
     pub stone_share: Option<f32>,
     /// What each model reported (ran, or why not) — for the plan's header and the terminal.
     pub sources: Vec<String>,
+}
+
+/// Where the light comes from: a PLANE fitted to the luma over the sheet (least squares, the sheet's centre
+/// the origin, the long side the unit) — the plane rises toward the light, so its gradient's azimuth is the
+/// light's; the share of the luma's variance the plane explains (R²) is the coherence. On the verification set
+/// a storm sky reads 261° (above) at 0.72, a lamplit hull 294° at 0.67, a street or a portrait under 0.15: the
+/// rules trust it over 0.25. Returns (azimuth in degrees, the finish's convention; coherence 0..1).
+pub fn light_of(luma: &[f32], w: usize, h: usize) -> (f32, f32) {
+    let n = (w * h) as f64;
+    if n < 4.0 {
+        return (0.0, 0.0);
+    }
+    let mean = luma.iter().map(|v| *v as f64).sum::<f64>() / n;
+    let long = w.max(h) as f64;
+    let (mut su, mut sv, mut bu, mut bv, mut st) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for y in 0..h {
+        let v = (y as f64 - (h as f64 - 1.0) / 2.0) / long;
+        for x in 0..w {
+            let u = (x as f64 - (w as f64 - 1.0) / 2.0) / long;
+            let d = luma[y * w + x] as f64 - mean;
+            su += u * u;
+            sv += v * v;
+            bu += u * d;
+            bv += v * d;
+            st += d * d;
+        }
+    }
+    if st < 1e-12 || su < 1e-12 || sv < 1e-12 {
+        return (0.0, 0.0);
+    }
+    let (bx, by) = (bu / su, bv / sv);
+    let r2 = ((bx * bx * su + by * by * sv) / st).clamp(0.0, 1.0) as f32;
+    let az = (by.atan2(bx).to_degrees() as f32).rem_euclid(360.0);
+    (az, r2)
+}
+
+/// The compass word for a light azimuth in the finish's convention.
+pub fn compass(az: f32) -> &'static str {
+    const W: [&str; 8] = ["the right", "the lower right", "below", "the lower left", "the left", "the upper left", "above", "the upper right"];
+    W[(((az.rem_euclid(360.0) + 22.5) / 45.0) as usize) % 8]
 }
 
 impl SceneFacts {
@@ -400,9 +445,11 @@ impl SceneFacts {
         } else {
             0
         };
+        let lamp = if w >= 8 && h >= 8 { light_of(&luma, w, h) } else { (0.0, 0.0) };
         SceneFacts {
             width: img.width(),
             height: img.height(),
+            light: lamp,
             luma_mean: mean,
             luma_stddev: sd,
             dark_share: dark,
@@ -449,6 +496,7 @@ impl SceneFacts {
                 self.warm_share * 100.0
             ),
             format!("points of light on a dark ground: {:.1} per megapixel", self.points_per_mpx),
+            format!("light: from {:.0}° ({}), coherence {:.2} (the share of the luma a plane explains){}", self.light.0, compass(self.light.0), self.light.1, if self.light.1 > 0.25 { "" } else { " — no one direction" }),
         ];
         if self.faces > 0 {
             o.push(format!("faces: {} (SCRFD), {:.1}% of the sheet", self.faces, self.face_share * 100.0));
@@ -489,7 +537,7 @@ pub struct Adjust {
 /// the picture's palette count.
 pub const STRUCTURAL: &[&str] = &[
     "medium", "palette", "style", "armature", "armature_face", "armature_body", "recede", "new", "semantic", "sam", "families",
-    "commit_shadows", "value_key", "shadow_floor", "detail_len", "reserve", "budget", "pigments",
+    "commit_shadows", "value_key", "shadow_floor", "detail_len", "reserve", "budget", "pigments", "light",
 ];
 
 /// The keys a MODEL may never move: the structure, the medium's identity, the sheet's masks and ladders.
@@ -544,6 +592,21 @@ impl Table<'_> {
             if cur > cap + 1e-4 {
                 self.set(key, fmt(cap), format!("{why} (was {})", fmt(cur)));
             }
+        }
+    }
+    /// Move a dial the plan names by `delta` within [0, cap] — the critic's step. A dial at 0 is not turned on (the
+    /// medium's decision) unless it is the structure's own (the key, the floor).
+    fn nudge(&mut self, key: &str, delta: f32, cap: f32, why: &str) {
+        if !self.named(key) {
+            return;
+        }
+        let Some(cur) = self.current(key) else { return };
+        if cur <= 0.0 && delta > 0.0 && !STRUCTURAL.contains(&key) {
+            return;
+        }
+        let new = (cur + delta).clamp(0.0, cap);
+        if (new - cur).abs() > 1e-3 {
+            self.set(key, fmt(new), format!("{why} (was {})", fmt(cur)));
         }
     }
     /// Scale a dial the recipe names by `k`.
@@ -690,9 +753,12 @@ pub fn rules(f: &SceneFacts, base: &PaintPlan, values: &BTreeMap<String, String>
     }
 
     // 9. DEPTH (Depth-Anything, RELATIVE — the nearest thing at 1, the farthest at 0): when most of the sheet lies
-    //    far behind the nearest plane — a landscape's distance, a portrait's wall — the far passages soften.
+    //    far behind the nearest plane the far passages soften. A portrait's wall is as far as a landscape's
+    //    distance in a relative depth, but it is not a distance: the rule stands down when the picture has a face
+    //    or a large subject, unless CLIP calls it a landscape or a townscape (7.20.0).
     if let Some(far) = f.far_share {
-        if far > 0.45 {
+        let scenic = matches!(f.genre, Some((Genre::Landscape | Genre::Townscape, c)) if c > 0.4) || (f.faces == 0 && f.subject_share.map_or(true, |s| s < 0.3));
+        if far > 0.45 && scenic {
             let m = format!("the far ground: {:.0}% of the sheet lies in the relative distance", far * 100.0);
             t.raise("aerial", 0.3, &format!("{m} — the far passages lose edge by depth"));
             t.raise("lost", 0.2, &format!("{m} — the far edges dissolve"));
@@ -763,6 +829,21 @@ pub fn rules(f: &SceneFacts, base: &PaintPlan, values: &BTreeMap<String, String>
             t.raise("aerial", 0.2, &format!("a landscape ({:.0}%) — the distance loses edge", c * 100.0));
         }
         _ => {}
+    }
+    // 14. THE LIGHT (7.20.0): the relief's lamp set where the picture's light comes from, when the luma's gradient
+    //     has one direction (coherence over 0.25) and the medium has a relief to light — the recipe's impasto or
+    //     ridges, or the knife's blade. A picture lit from the left and relit from the lower right reads wrong in
+    //     every furrow.
+    let (az, coh) = f.light;
+    if coh > 0.25 {
+        let az5 = ((az / 5.0).round() * 5.0).rem_euclid(360.0);
+        let m = format!("the picture's light comes from {az5:.0}°, {} (coherence {coh:.2})", compass(az5));
+        let on = |k: &str| values.get(k).and_then(|v| parse_num(v)).map_or(false, |v| v > 0.0);
+        if values.contains_key("blade_light") {
+            t.set("blade_light", fmt(az5), format!("{m} — the knife's lamp set from it"));
+        } else if on("impasto") || on("ridges") || on("impasto_map") {
+            t.set("light", fmt(az5), format!("{m} — the relief's lamp set from it"));
+        }
     }
     // The knife and the dots have their own machinery: the brush dials above that their recipes do not name were
     // skipped by `raise`, so nothing is left to undo here.
@@ -970,19 +1051,29 @@ pub fn accept_model_lines(text: &str, d: &Directed) -> (Vec<Adjust>, Vec<String>
 
 /// Write the model's accepted lines into the plan as their own section and re-parse it.
 pub fn apply_model(d: &Directed, label: &str, accepted: &[Adjust], rejected: &[String]) -> anyhow::Result<Directed> {
-    // A plan reads a key once (the parser refuses a duplicate): the line the model moves is kept as a comment.
+    let header = format!("── the model's adjustments ({label}; the picture seen, the lines gated: the medium's dials only, never the structure or the faces) ──");
+    apply_section(d, &header, "the model", &[], accepted, rejected)
+}
+
+/// Append a section to the plan — `comments` as `#` lines, `accepted` as keys with their reasons, `rejected` as
+/// refusals — and re-parse it. A plan reads a key once (the parser refuses a duplicate), so the line a moved key
+/// had is kept as a comment naming `mover`.
+fn apply_section(d: &Directed, header: &str, mover: &str, comments: &[String], accepted: &[Adjust], rejected: &[String]) -> anyhow::Result<Directed> {
     let moved: std::collections::BTreeSet<&str> = accepted.iter().map(|a| a.key.as_str()).collect();
     let entries: Vec<Entry> = parse_entries(&d.text)
         .into_iter()
         .map(|e| match e {
-            Entry::Key { key, value, comment } if moved.contains(key.as_str()) => Entry::Comment(format!("{key}: {value}   (moved below by the model){}", comment.map(|c| format!(" — {c}")).unwrap_or_default())),
+            Entry::Key { key, value, comment } if moved.contains(key.as_str()) => Entry::Comment(format!("{key}: {value}   (moved below by {mover}){}", comment.map(|c| format!(" — {c}")).unwrap_or_default())),
             other => other,
         })
         .collect();
     let mut text = entries_text(&entries);
-    text.push_str(&format!("\n# ── the model's adjustments ({label}; the picture seen, the lines gated: the medium's dials only, never the structure or the faces) ──\n"));
+    text.push_str(&format!("\n# {header}\n"));
+    for c in comments {
+        text.push_str(&format!("# {c}\n"));
+    }
     if accepted.is_empty() {
-        text.push_str("# none accepted\n");
+        text.push_str(&format!("# {mover} moves nothing\n"));
     }
     for a in accepted {
         text.push_str(&format!("{}: {}   # {}\n", a.key, a.value, a.why));
@@ -990,16 +1081,130 @@ pub fn apply_model(d: &Directed, label: &str, accepted: &[Adjust], rejected: &[S
     for r in rejected {
         text.push_str(&format!("# refused: {r}\n"));
     }
-    let plan = PaintPlan::parse(&text).map_err(|e| anyhow::anyhow!("the plan with the model's lines does not parse: {e}"))?;
+    let plan = PaintPlan::parse(&text).map_err(|e| anyhow::anyhow!("the plan with {mover}'s lines does not parse: {e}"))?;
     let mut keys = d.keys.clone();
     let mut adjustments = d.adjustments.clone();
     let mut notes = d.notes.clone();
     for a in accepted {
         keys.insert(a.key.clone(), a.value.clone());
         adjustments.push(a.clone());
-        notes.push(format!("{}: {}  — model: {}", a.key, a.value, a.why));
+        notes.push(format!("{}: {}  — {mover}: {}", a.key, a.value, a.why));
     }
     Ok(Directed { text, plan, notes, adjustments, keys })
+}
+
+impl Directed {
+    /// A plan read back from its file — one the director wrote, or any plan: the keys it names are its dials.
+    pub fn from_text(text: &str) -> anyhow::Result<Directed> {
+        let plan = PaintPlan::parse(text).map_err(|e| anyhow::anyhow!("the plan does not parse: {e}"))?;
+        let keys = values_of(&parse_entries(text));
+        Ok(Directed { text: text.to_string(), plan, notes: Vec::new(), adjustments: Vec::new(), keys })
+    }
+}
+
+// ─────────────────────────────────────────────── the critic ──────────────────────────────────────────────
+
+/// THE CRITIC'S VERDICT (7.20.0): the painted sheet measured against the source (`measure::compare`), every
+/// reading written, and the dials the plan names moved by the DEFICIT — bounded steps (a fifth of a dial, a tenth
+/// of the key, a twentieth of the floor), under the model's gate (no structure but the key and the floor, no
+/// faces, no dial the medium holds at 0). The critic does not know whether the painting is good; it knows what
+/// the sheet kept of the picture, and says so.
+#[derive(Clone, Debug, Default)]
+pub struct Verdict {
+    pub readings: Vec<String>,
+    pub moves: Vec<Adjust>,
+}
+
+pub fn verdict(c: &super::measure::Comparison, d: &Directed, medium: &str) -> Verdict {
+    let fam = family_of(medium);
+    let readings = super::measure::readings(c);
+    let mut t = Table { values: &d.keys, out: Vec::new() };
+    let pc = |v: f32| format!("{:.0}%", v * 100.0);
+
+    // 1. THE KEY: a sheet lighter or darker than its source beyond 0.08 moves the shadow floor a step.
+    if c.key_shift.abs() > 0.08 {
+        let m = format!("the sheet's mean luma {:+.2} against the source's", c.key_shift);
+        if c.key_shift > 0.0 {
+            t.nudge("shadow_floor", -0.05, 0.6, &format!("{m} — the darks deeper"));
+        } else {
+            t.nudge("shadow_floor", 0.05, 0.6, &format!("{m} — the darks lifted"));
+        }
+    }
+    // 2. THE RANGE: the values compressed or stretched.
+    if c.range_ratio < 0.8 {
+        t.nudge("value_key", 0.1, 1.0, &format!("the value spread {:.2} of the source's — the key expanded", c.range_ratio));
+    } else if c.range_ratio > 1.25 {
+        t.nudge("value_key", -0.1, 1.0, &format!("the value spread {:.2} of the source's — the key eased", c.range_ratio));
+    }
+    // 3. THE FOCUS: the local contrast lost, or overworked.
+    if c.contrast_focus < 0.7 || c.busy_kept < 0.5 {
+        let m = format!("local contrast in the focus {:.2} of the source's, the busy passages kept {}", c.contrast_focus, pc(c.busy_kept));
+        t.nudge("micro", 0.2, 1.0, &format!("{m} — the fine brush restates more"));
+        t.nudge("adapt", 0.2, 1.0, &format!("{m} — the brush follows the detail closer"));
+        t.nudge("detail_restate", 0.03, 0.2, &format!("{m} — more cells restated"));
+        t.nudge("aqua_detail", 0.2, 1.0, &format!("{m} — the water's detail pass fuller"));
+        t.nudge("aqua_crisp", 0.2, 1.0, &format!("{m} — the dry sessions crisper"));
+        t.nudge("dot_fine", 0.2, 1.0, &format!("{m} — the fine dots denser"));
+    } else if c.contrast_focus > 1.4 {
+        let m = format!("local contrast in the focus {:.2} of the source's — overworked", c.contrast_focus);
+        t.scale("micro", 0.7, &format!("{m} — the fine brush restates less"));
+        t.scale("detail_restate", 0.7, &format!("{m} — fewer cells restated"));
+    }
+    // 4. THE CALM FIELDS broken.
+    if c.calm_kept < 0.6 || c.contrast_periphery > 1.3 {
+        let m = format!("the calm fields kept {}, the periphery's contrast {:.2} of the source's", pc(c.calm_kept), c.contrast_periphery);
+        t.nudge("smooth", 0.2, 1.0, &format!("{m} — the fields smoothed"));
+        t.nudge("settle", 0.2, 1.0, &format!("{m} — the paint settles into the grain"));
+        t.scale("fray", 0.7, &format!("{m} — the frayed tails fewer"));
+        t.scale("collide", 0.7, &format!("{m} — the wet collisions fewer"));
+        t.nudge("aqua_soft", 0.2, 1.0, &format!("{m} — the washes softer"));
+    }
+    // 5. THE EDGES lost.
+    if c.edges_kept < 0.5 {
+        let m = format!("{} of the strong edges carried", pc(c.edges_kept));
+        t.nudge("adapt", 0.2, 1.0, &format!("{m} — the brush follows the edges"));
+        t.scale("lost", 0.7, &format!("{m} — fewer edges lost on purpose"));
+        t.scale("sfumato", 0.7, &format!("{m} — less sfumato"));
+        t.nudge("chisel", 0.2, 1.0, &format!("{m} — the flat brush's edge"));
+    }
+    // 6. THE POINTS OF LIGHT not laid.
+    if let Some(k) = c.points_kept {
+        if c.source.points_per_mpx >= 100.0 && k < 0.5 {
+            let m = format!("{:.0} points of light per Mpx on the source, {:.2} of them on the sheet", c.source.points_per_mpx, k);
+            t.nudge("point", 0.2, 1.0, &format!("{m} — the points set with the brush's point"));
+            t.nudge("point_field", 0.2, 1.0, &format!("{m} — the field of points"));
+            t.nudge("hotspot", 0.2, 1.0, &format!("{m} — the highlights re-modelled"));
+        }
+    }
+    // 7. THE COLOUR: the palette's count — only a picture painted from ITS OWN palette (`palette: image`; a named
+    //    palette, sumi or a limited one, is the medium's colour by decision), not a luminous or a dotted medium.
+    let own_palette = d.keys.get("palette").map(|p| p.trim() == "image").unwrap_or(false);
+    if let (Some(r), false, false, true) = (c.chroma_ratio, fam.luminous, fam.dots, own_palette) {
+        if let Some(cur) = t.current("pigments") {
+            if cur > 0.0 && r < 0.7 {
+                t.set("pigments", fmt((cur + 4.0).min(32.0)), format!("the sheet's chroma {:.2} of the source's — four more pigments (was {})", r, fmt(cur)));
+            } else if cur > 6.0 && r > 1.4 {
+                t.set("pigments", fmt((cur - 4.0).max(6.0)), format!("the sheet's chroma {:.2} of the source's — four fewer pigments (was {})", r, fmt(cur)));
+            }
+        }
+    }
+    // 8. THE BARE WHITE on a paper medium beyond the source's lights.
+    if fam.surface_white {
+        let extra = c.sheet.bare_share - c.source.light_share;
+        if extra > 0.15 {
+            let m = format!("bare white {} of the sheet against the source's lights {}", pc(c.sheet.bare_share), pc(c.source.light_share));
+            t.scale("aqua_reserve", 0.7, &format!("{m} — less paper reserved"));
+            t.scale("paper", 0.7, &format!("{m} — less paper left"));
+            t.nudge("reserve", -0.1, 1.0, &format!("{m} — the reserve lowered"));
+        }
+    }
+    Verdict { readings, moves: t.out }
+}
+
+/// Write the verdict into the plan as its own section (the readings as comments, the moves as keys) and re-parse.
+pub fn apply_verdict(d: &Directed, label: &str, v: &Verdict) -> anyhow::Result<Directed> {
+    let header = format!("── the critic's verdict ({label}; the sheet measured against the source, each dial moved by its deficit in a bounded step) ──");
+    apply_section(d, &header, "the critic", &v.readings, &v.moves, &[])
 }
 
 #[cfg(test)]
@@ -1261,6 +1466,124 @@ mod tests {
         let (sky, water, fol, stone) = stuff_shares(&s);
         assert!(sky > 0.9 && water < 0.05 && fol < 0.05 && stone < 0.05, "{sky} {water} {fol} {stone}");
         assert_eq!(stuff_shares(&[0.1, 0.2]), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn the_light_is_read_from_a_lit_gradient_and_sets_the_lamp() {
+        // Lit from the left: the luma falls with x, so the gradient points to −x — the light at 180°.
+        let (w, h) = (160usize, 120usize);
+        let luma: Vec<f32> = (0..w * h).map(|i| 0.9 - 0.6 * (i % w) as f32 / w as f32).collect();
+        let (az, coh) = light_of(&luma, w, h);
+        assert!((az - 180.0).abs() < 5.0, "az {az}");
+        assert!(coh > 0.9, "coherence {coh}");
+        assert_eq!(compass(az), "the left");
+        assert_eq!(compass(275.0), "above");
+        // A flat field has no direction.
+        assert_eq!(light_of(&vec![0.5; w * h], w, h), (0.0, 0.0));
+        // The facts carry it and the rule sets the lamp of a medium with a relief — oil-direct names `blade_light`,
+        // so that key is the lamp; a medium without a relief gets no lamp.
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, _| { let v = (230.0 - 150.0 * x as f32 / w as f32) as u8; image::Rgb([v, v, v]) });
+        let f = SceneFacts::from_pixels(&img);
+        assert!((f.light.0 - 180.0).abs() < 5.0 && f.light.1 > 0.9, "{:?}", f.light);
+        assert!(f.describe().iter().any(|l| l.starts_with("light: from 18") && l.contains("the left")), "{:?}", f.describe());
+        let mut ff = facts(0.5, 0.2);
+        ff.light = (182.0, 0.8);
+        let d = direct(&analysis("oil-direct", 0.5, 0.2, 0), &ff, "p.png").unwrap();
+        let v = values_of(&parse_entries(&d.text));
+        assert_eq!(v["blade_light"], "180", "{}", d.text);
+        assert!(d.adjustments.iter().any(|a| a.key == "blade_light" && a.why.contains("the left")), "{:?}", d.adjustments);
+        let d = direct(&analysis("pen-ink", 0.5, 0.2, 0), &ff, "p.png").unwrap();
+        let v = values_of(&parse_entries(&d.text));
+        assert!(!v.contains_key("light") && !v.contains_key("blade_light"), "no relief, no lamp: {}", d.text);
+        // No coherence, no lamp.
+        ff.light = (182.0, 0.1);
+        let d = direct(&analysis("oil-direct", 0.5, 0.2, 0), &ff, "p.png").unwrap();
+        assert!(!d.adjustments.iter().any(|a| a.key == "blade_light"), "{:?}", d.adjustments);
+    }
+
+    #[test]
+    fn the_depth_rule_stands_down_on_a_portrait_and_fires_on_a_landscape() {
+        let mut f = facts(0.5, 0.2);
+        f.far_share = Some(0.6);
+        f.faces = 1;
+        f.face_share = 0.1;
+        let d = direct(&analysis("oil-direct", 0.5, 0.2, 1), &f, "p.png").unwrap();
+        assert!(!d.adjustments.iter().any(|a| a.why.contains("far ground")), "a portrait's wall is not a distance: {:?}", d.adjustments);
+        // The same wall on a picture CLIP calls a landscape IS a distance.
+        f.genre = Some((Genre::Landscape, 0.8));
+        let d = direct(&analysis("oil-direct", 0.5, 0.2, 1), &f, "p.png").unwrap();
+        assert!(d.adjustments.iter().any(|a| a.why.contains("far ground")), "{:?}", d.adjustments);
+        // And a picture with no face and no large subject.
+        f.genre = None;
+        f.faces = 0;
+        f.subject_share = Some(0.1);
+        let d = direct(&analysis("oil-direct", 0.5, 0.2, 0), &f, "p.png").unwrap();
+        assert!(d.adjustments.iter().any(|a| a.why.contains("far ground")), "{:?}", d.adjustments);
+    }
+
+    #[test]
+    fn the_critic_moves_the_plan_s_dials_by_the_deficit_and_no_others() {
+        use super::super::measure::{Comparison, Measures};
+        let a = analysis("oil-direct", 0.5, 0.2, 0);
+        let d = direct(&a, &facts(0.5, 0.2), "p.png").unwrap();
+        let floor = parse_num(&d.keys["shadow_floor"]).unwrap();
+        let key = parse_num(&d.keys["value_key"]).unwrap();
+        let micro = parse_num(&d.keys["micro"]).unwrap();
+        assert!(micro > 0.0, "the oil recipe has micro on");
+        let c = Comparison {
+            source: Measures { points_per_mpx: 150.0, light_share: 0.05, chroma_mean: 0.2, ..Default::default() },
+            sheet: Measures { points_per_mpx: 20.0, bare_share: 0.0, ..Default::default() },
+            key_shift: 0.12,
+            range_ratio: 0.6,
+            contrast_focus: 0.5,
+            contrast_periphery: 0.9,
+            calm_kept: 0.4,
+            busy_kept: 0.3,
+            edges_kept: 0.3,
+            points_kept: Some(0.13),
+            chroma_ratio: Some(0.5),
+            tone_overlap: 0.6,
+            ..Default::default()
+        };
+        let v = verdict(&c, &d, "oil-direct");
+        assert!(v.readings.len() >= 8, "{:?}", v.readings);
+        let get = |k: &str| v.moves.iter().find(|m| m.key == k).map(|m| parse_num(&m.value).unwrap());
+        assert_eq!(get("shadow_floor"), Some(((floor - 0.05).max(0.0) * 100.0).round() / 100.0), "{:?}", v.moves);
+        assert_eq!(get("value_key"), Some(((key + 0.1).min(1.0) * 100.0).round() / 100.0), "{:?}", v.moves);
+        assert_eq!(get("micro"), Some(((micro + 0.2).min(1.0) * 100.0).round() / 100.0), "{:?}", v.moves);
+        assert!(get("point").is_some() || parse_num(&d.keys["point"]) == Some(1.0), "the points pushed, or already at 1: {:?}", v.moves);
+        // Every move is a dial the plan names; none is a protected structural key but the key and the floor.
+        for m in &v.moves {
+            assert!(d.keys.contains_key(&m.key), "{} is not the plan's", m.key);
+            assert!(!PROTECTED.contains(&m.key.as_str()), "{} is protected", m.key);
+            assert!(!m.key.contains("face"), "{} is the face's", m.key);
+            assert!(m.why.contains("(was "), "{} without its old value: {}", m.key, m.why);
+        }
+        let d2 = apply_verdict(&d, "test", &v).unwrap();
+        assert!(d2.text.contains("the critic's verdict (test;"), "{}", d2.text);
+        assert!(d2.text.contains("(moved below by the critic)"), "{}", d2.text);
+        assert_eq!(d2.plan.value_key, get("value_key").unwrap());
+        // A sheet that kept everything moves nothing.
+        let same = Comparison { range_ratio: 1.0, contrast_focus: 1.0, contrast_periphery: 1.0, calm_kept: 1.0, busy_kept: 1.0, edges_kept: 1.0, tone_overlap: 1.0, ..Default::default() };
+        let v0 = verdict(&same, &d, "oil-direct");
+        assert!(v0.moves.is_empty(), "{:?}", v0.moves);
+        let d3 = apply_verdict(&d, "again", &v0).unwrap();
+        assert!(d3.text.contains("# the critic moves nothing"), "{}", d3.text);
+        // A dial the medium holds at 0 is not turned on by the critic either.
+        let dw = direct(&analysis("watercolour", 0.5, 0.2, 0), &facts(0.5, 0.2), "p.png").unwrap();
+        let vw = verdict(&c, &dw, "watercolour");
+        assert!(!vw.moves.iter().any(|m| m.key == "hotspot"), "watercolour's hotspot stays 0: {:?}", vw.moves);
+    }
+
+    #[test]
+    fn a_plan_read_back_from_its_text_keeps_its_keys() {
+        let d = direct(&analysis("gouache", 0.5, 0.2, 0), &facts(0.5, 0.2), "p.png").unwrap();
+        let back = Directed::from_text(&d.text).unwrap();
+        assert_eq!(back.keys, d.keys);
+        assert_eq!(back.plan.to_hjson(), d.plan.to_hjson());
+        assert!(Directed::from_text("micro: 0.5
+micro: 0.6
+").is_err(), "a duplicate key does not parse");
     }
 }
 

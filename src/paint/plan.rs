@@ -164,6 +164,11 @@ pub struct PaintPlan {
     /// PERIPHERY DRY (0..1): the brush drier toward the edges (`PaintParams::periphery_dry`). Absent = 0.
     #[serde(default)]
     pub periphery_dry: Option<f32>,
+    /// LIGHT (degrees; absent or 0 = the old fixed lamp): the azimuth the relight's lamp comes from — 0 from the
+    /// right, 90 from below, 180 from the left, 270 from above (`Finish::light`; the knife's `blade_light` is the
+    /// same lamp and takes precedence when set). The director sets it from the picture's own light (7.20.0).
+    #[serde(default)]
+    pub light: Option<f32>,
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
@@ -1108,6 +1113,7 @@ impl Default for PaintPlan {
             advect: None,
             film_flat: None,
             periphery_dry: None,
+            light: None,
             technique: None,
             diffuse: None,
             splatter: None,
@@ -1484,6 +1490,9 @@ impl PaintPlan {
         if let Some(v) = self.periphery_dry {
             o.push_str(&format!("periphery_dry: {v:.2}\n"));
         }
+        if let Some(v) = self.light {
+            o.push_str(&format!("light: {v:.0}\n"));
+        }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
@@ -1835,6 +1844,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             advect: None,
             film_flat: None,
             periphery_dry: None,
+            light: None,
             technique: None,
             diffuse: None,
             splatter: None,

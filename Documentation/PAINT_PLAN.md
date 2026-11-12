@@ -193,7 +193,7 @@ the stroke engine and the tuning knobs ([PAINT_CONTROLS.md](PAINT_CONTROLS.md),
 [PAINT_WATERCOLOR.md](PAINT_WATERCOLOR.md)). This separation is deliberate: the art director plans, the painter
 paints.
 
-### `--make-plan` — the art director with eyes (7.19.0)
+### `--make-plan` — the art director with eyes (7.19.0, the critic 7.20.0)
 
 `--plan auto` writes the **structure** only and leaves every dial of the medium to its stock profile. The review
 cycles settled, medium by medium, a *house recipe* — the plan the reviews accepted, 50–130 keys — and the rule that
@@ -233,7 +233,8 @@ The facts the rules read, and where they come from:
 | points of light on a dark ground per megapixel (100 or more) | the point pass's own detector, the ground under 0.25 | `point`, `point_field`, `hotspot` |
 | faces and their share | SCRFD | `cavity_face 0.3`, `periphery`, `advect` cut (the drag blurs the modelling), `loose` on a close portrait |
 | the subject's share and centre | U²-Net matte | a compact subject → `periphery`, `loose`; none → `periphery` down |
-| the far ground's share (relative depth: the nearest thing at 1; a portrait's wall is far as a landscape's distance is) | Depth-Anything-V2 | `aerial`, `lost`, `nib_depth`, `aqua_vignette` |
+| the far ground's share (relative depth: the nearest thing at 1) | Depth-Anything-V2 | `aerial`, `lost`, `nib_depth`, `aqua_vignette` — only on a scenic picture: no face and no large subject, or CLIP's landscape/townscape (a portrait's wall is as far as a distance in a relative depth, and is not one; 7.20.0) |
+| the light's azimuth and coherence (a plane fitted to the luma over the sheet: it rises toward the light, and the share of the variance it explains is the coherence — a storm sky 0.72, a lamplit hull 0.67, a street 0.10; the finish's convention — 0 from the right, 90 from below, 180 from the left, 270 from above) | pixels | the relight's lamp (`light`, or the knife's `blade_light` where the recipe names it) set where the picture's light comes from, when the direction is coherent (over 0.25) and the medium has a relief (7.20.0) |
 | genre (portrait / figure / landscape / townscape / still life / interior / animal) | CLIP zero-shot over the sheet | still life → `hotspot`, `glint`; interior → `shade`, `lost`; animal → `semantic`; landscape → `aerial` |
 | sky, water, foliage, stone shares | CLIP zero-shot over a 4×4-ish grid of crops | water → `glint`, `hotspot`, `smooth`; foliage → `fray`, `vary`, `haste`, `nib_tuft`; stone/townscape → `adapt`, `chisel`, `micro` |
 
@@ -249,6 +250,54 @@ structure (armature, tiers, budget, medium, palette, the switches), never a face
 dial's range; the accepted lines are written as their own section with the provider named, the refused ones as
 comments with the reason. A hosted provider means the picture leaves the machine, and the terminal says so. The
 local LLM has no vision model and the pass is skipped with a message; the plan stands without it.
+
+### The critic — `--make-plan-iterate`, `paint plan --verdict`, `paint compare` (7.20.0)
+
+The director reads the picture before the painting; the critic reads the SHEET after it, with the same eyes. Both
+pictures are reduced to the director's working size (the source's aspect at 1024) and measured alike
+(`src/paint/measure.rs`): the mean luma and its spread, the dark and light shares, the calm and busy fields by the
+local σ, the chroma and its 90th percentile, the points of light on a dark ground, the bare white, the edge energy;
+and the two compared — what the sheet KEPT of the picture: the tone histograms' overlap, the key shift, the value
+range's ratio, the local contrast kept in the focus and on the periphery, the calm fields kept calm and the busy
+passages kept busy, the strong edges carried (within a pixel, at half the strength), the points of light laid, the
+chroma ratio. Every number is a share or a ratio, so a 2k oil and a 1k watercolour of one picture sit on one table.
+
+```sh
+# the review's table for several sheets of one picture, and a contact sheet beside
+plakat paint compare pic.jpg pic_oil_v8.png pic_oil_v9.png --sheet pic_cmp.png -o pic_cmp.md
+# with a focus mask (the face, the subject) for the focus/periphery contrast
+plakat paint compare pic.jpg pic_oil.png --focus pic_face.png
+
+# paint from the director's plan, let the critic amend it from the sheet, paint again — twice at most
+plakat paint from pic.jpg --medium oil-direct --make-plan --make-plan-iterate 2 -o pic_oil.png
+# the verdict alone, appended to the plan the sheet was painted with
+plakat paint plan pic.jpg --medium oil-direct --director --verdict pic_oil.png --plan pic_oil.plan.hjson
+```
+
+**The verdict** (`director::verdict`) is written into the plan as its own section — every reading as a comment,
+every move as `key: value   # the measurement — the aim (was …)`, the moved recipe line kept as a comment. The
+moves are bounded steps (a fifth of a 0..1 dial, a tenth of the key, a twentieth of the floor) under the model's
+gate: only dials the plan names, never the structure but the key and the floor, never a face's dial, never a
+dial the medium holds at 0. The rules, each from one reading:
+
+| reading | move |
+|---|---|
+| the sheet's mean luma beyond ±0.08 of the source's | `shadow_floor` a step down (the sheet lighter) or up |
+| the value spread under 0.8 of the source's / over 1.25 | `value_key` +0.1 / −0.1 |
+| the focus's local contrast under 0.7, or the busy passages kept under 50% | `micro`, `adapt`, `aqua_detail`, `aqua_crisp`, `dot_fine` +0.2; `detail_restate` +0.03 (cap 0.2) |
+| the focus's local contrast over 1.4 (overworked) | `micro`, `detail_restate` × 0.7 |
+| the calm fields kept under 60%, or the periphery's contrast over 1.3 | `smooth`, `settle`, `aqua_soft` +0.2; `fray`, `collide` × 0.7 |
+| the strong edges carried under 50% | `adapt`, `chisel` +0.2; `lost`, `sfumato` × 0.7 |
+| the points of light (100+ per Mpx on the source) laid under half | `point`, `point_field`, `hotspot` +0.2 |
+| the chroma under 0.7 of the source's / over 1.4 (a palette picture) | `pigments` +4 / −4 |
+| bare white beyond the source's lights by 15% of the sheet (a paper medium) | `aqua_reserve`, `paper` × 0.7; `reserve` −0.1 |
+
+`--make-plan-iterate N` runs the loop: paint, measure, amend, paint again, N more times at most, and stops when
+the critic moves nothing; the intermediate sheets stay beside the output as `<stem>.i<k>.<ext>`, each verdict is
+appended to the one plan file, so the final plan tells the whole story. The closeness printed with the readings
+is the mean of the kept shares — a summary for the table, not a judgement of the painting: a critic that measures
+can say what the sheet lost, not whether the loss was the painter's intent. That is why its steps are bounded and
+its count is yours.
 
 What `--make-plan` does **not** do: it changes nothing in the painter. A run without the flag is byte-identical
 to before; a run with it is a run with a `--plan <file>`, replayable from the file. And nothing scene-specific
