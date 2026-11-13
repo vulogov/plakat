@@ -1,0 +1,35 @@
+{
+# agfacolor — 1936–1970: the other colour — cooler, softer, the greens muted toward olive, the skin pale, the
+# post-war Europe of the family album; a gentler curve than Kodachrome, more grain.
+# ---- the lens ----
+format: "35mm"
+aperture: 4
+focus: "auto"
+vignette: 0.25
+ca: 0.3
+resolution: 0.3
+# ---- the shutter ----
+exposure_time: 0.016
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 0.95
+toe: 0.3
+shoulder: 0.3
+latitude: 6
+iso: 100
+grain: 0.3
+grain_size: 9
+matrix: [0.95, 0.05, 0.0, 0.03, 0.9, 0.07, 0.02, 0.06, 0.92]
+saturation: 0.85
+warm: -0.04
+# ---- the carrier ----
+carrier: "print"
+frame: 0.03
+# ---- the age ----
+age: 0.3
+fade: 0.3
+fade_hue: 40
+# ---- the neural ----
+prompt: "an Agfacolor photograph from the 1950s, muted cool colours, olive greens, soft grain, family album"
+}

@@ -1,0 +1,34 @@
+{
+# large-format — 1930 on: the 4×5 press and view camera — Weegee's flash, the FSA's porch, Adams' range; a
+# sheet of film, a contact-sharp image, the lens swung and shifted so the verticals stand, a stopped-down depth.
+# ---- the camera ----
+shift: 0.0            # the architect gives --shift to keep the verticals
+format: "4x5"
+# ---- the lens ----
+aperture: 22
+focus: "auto"
+diffraction: 1
+vignette: 0.1
+resolution: 0.05
+# ---- the shutter ----
+exposure_time: 0.25
+# ---- the emulsion ----
+spectral: "pan"
+curve: "film"
+gamma: 1.05
+toe: 0.3
+shoulder: 0.25
+latitude: 9
+iso: 125
+grain: 0.12
+grain_size: 10
+# ---- the process ----
+tone: "neutral"
+black: 0.005
+white: 0.97
+# ---- the carrier ----
+carrier: "print"
+frame: 0.03
+# ---- the neural ----
+prompt: "a large format 4x5 black and white photograph, extremely sharp, full tonal range, fine grain"
+}

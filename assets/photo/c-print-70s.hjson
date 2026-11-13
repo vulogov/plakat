@@ -1,0 +1,37 @@
+{
+# c-print-70s — the 1970s chromogenic print, fifty years on: the cyan dye gone first, so the whole print leans
+# magenta and red, the blacks lifted, a silk texture, the rounded corners of the drugstore's envelope.
+# ---- the lens ----
+format: "110"
+aperture: 8
+focus: "far"
+vignette: 0.3
+resolution: 0.8
+# ---- the shutter ----
+exposure_time: 0.016
+shake: 0.3
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 0.95
+toe: 0.35
+shoulder: 0.3
+latitude: 6
+grain: 0.35
+grain_size: 10
+saturation: 0.9
+# ---- the process ----
+black: 0.01
+white: 0.92
+# ---- the carrier ----
+carrier: "print"
+frame: 0.04
+# ---- the age ----
+age: 0.7
+fade: 0.6
+fade_hue: 330
+yellowing: 0.3
+dust: 0.2
+# ---- the neural ----
+prompt: "a faded 1970s colour print, magenta cast, lifted blacks, drugstore snapshot, aged photograph"
+}

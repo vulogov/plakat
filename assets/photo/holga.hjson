@@ -1,0 +1,36 @@
+{
+# holga — 1982 on: the toy camera — a plastic meniscus, a heavy vignette, the corners gone, light leaks, the
+# frame overlapping, a 120 film of unpredictable colour; the lo-fi look that became a style.
+# ---- the lens ----
+format: "6x6"
+aperture: 8
+focus: "centre"
+field_curve: 0.8
+vignette: 0.9
+distort: 0.12
+soft: 0.3
+flare: 0.3
+resolution: 1.2
+# ---- the shutter ----
+exposure_time: 0.01
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.1
+toe: 0.4
+shoulder: 0.3
+latitude: 6
+iso: 400
+grain: 0.35
+grain_size: 12
+saturation: 1.15
+cross: 0.4
+# ---- the carrier ----
+carrier: "print"
+frame: 0.03
+# ---- the age ----
+scratches: 0.2
+dust: 0.2
+# ---- the neural ----
+prompt: "a Holga toy camera photograph, heavy vignette, soft plastic lens, cross-processed colours, light leaks"
+}

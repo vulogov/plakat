@@ -1,0 +1,38 @@
+{
+# tintype — 1856–1900: collodion on a lacquered iron plate, the fairground's and the soldier's portrait; cheap,
+# quick, a dark warm image with milky lights, the plate's edges clipped by the tin snips, a thumbprint of varnish.
+# ---- the camera ----
+keep_subject: 1
+format: "quarter-plate"
+# ---- the lens ----
+aperture: 5.6
+focus: "auto"
+field_curve: 0.4
+vignette: 0.3
+resolution: 0.5
+# ---- the shutter ----
+exposure_time: 4
+motion: 0.4
+ghost: 0.2
+# ---- the emulsion ----
+spectral: "blue"
+curve: "plate"
+gamma: 1.15
+toe: 0.3
+latitude: 3
+# ---- the process ----
+tone: "tintype"
+black: 0.03
+white: 0.72
+# ---- the carrier ----
+carrier: "tintype"
+frame: 0.05
+mirror: 1
+mottle: 0.5
+# ---- the age ----
+age: 0.4
+scratches: 0.5
+dust: 0.4
+# ---- the neural ----
+prompt: "a 19th century tintype portrait, collodion on iron, dark warm tones, milky highlights, chipped edges"
+}

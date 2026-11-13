@@ -35,6 +35,7 @@ pub mod texture;
 pub mod comic;
 pub mod product;
 pub mod naturalize;
+pub mod make_photo;
 pub mod faceswap;
 pub mod remove;
 pub mod replace_bg;
@@ -215,6 +216,9 @@ pub enum Command {
     /// film grain, chromatic aberration, vignette, bloom, a desaturating film grade. Weight-free;
     /// carries plakat provenance forward (`--no-reetch` for a clean output).
     Naturalize(naturalize::NaturalizeArgs),
+    /// A picture through the photographic chain of a period and a style (`--media`), the camera moved and the lens changed, a render made a photograph.
+    #[command(name = "make-photo")]
+    MakePhoto(make_photo::MakePhotoArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -484,6 +488,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Comic(args) => comic::run(args).await,
         Command::Product(args) => product::run(args).await,
         Command::Naturalize(args) => naturalize::run(args).await,
+        Command::MakePhoto(args) => make_photo::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]

@@ -1,0 +1,38 @@
+{
+# polaroid-sx70 — 1972 on: the integral print — the dyes migrating under the chemistry, soft, warm, a low black,
+# the pastel palette, the square in its white frame with the thick chin; the picture that developed in the hand.
+# ---- the lens ----
+format: "polaroid"
+aperture: 8
+focus: "auto"
+vignette: 0.2
+soft: 0.2
+resolution: 1.5
+# ---- the shutter ----
+exposure_time: 0.03
+shake: 0.3
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 0.9
+toe: 0.5
+shoulder: 0.4
+latitude: 5
+grain: 0.1
+grain_size: 25
+matrix: [1.0, 0.04, 0.0, 0.0, 0.95, 0.03, 0.0, 0.05, 0.9]
+saturation: 0.85
+warm: 0.1
+# ---- the process ----
+black: 0.02
+white: 0.9
+# ---- the carrier ----
+carrier: "polaroid"
+frame: 0.06
+# ---- the age ----
+age: 0.3
+fade: 0.3
+fade_hue: 30
+# ---- the neural ----
+prompt: "a Polaroid SX-70 instant photograph from the 1970s, soft pastel colours, warm, white frame"
+}

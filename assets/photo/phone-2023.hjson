@@ -1,0 +1,29 @@
+{
+# phone-2023 — 2020 on: the computational camera — a 24 mm-equivalent wide, the HDR flattening every shadow and
+# holding every light, the faces smoothed, the sky deepened, the portrait mode's bokeh cut by a matte with the
+# hair wrong at the edge, the sharpening that makes a leaf a drawing, a HEIF-grade JPEG.
+# ---- the lens ----
+format: "phone"
+aperture: 1.8
+focus: "auto"
+vignette: 0.05
+resolution: 0.2
+# ---- the shutter ----
+exposure_time: 0.008
+# ---- the sensor ----
+curve: "digital"
+shoulder: 0.35
+iso: 200
+sensor_noise: 0.4
+demosaic: 1
+saturation: 1.15
+# ---- the digital ----
+sharpen: 0.4
+hdr: 0.35
+face_smooth: 0.3
+portrait_mode: 1
+jpeg: 90
+megapixels: 12
+# ---- the neural ----
+prompt: "a 2023 smartphone photograph, computational HDR, portrait mode, smoothed skin, vivid colours"
+}

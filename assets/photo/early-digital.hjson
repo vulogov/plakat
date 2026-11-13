@@ -1,0 +1,28 @@
+{
+# early-digital — 1999–2005: the first consumer digital — 1.3 megapixels, a tiny CCD, the purple fringe at
+# every bright edge, the highlights clipped hard, the noise smeared, a JPEG at 75 with its blocks, the date in the corner.
+# ---- the lens ----
+format: "early-digital"
+aperture: 2.8
+focus: "far"
+vignette: 0.15
+ca: 0.4
+fringe: 0.8
+resolution: 0.6
+# ---- the shutter ----
+exposure_time: 0.016
+# ---- the sensor ----
+curve: "digital"
+gamma: 1.1
+iso: 200
+sensor_noise: 1.5
+demosaic: 1
+saturation: 1.15
+# ---- the digital ----
+sharpen: 0.6
+jpeg: 72
+date_stamp: "2003/06/21"
+megapixels: 1.3
+# ---- the neural ----
+prompt: "an early 2000s digital camera photograph, 1.3 megapixel, purple fringing, blown highlights, JPEG artifacts"
+}

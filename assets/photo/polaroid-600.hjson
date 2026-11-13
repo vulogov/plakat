@@ -1,0 +1,38 @@
+{
+# polaroid-600 — 1981 on: the party's instant — the flash in every face, the cyan shadows and the magenta
+# lights of the dyes, a sharper plastic lens than the SX-70, the frame scrawled on with a marker.
+# ---- the lens ----
+format: "polaroid"
+aperture: 11
+focus: "auto"
+vignette: 0.15
+resolution: 1.0
+# ---- the shutter ----
+exposure_time: 0.02
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.0
+toe: 0.45
+shoulder: 0.35
+latitude: 5
+grain: 0.08
+grain_size: 20
+matrix: [1.05, 0.0, 0.0, -0.03, 0.98, 0.05, 0.0, 0.03, 1.02]
+saturation: 1.0
+warm: 0.04
+cross: 0.2
+# ---- the process ----
+black: 0.015
+white: 0.92
+# ---- the carrier ----
+carrier: "polaroid"
+frame: 0.06
+# ---- the digital ----
+flash: 0.6
+redeye: 0.3
+# ---- the age ----
+age: 0.15
+# ---- the neural ----
+prompt: "a Polaroid 600 instant photograph from the 1980s, flash lit, cyan shadows, white frame"
+}

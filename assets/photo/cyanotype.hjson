@@ -1,0 +1,29 @@
+{
+# cyanotype — 1842 on: iron salts printed out in the sun, Prussian blue; Anna Atkins' algae, the engineer's
+# blueprint; the paper's grain, a short soft scale, the lights the paper itself.
+# ---- the lens ----
+format: "whole-plate"
+aperture: 11
+focus: "auto"
+vignette: 0.15
+resolution: 0.6
+# ---- the emulsion ----
+spectral: "blue"
+curve: "paper"
+gamma: 1.0
+toe: 0.3
+latitude: 4
+# ---- the process ----
+tone: "cyanotype"
+black: 0.01
+white: 0.93
+# ---- the carrier ----
+carrier: "print"
+frame: 0.04
+mottle: 0.25
+# ---- the age ----
+age: 0.25
+yellowing: 0.3
+# ---- the neural ----
+prompt: "a cyanotype print, Prussian blue on textured paper, 19th century photographic process"
+}

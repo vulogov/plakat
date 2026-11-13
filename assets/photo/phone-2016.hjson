@@ -1,0 +1,27 @@
+{
+# phone-2016 — 2014–2018: the phone before the computational era — a tiny sensor behind a 26 mm-equivalent
+# wide lens, everything sharp, the noise smeared to watercolour in the shadows, the HDR of the time, a JPEG at 80.
+# ---- the lens ----
+format: "phone"
+aperture: 2.2
+focus: "auto"
+vignette: 0.1
+ca: 0.2
+resolution: 0.3
+# ---- the shutter ----
+exposure_time: 0.016
+# ---- the sensor ----
+curve: "digital"
+shoulder: 0.2
+iso: 400
+sensor_noise: 1.2
+demosaic: 1
+saturation: 1.1
+# ---- the digital ----
+sharpen: 0.5
+hdr: 0.2
+jpeg: 80
+megapixels: 12
+# ---- the neural ----
+prompt: "a 2016 smartphone photograph, wide lens, everything in focus, smeared shadow noise, HDR"
+}

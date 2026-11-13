@@ -1,0 +1,38 @@
+{
+# box-brownie — 1900–1940: the snapshot — a meniscus lens behind a tiny aperture, a fixed shutter, the family on
+# the lawn; soft corners, a vignette, a contact print the size of a hand, a sepia album.
+# ---- the lens ----
+format: "6x9"
+aperture: 11
+focus: "far"
+field_curve: 0.5
+vignette: 0.5
+distort: 0.08
+resolution: 1.0
+# ---- the shutter ----
+exposure_time: 0.02
+shake: 0.4
+# ---- the emulsion ----
+spectral: "ortho"
+curve: "film"
+gamma: 1.0
+toe: 0.3
+latitude: 6
+grain: 0.2
+grain_size: 10
+# ---- the process ----
+tone: "sepia"
+tone_amount: 0.5
+black: 0.01
+white: 0.9
+# ---- the carrier ----
+carrier: "print"
+frame: 0.06
+megapixels: 2
+# ---- the age ----
+age: 0.4
+fade: 0.4
+yellowing: 0.5
+# ---- the neural ----
+prompt: "a 1920s box camera snapshot, small contact print, soft corners, sepia album photograph"
+}

@@ -1,0 +1,33 @@
+{
+# ektachrome — 1946–2012: the E-6 slide — cooler and bluer than Kodachrome, clean, a magazine's product and
+# fashion, the 1970s advertisement; a touch of cyan in the shadows.
+# ---- the lens ----
+format: "35mm"
+aperture: 8
+focus: "auto"
+vignette: 0.15
+ca: 0.15
+resolution: 0.15
+# ---- the shutter ----
+exposure_time: 0.004
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.1
+toe: 0.3
+shoulder: 0.2
+latitude: 5
+iso: 100
+grain: 0.18
+grain_size: 7
+matrix: [1.05, -0.03, -0.02, -0.02, 1.04, -0.02, 0.0, -0.04, 1.08]
+saturation: 1.15
+warm: -0.06
+# ---- the carrier ----
+carrier: "slide"
+frame: 0.05
+# ---- the age ----
+age: 0.1
+# ---- the neural ----
+prompt: "an Ektachrome slide photograph from the 1970s, cool clean colours, slight cyan shadows"
+}

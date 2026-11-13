@@ -1,0 +1,34 @@
+{
+# autochrome — 1907–1935: the Lumières' colour — a glass plate under a reseau of potato starch dyed orange,
+# green and violet, the picture a pointillist mosaic of muted colour, a long exposure, a warm soft light.
+# ---- the lens ----
+format: "whole-plate"
+aperture: 6.3
+focus: "auto"
+vignette: 0.25
+soft: 0.15
+resolution: 0.5
+# ---- the shutter ----
+exposure_time: 2
+motion: 0.5
+ghost: 0.2
+# ---- the emulsion ----
+spectral: "colour"
+curve: "plate"
+gamma: 1.1
+toe: 0.2
+latitude: 4
+saturation: 0.75
+warm: 0.12
+reseau: 0.45
+# ---- the process ----
+black: 0.01
+white: 0.9
+# ---- the carrier ----
+carrier: "glass"
+frame: 0.04
+# ---- the age ----
+age: 0.2
+# ---- the neural ----
+prompt: "an autochrome colour photograph from 1910, pointillist starch grain, muted warm colours, glass plate"
+}

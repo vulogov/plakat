@@ -1,0 +1,35 @@
+{
+# cinema-anamorphic — 1953 on: a frame from the widescreen — the anamorphic lens's standing oval bokeh and its
+# blue horizontal flare, the 500T stock's halation on the lamps, a teal-and-orange grade, the 2.39 letterbox.
+# ---- the lens ----
+format: "35mm"
+aperture: 2.8
+focus: "auto"
+anamorphic: 0.8
+flare: 0.5
+vignette: 0.3
+ca: 0.2
+resolution: 0.3
+# ---- the shutter ----
+exposure_time: 0.02
+motion: 0.3
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.0
+toe: 0.3
+shoulder: 0.35
+latitude: 9
+iso: 500
+grain: 0.3
+grain_size: 9
+halation: 0.5
+matrix: [1.08, -0.02, -0.06, -0.04, 1.0, 0.04, -0.08, 0.02, 1.06]
+saturation: 0.95
+warm: 0.04
+# ---- the carrier ----
+carrier: "slide"
+frame: 0.0
+# ---- the neural ----
+prompt: "a cinematic anamorphic film still, oval bokeh, blue horizontal lens flare, halation, teal and orange grade"
+}

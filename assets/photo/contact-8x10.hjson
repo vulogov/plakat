@@ -1,0 +1,32 @@
+{
+# contact-8x10 — 1900 on: the 8×10 negative laid on the paper — no enlarger, no grain, every hair; Weston's
+# pepper, Strand's wall; a platinum or silver print of the negative's own size.
+# ---- the lens ----
+format: "8x10"
+aperture: 45
+focus: "auto"
+diffraction: 1
+resolution: 0.0
+# ---- the shutter ----
+exposure_time: 2
+motion: 0.4
+# ---- the emulsion ----
+spectral: "pan"
+curve: "film"
+gamma: 1.05
+toe: 0.25
+shoulder: 0.2
+latitude: 10
+iso: 100
+grain: 0.05
+grain_size: 8
+# ---- the process ----
+tone: "warm"
+black: 0.005
+white: 0.95
+# ---- the carrier ----
+carrier: "print"
+frame: 0.04
+# ---- the neural ----
+prompt: "an 8x10 contact print, large format black and white photograph, grainless, every detail, warm tone"
+}

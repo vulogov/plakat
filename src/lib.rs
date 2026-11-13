@@ -87,6 +87,8 @@ pub mod product;
 /// v6.10: `plakat naturalize` — the analog post-pass that reduces the "AI-generated" fingerprint
 /// (RFC QUALITY-1). Deterministic + weight-free.
 pub mod naturalize;
+/// `plakat make-photo`: a picture through the photographic chain of a period and a style.
+pub mod photo;
 /// v6.7 flagship: provenance etching (RFC ETCH-1) — `--etch` + `doctor --if-plakat`. Always compiled
 /// (not behind a cargo feature) so the `--no-default-features` gate covers it; the `--etch` flag opts in.
 pub mod etch;

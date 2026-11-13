@@ -1,0 +1,34 @@
+{
+# kodachrome — 1936–2009: the slide — deep saturated reds and blues, dark clean shadows, a hard shoulder, fine
+# grain; the family's 1960s in a carousel, the National Geographic page.
+# ---- the lens ----
+format: "35mm"
+aperture: 5.6
+focus: "auto"
+vignette: 0.2
+ca: 0.2
+resolution: 0.15
+# ---- the shutter ----
+exposure_time: 0.008
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.15
+toe: 0.35
+shoulder: 0.2
+latitude: 5
+iso: 64
+grain: 0.15
+grain_size: 6
+matrix: [1.12, -0.08, -0.04, -0.04, 1.06, -0.02, -0.04, -0.06, 1.1]
+saturation: 1.25
+warm: 0.06
+halation: 0.1
+# ---- the carrier ----
+carrier: "slide"
+frame: 0.05
+# ---- the age ----
+age: 0.1
+# ---- the neural ----
+prompt: "a Kodachrome slide photograph from the 1960s, rich saturated colours, deep shadows, fine grain"
+}

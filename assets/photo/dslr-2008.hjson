@@ -1,0 +1,26 @@
+{
+# dslr-2008 — 2006–2012: the first affordable DSLRs — an APS-C sensor at ISO 800 with its chroma noise, the
+# kit zoom at f/5.6, the in-camera sharpening and saturation, a JPEG at 85.
+# ---- the lens ----
+format: "aps-c"
+aperture: 5.6
+focus: "auto"
+vignette: 0.25
+ca: 0.5
+distort: 0.03
+resolution: 0.25
+# ---- the shutter ----
+exposure_time: 0.008
+# ---- the sensor ----
+curve: "digital"
+shoulder: 0.1
+iso: 800
+sensor_noise: 1.0
+demosaic: 1
+saturation: 1.15
+# ---- the digital ----
+sharpen: 0.5
+jpeg: 85
+# ---- the neural ----
+prompt: "a 2008 DSLR photograph, APS-C sensor, kit zoom lens, slightly oversaturated JPEG"
+}

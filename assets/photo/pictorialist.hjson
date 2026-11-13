@@ -1,0 +1,36 @@
+{
+# pictorialist — 1890–1915: the photograph that wanted to be a painting — the soft-focus lens, the glowing
+# lights, the long scale, the gum or the bromoil print in warm brown, the frame's dark edge.
+# ---- the camera ----
+keep_subject: 1
+format: "5x7"
+# ---- the lens ----
+aperture: 4.5
+focus: "auto"
+soft: 0.7
+field_curve: 0.3
+vignette: 0.45
+resolution: 0.8
+# ---- the shutter ----
+exposure_time: 0.5
+# ---- the emulsion ----
+spectral: "ortho"
+curve: "paper"
+gamma: 0.9
+toe: 0.2
+latitude: 7
+halation: 0.4
+# ---- the process ----
+tone: "sepia"
+tone_amount: 0.7
+black: 0.02
+white: 0.88
+# ---- the carrier ----
+carrier: "print"
+frame: 0.05
+mottle: 0.2
+# ---- the age ----
+age: 0.2
+# ---- the neural ----
+prompt: "a pictorialist photograph circa 1905, soft focus, glowing highlights, warm brown gum print, painterly"
+}
