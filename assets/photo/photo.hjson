@@ -1,0 +1,28 @@
+{
+# photo — the modern camera, 2020s: a full-frame mirrorless body, a 50 mm at f/2.8 focused on the eyes or the
+# subject, the sensor's own noise growing with the signal and its Bayer demosaic, a touch of vignette and of
+# lateral aberration, the diffraction of the real aperture, the camera's sharpening and its JPEG. The medium for a
+# render that should come out as a photograph: nothing stylised, everything a camera does.
+# ---- the lens ----
+format: "ff"
+aperture: 5.6
+focus: "auto"
+vignette: 0.15
+ca: 0.3
+diffraction: 1
+resolution: 0.15
+# ---- the shutter ----
+exposure_time: 0.004
+# ---- the sensor ----
+curve: "digital"
+shoulder: 0.15
+iso: 400
+sensor_noise: 0.5
+demosaic: 1
+saturation: 1.05
+# ---- the digital ----
+sharpen: 0.25
+jpeg: 92
+# ---- the neural ----
+prompt: "a photograph taken with a modern full-frame mirrorless camera, natural light, 50 mm lens, realistic"
+}

@@ -1,0 +1,39 @@
+{
+# ambrotype — 1854–1865: a wet-collodion negative on glass, underexposed and backed with black varnish so it
+# reads as a positive; cream highlights, a short scale, the collodion's pour in the corners, cased like a daguerreotype.
+# ---- the camera ----
+keep_subject: 1
+format: "quarter-plate"
+# ---- the lens ----
+aperture: 5.6
+focus: "auto"
+field_curve: 0.5
+swirl: 0.4
+vignette: 0.3
+resolution: 0.3
+# ---- the shutter ----
+exposure_time: 8
+motion: 0.5
+ghost: 0.3
+# ---- the emulsion ----
+spectral: "blue"
+curve: "plate"
+gamma: 1.2
+toe: 0.2
+latitude: 3
+# ---- the process ----
+tone: "collodion"
+black: 0.02
+white: 0.8            # the collodion's cream, never white
+# ---- the carrier ----
+carrier: "glass"
+frame: 0.06
+mirror: 1
+mottle: 0.4
+# ---- the age ----
+age: 0.3
+scratches: 0.3
+dust: 0.3
+# ---- the neural ----
+prompt: "an 1860s ambrotype, wet collodion positive on glass, cream highlights, dark varnish, cased"
+}

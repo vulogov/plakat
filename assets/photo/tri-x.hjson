@@ -1,0 +1,35 @@
+{
+# tri-x — 1954 on: the press and the street — Kodak's 400 film pushed to 1600 in a 35 mm rangefinder, the grain
+# a fabric, the blacks blocked, the lights blown, a fast lens wide open; the look of the photo-essay.
+# ---- the lens ----
+format: "35mm"
+aperture: 2
+focus: "auto"
+vignette: 0.35
+resolution: 0.2
+flare: 0.1
+# ---- the shutter ----
+exposure_time: 0.016
+shake: 0.3
+# ---- the emulsion ----
+spectral: "pan"
+curve: "film"
+gamma: 1.25
+toe: 0.45
+shoulder: 0.25
+latitude: 7
+iso: 1600
+grain: 0.6
+grain_size: 14
+halation: 0.15
+# ---- the process ----
+develop: 2
+tone: "neutral"
+black: 0.005
+white: 0.96
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the neural ----
+prompt: "a black and white 35 mm street photograph on Tri-X pushed film, heavy grain, deep blacks, 1960s photojournalism"
+}

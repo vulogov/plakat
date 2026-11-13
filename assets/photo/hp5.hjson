@@ -1,0 +1,32 @@
+{
+# hp5 — 1976 on: Ilford's 400 — softer than Tri-X, a longer scale, the British documentary and the art school;
+# a 50 mm at f/4, a fibre print with a thin black border.
+# ---- the lens ----
+format: "35mm"
+aperture: 4
+focus: "auto"
+vignette: 0.25
+resolution: 0.2
+# ---- the shutter ----
+exposure_time: 0.008
+# ---- the emulsion ----
+spectral: "pan"
+curve: "film"
+gamma: 1.0
+toe: 0.35
+shoulder: 0.3
+latitude: 8
+iso: 400
+grain: 0.4
+grain_size: 12
+halation: 0.1
+# ---- the process ----
+tone: "neutral"
+black: 0.005
+white: 0.95
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the neural ----
+prompt: "a black and white photograph on Ilford HP5 film, moderate grain, long tonal scale, documentary"
+}

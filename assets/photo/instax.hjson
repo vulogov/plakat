@@ -1,0 +1,34 @@
+{
+# instax — 1998 on: the small instant of the 2010s — a plastic lens, a pale low-contrast print, cool pastel, the
+# flash on always, the white frame with the chin, pinned to the wall.
+# ---- the lens ----
+format: "instax"
+aperture: 12.7
+focus: "far"
+vignette: 0.2
+resolution: 1.3
+# ---- the shutter ----
+exposure_time: 0.016
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 0.85
+toe: 0.4
+shoulder: 0.45
+latitude: 5
+grain: 0.06
+grain_size: 18
+saturation: 0.85
+warm: -0.03
+# ---- the process ----
+black: 0.03
+white: 0.93
+# ---- the carrier ----
+carrier: "instax"
+frame: 0.06
+megapixels: 2
+# ---- the digital ----
+flash: 0.5
+# ---- the neural ----
+prompt: "an Instax mini instant photograph, pale pastel colours, low contrast, white frame, flash lit"
+}

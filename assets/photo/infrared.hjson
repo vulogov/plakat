@@ -1,0 +1,33 @@
+{
+# infrared — 1930s on: the infrared film with its deep red filter — the leaves white as snow, the sky black, the
+# skin waxen, a glow in the lights (the Wood effect), the focus shifted, a grain like sand.
+# ---- the lens ----
+format: "35mm"
+aperture: 8
+focus: "auto"
+vignette: 0.3
+soft: 0.25
+resolution: 0.5
+# ---- the shutter ----
+exposure_time: 0.03
+# ---- the emulsion ----
+spectral: "infrared"
+curve: "film"
+gamma: 1.2
+toe: 0.3
+shoulder: 0.2
+latitude: 5
+iso: 400
+grain: 0.5
+grain_size: 14
+halation: 0.6
+# ---- the process ----
+tone: "neutral"
+black: 0.02
+white: 0.97
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the neural ----
+prompt: "an infrared black and white photograph, white glowing foliage, black sky, dreamlike, grainy"
+}

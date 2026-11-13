@@ -1,0 +1,38 @@
+{
+# disposable — 1986–2010: the cardboard camera of the wedding table — a fixed-focus plastic lens at f/10, an
+# 800 film, the flash's hard light and the black beyond it, the frame soft and warm.
+# ---- the lens ----
+format: "35mm"
+aperture: 10
+focus: "far"
+vignette: 0.35
+field_curve: 0.4
+distort: 0.06
+resolution: 0.9
+flare: 0.2
+# ---- the shutter ----
+exposure_time: 0.01
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.05
+toe: 0.4
+shoulder: 0.3
+latitude: 7
+iso: 800
+grain: 0.45
+grain_size: 13
+saturation: 1.1
+warm: 0.1
+# ---- the process ----
+black: 0.03
+white: 0.95
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the digital ----
+flash: 0.9
+redeye: 0.4
+# ---- the neural ----
+prompt: "a disposable camera flash photograph, 800 speed film, grainy, warm, late 1990s party snapshot"
+}

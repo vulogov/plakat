@@ -1,0 +1,40 @@
+{
+# point-and-shoot — 1985–2005: the compact in the handbag — a zoom at f/5.6, the flash on in every room, the
+# red eyes, the orange date burnt in the corner, a 200 colour negative printed at the one-hour lab.
+# ---- the lens ----
+format: "35mm"
+aperture: 5.6
+focus: "auto"
+vignette: 0.2
+ca: 0.4
+distort: 0.04
+resolution: 0.4
+flare: 0.15
+# ---- the shutter ----
+exposure_time: 0.016
+shake: 0.4
+# ---- the emulsion ----
+spectral: "colour"
+curve: "film"
+gamma: 1.0
+toe: 0.35
+shoulder: 0.3
+latitude: 7
+iso: 200
+grain: 0.3
+grain_size: 10
+saturation: 1.05
+warm: 0.08
+# ---- the process ----
+black: 0.03
+white: 0.95
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the digital ----
+flash: 0.7
+redeye: 0.5
+date_stamp: "'98  7 14"
+# ---- the neural ----
+prompt: "a 1990s point-and-shoot flash photograph, 35 mm colour negative, date stamp, snapshot"
+}

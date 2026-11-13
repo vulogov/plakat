@@ -1,0 +1,29 @@
+{
+# platinum — 1880–1920: the platinotype, the finest print of its age — a long, soft scale with no shoulder, the
+# image in the paper's fibre, warm neutral greys, the blacks never quite black; the pictorialists' print.
+# ---- the lens ----
+format: "8x10"
+aperture: 16
+focus: "auto"
+vignette: 0.1
+resolution: 0.1
+# ---- the shutter ----
+exposure_time: 0.5
+# ---- the emulsion ----
+spectral: "ortho"
+curve: "paper"
+gamma: 0.85
+toe: 0.15
+latitude: 8
+# ---- the process ----
+tone: "platinum"
+black: 0.03
+white: 0.9
+# ---- the carrier ----
+carrier: "print"
+frame: 0.05
+# ---- the age ----
+age: 0.15
+# ---- the neural ----
+prompt: "a platinum print photograph circa 1900, long tonal scale, soft warm greys, matte paper"
+}

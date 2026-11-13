@@ -1,0 +1,35 @@
+{
+# ortho-press — 1890–1925: the orthochromatic glass plate of the press and the survey; blind to red, so the
+# lips and the brick go dark and the sky goes white; sharp, contrasty, the plate's dust, the magnesium flash in a room.
+# ---- the lens ----
+format: "4x5"
+aperture: 8
+focus: "auto"
+vignette: 0.2
+resolution: 0.2
+halation: 0.25
+# ---- the shutter ----
+exposure_time: 0.04
+shake: 0.3
+# ---- the emulsion ----
+spectral: "ortho"
+curve: "plate"
+gamma: 1.2
+toe: 0.3
+latitude: 4
+grain: 0.1
+grain_size: 6
+# ---- the process ----
+tone: "cold"
+black: 0.005
+white: 0.95
+# ---- the carrier ----
+carrier: "print"
+frame: 0.02
+# ---- the age ----
+age: 0.3
+dust: 0.5
+scratches: 0.3
+# ---- the neural ----
+prompt: "a 1910s press photograph, orthochromatic glass plate, high contrast black and white, white sky"
+}

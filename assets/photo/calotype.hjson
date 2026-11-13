@@ -1,0 +1,36 @@
+{
+# calotype — 1841–1855: Talbot's paper negative, waxed, and its salt print; the paper's fibre in every edge, a
+# brown-violet image on a warm, uneven sheet, a long exposure in the open air.
+# ---- the lens ----
+format: "whole-plate"
+aperture: 11
+focus: "auto"
+vignette: 0.3
+soft: 0.3
+resolution: 1.2       # the paper negative's fibre
+# ---- the shutter ----
+exposure_time: 60
+motion: 0.8
+ghost: 0.6
+# ---- the emulsion ----
+spectral: "blue"
+curve: "paper"
+gamma: 1.1
+toe: 0.3
+latitude: 4
+# ---- the process ----
+tone: "salt"
+black: 0.02
+white: 0.86
+# ---- the carrier ----
+carrier: "print"
+frame: 0.03
+mottle: 0.3
+# ---- the age ----
+age: 0.5
+fade: 0.4
+foxing: 0.4
+yellowing: 0.5
+# ---- the neural ----
+prompt: "an 1840s calotype salt print, paper negative, soft brown image on textured paper"
+}
