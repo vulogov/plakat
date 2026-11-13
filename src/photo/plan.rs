@@ -280,13 +280,47 @@ plan_fields! {
     /// The picture's size in megapixels; 0 = the picture's own.
     megapixels: f32 = 0.0;
     // ---- THE NEURAL (each behind `--neural`, each disclosed) ----
-    /// The refine's strength (0..1): a whole-frame img2img at this strength with `prompt`, the faces protected.
+    /// The diffusion model of the fill, the conversion and the refine, by alias: "sd35-medium" (the default — a
+    /// flow model holds the composition without a ControlNet and a light pass over its own output stays clean),
+    /// "sd35-large", "kandinsky5" (as good, seven times slower), "sdxl" (ControlNets; a light pass over a
+    /// conversion stipples the sky), "sd15".
+    neural_model: String = "sd35-medium";
+    /// The conversion's strength (0..1): a drawing, a watercolour, a painting re-rendered as a NEUTRAL photograph
+    /// of the same scene BEFORE the medium's pass — a heavy denoise (0.6–0.8) with the structure held by
+    /// `convert_control` and the picture described by `scene`; 0 = none. The director sets it from what CLIP reads
+    /// the source to be (`--neural convert` runs it).
+    convert: f32 = 0.0;
+    /// The conversion's strength outside the subject's matte (0 = the same as `convert`): the ground held closer
+    /// to the picture than the figure, or further from it; two passes blended by the matte.
+    convert_ground: f32 = 0.0;
+    /// The ControlNets holding the structure through the conversion, specs separated by spaces: the soft edges
+    /// (HED) hold the contours and the composition — the hat's shape, the branches, the house, the boat; "depth:…",
+    /// "lineart:…", "canny:…"; "" = none. On SDXL the controls' strengths summed over about 0.6 tile the frame
+    /// with the latent's grid (depth at 0.7, soft edges at 0.7, soft edges 0.5 with depth 0.3 — all seen).
+    convert_control: String = "softedge:strength=0.5";
+    /// The refine's strength (0..1): a whole-frame img2img at this strength with `prompt`, the faces protected at
+    /// 0.4 and under. A stylisation: 0.15–0.3 over a photograph or a converted picture.
     refine: f32 = 0.0;
+    /// The ControlNets through the refine ("depth:strength=0.5"; "" = none).
+    refine_control: String = "depth:strength=0.5";
     /// The medium's description for the refine and the fill ("a daguerreotype, 1850s, …").
     prompt: String = "";
+    /// What the picture shows, for the prompts ("a bearded man on a dirt path, wooden cottages, the sea"): the
+    /// director writes CLIP's reading (the genre, the stuff), `--scene` says it exactly.
+    scene: String = "";
     /// The refine's working size, the long side in pixels: the model draws at its own size and the result is
     /// brought back to the frame's.
     neural_px: f32 = 1024.0;
+    /// The denoising steps a pass actually runs at its strength (the schedule's total is steps/strength, 24 to
+    /// 100): a light refine on a short schedule runs six steps and stipples the sky; twenty real steps do not.
+    neural_steps: f32 = 20.0;
+    /// The classifier-free guidance of the conversion (the prompt's pull; 5.5 draws the scene the words say).
+    convert_guidance: f32 = 5.5;
+    /// The guidance of the refine: a light pass at a strong guidance can only add high-frequency detail — a
+    /// stipple over the sky; a low guidance (2–3) lets the medium's words tint rather than draw.
+    refine_guidance: f32 = 3.0;
+    /// Words added to every pass's negative prompt ("" = none): what the model must not draw.
+    negative: String = "";
     /// The relight preset ("" = off): "top", "key-left", "key-right", "rim", "softbox", "golden-hour", "sunset",
     /// "moonlight", "candlelight", "overcast", "neon".
     relight: String = "";

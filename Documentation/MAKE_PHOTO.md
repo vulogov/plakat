@@ -36,7 +36,7 @@ The command does not disguise anything: the output's metadata names the simulati
 | **the carrier** | the mirror of a direct positive; the mottle of a hand-poured plate and the sheen of its silver in the shadows; the frame — the brass mat's oval, the tintype's chipped edge, the card, the Polaroid's and the Instax's white, the slide's mount | `carrier` `frame` `mirror` `mottle` `sheen` |
 | **the age** | the fade (the blacks up, the dyes toward a hue — a C‑print's magenta), the yellowing, the silvering from the edges, the scratches, the dust, the foxing; `age` sets a profile for the dials left at 0 | `age` `fade` `fade_hue` `yellowing` `silvering` `scratches` `dust` `foxing` |
 | **the digital** | the on-camera flash by the depth and the red eye on the faces; the HDR flattening; the face smoothing; the phone's portrait mode (only with a face found, as a phone engages it; the matte's hard edge, the hair wrong); the sharpening and its halo; a real JPEG round trip at the quality; the date stamp | `jpeg` `sharpen` `hdr` `face_smooth` `portrait_mode` `date_stamp` `flash` `redeye` `megapixels` |
-| **the neural** (`--neural`) | the fill, the refine, the relight — each behind the flag, each disclosed | `refine` `prompt` `neural_px` `relight` |
+| **the neural** (`--neural`) | the fill, the conversion, the refine, the relight — each behind the flag, each disclosed | `neural_model` `convert` `convert_ground` `convert_control` `refine` `refine_control` `prompt` `scene` `negative` `neural_px` `neural_steps` `convert_guidance` `refine_guidance` `relight` |
 
 ## The camera: a new point, a new lens
 
@@ -132,8 +132,9 @@ What a render lacks is physical and enumerable: a noise that grows with the sign
 correlation; a plane of focus and a lens softer at the edge; highlights that clip or roll off; a vignette and a
 lateral aberration; the sensor pipeline's sharpening and JPEG. `photo` runs the whole chain of a modern camera
 with those dials at a camera's values — for a render that is already photographic, a subtle, measurable
-change (`make-photo measure` shows it). A drawing, a watercolour, a painting need `--neural refine 0.6–0.75`
-first: the physics cannot turn brushwork into a scene. The content's errors (hands, geometry, an impossible light) are not the
+change (`make-photo measure` shows it). A drawing, a watercolour, a painting need `--neural convert,refine`
+first: the physics cannot turn brushwork into a scene, and the director asks for the conversion when CLIP
+reads the source as a painting or a drawing. The content's errors (hands, geometry, an impossible light) are not the
 chain's business — `plakat naturalize --geometry/--anatomy` has them. The goal is physical plausibility, not
 the defeat of a detector, and the output says what it is.
 
@@ -160,6 +161,7 @@ by a plan instead. The rules, each universal:
 | a scene | the aperture stopped down, ×2 and at least f/8 |
 | a portrait (the face over 8 % of the frame) | the aperture from the face's depth: its near and far (the model's depth inside the face's box over the depth range, at the distance the eyes give) must sit inside the depth of field, the circle of confusion 0.03 mm scaled to the format — N = f²·Δz / (2·c·z²) on 35 mm, then scaled by the format's crop factor (a plate's lens is as many times longer for the same framing and its depth of field as many times thinner — the plate's portrait was stopped to f/32–f/64), between f/2 (a phone's f/1.6) and f/16 on 35 mm, f/64 on the largest plate; a tight head shot asks the studio's f/16, a face in a street opens to f/2.8; without a depth inside the face, the lens opened ×0.6 down to f/2 |
 | a portrait (the face over 8 % of the frame) on an exposure of a second or more | the sitter braced in the head clamp: `motion` and `ghost` to 0 |
+| CLIP reads a painting or a drawing (over 0.4) | `convert` 0.7, `refine` 0.25 on a flow model (0 on the SD family: its light pass over a conversion stipples); `scene` written in CLIP's words |
 | a nocturne (key < 0.3) | the exposure time ×8 on an emulsion that has one, the figures ghosted on a street; the ISO ×4 on a sensor; the lamps' halation and flare up |
 | a high key (> 0.72) | the exposure −0.3 |
 | water and an open shutter | the water smoothed |
@@ -185,24 +187,66 @@ The critic's moves, each bounded and each from a reading of the result against t
 `make-photo plan <image> --media M` writes the director's plan alone; `--verdict <picture> --plan <file>`
 appends the critic's verdict on a picture made by that plan.
 
-## The neural stages (`--neural fill,refine,relight`)
+## The neural stages (`--neural fill,convert,refine,relight`)
 
 Each is optional, needs weights and a device, and is disclosed in the report; a failure is reported and the
-chain goes on.
+chain goes on. All run after the camera and before the lens, so their result then goes through the physical
+chain — the emulsion, the process, the carrier.
+
+**The model** is the plan's `neural_model` (`--neural-model`), run through its family's own pipeline:
+`sd35-medium` by default, `sd35-large`, `kandinsky5`, `sdxl`, `sd15`. On the verification set the families
+differ in kind, not degree: the SD family (SDXL) needs a ControlNet to hold a watercolour's composition
+through a conversion and still drifts, and a light pass over its own output stipples every smooth field with
+invented grain; the rectified-flow families (SD3.5, Kandinsky 5) convert the same watercolour into a
+photograph that keeps the house, the path, the boat and the cloak with no ControlNet at all (the init lerped
+with the noise holds the composition), and a light pass over their output stays clean. SD3.5 medium takes
+two minutes a conversion on Metal and one for the light pass; Kandinsky 5 draws the most photographic frame
+and takes fourteen and ten. ControlNets (`convert_control`, `refine_control`) apply to the SD family only
+and are reported as such.
 
 - **fill** — the opened ground inpainted by a diffusion model (`--neural-model`, default `sdxl`) inside the
   holes' mask with the medium's prompt, the rest of the frame kept to the pixel (`fill: neural` in the plan or
   `--fill neural`);
-- **refine** — a whole-frame img2img at `refine` with the medium's `prompt`, the structure held by a
-  ControlNet (`--neural-control depth:strength=0.5` by default; `canny:…`; `none`), run at the model's working
-  size (`neural_px`, 1024 on the long side — SDXL draws at 1024 and a 2048 frame does not fit a GPU's buffer)
-  and brought back to the frame's. At `--refine 0.3` it
-  refines a photograph — the material the physics cannot give (the albumen's gloss, the collodion's dirt), the
-  faces composited back from before the pass. At `--refine 0.6–0.75` it is **the conversion of a drawing or a
-  painting into a photograph**: the brushwork, the paper and the illustrator's light are content, and no lens
-  can change content — this pass re-renders the picture as the medium's prompt says while the depth holds its
-  composition; the faces are re-rendered too. It runs before the physical chain, so the result then goes
-  through the camera, the emulsion and the carrier; it is off by default and disclosed when it runs;
+- **convert** — **the conversion of a drawing or a painting into a photograph**, as its own pass, before the
+  medium's. The brushwork, the paper and the illustrator's light are content, and no lens can change content;
+  one img2img pass asked to understand a watercolour, re-render it as a scene AND lay a tintype's milk over it
+  drifts — a coast becomes a generic countryside, a cloak a dressing gown. So the conversion is a pass of its
+  own: a heavy denoise (`convert`, 0.6–0.8) toward a NEUTRAL photograph of what the picture shows (the prompt
+  "a photograph of `scene`, realistic, natural daylight, true colours", the negative naming every drawn
+  thing), the structure held on a flow model by the init itself and on the SD family by a ControlNet (`convert_control`, by default the soft edges (HED) at 0.5 — the
+  contours and with them the composition: the hat's shape, the branches, the house, the boat on the horizon;
+  `depth:…` for the planes, `lineart:…` for a pen drawing, `canny:…` for the hardest hold, `none`). A limit
+  seen on SDXL: the controls' strengths summed over about 0.6 tile the frame with the latent's grid (the depth
+  at 0.7, the soft edges at 0.7, the soft edges at 0.5 with the depth at 0.3 — a faint one), so the default is
+  one control at 0.5, and the depth at 0.5 alone is the other clean choice. The figure and the ground may take
+  different strengths (`convert_ground`): the pass runs twice and
+  the subject's matte blends them, the background held closer to the picture than the figure or the other way.
+  No face is protected here — a drawing's painted faces are what the conversion is for. The director sets
+  `convert` to 0.7 when CLIP reads the source as a painting or a drawing (not for a photograph or a render,
+  whose conversion is the physics); `--convert N` forces one. The medium's own pass then follows (`refine`
+  0.25, set by the director) on a flow model; on the SD family the director sets no refine and the medium is
+  the physical chain's alone — a light SDXL img2img (0.25) over a converted picture stipples every smooth
+  field (the sky, the water) with invented grain, whatever the steps, the guidance, the seed, the control, the
+  prompt or a low-pass before it (all tried on the verification set), while the same pass over the drawing
+  itself does not; `--refine 0.15` is about as far as SDXL's second pass goes clean;
+- **scene** — what the picture shows, in the prompts of both passes. Without it the model fills a vague prompt
+  from its priors — the background is invented. The director writes CLIP's generic reading (the genre, the
+  people, the night: "2 people, full figure" — not the stuff: a share says water is in the picture, not where,
+  and "water" put a sea on a sandy path);
+  `--scene "a bearded traveller in a long ragged cloak on a dirt path, wooden cottages on the left, the sea
+  coast behind"` says it exactly, and the exact words hold the content the depth cannot;
+- **refine** — a whole-frame img2img at `refine` with the medium's `prompt` (and the scene's words), the
+  structure held by `refine_control` (`depth:strength=0.5` by default; `--neural-control canny:…`; `none`),
+  run at the model's working size (`neural_px`, 1024 on the long side — SDXL draws at 1024 and a 2048 frame
+  does not fit a GPU's buffer) and brought back to the frame's, on a schedule long enough for `neural_steps`
+  (20) real steps at its strength — an img2img pass at 0.25 on 24 steps runs six and stipples the sky with
+  invented detail; the guidance matters more — a light pass at the conversion's guidance of 5.5 can only
+  answer the prompt's pull with high-frequency detail and stipples the sky, so the refine runs at
+  `refine_guidance` 3 (the conversion at `convert_guidance` 5.5), and `negative` adds words to every pass's
+  negative prompt. At 0.15–0.3 over a PHOTOGRAPH it is the stylisation — the
+  material the physics cannot give (the albumen's gloss, the collodion's dirt) over a photograph or a
+  converted picture, the faces composited back from before the pass (at 0.4 and under). At 0.6–0.75 it
+  converts and stylises in one pass — the old way, kept for the cases it suits, the faces re-rendered too;
 - **relight** — IC‑Light's restaging of the subject's light by a preset (`--relight top`; `top`, `key-left`,
   `key-right`, `rim`, `softbox`, `golden-hour`, `sunset`, `moonlight`, `candlelight`, `overcast`, `neon`); the
   subject is matted out and relit on a directional backdrop, and the result is the model's whole frame,

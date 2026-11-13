@@ -450,6 +450,9 @@ pub struct Aux {
     pub moving: Option<Field>,
     /// Faces as `(x1, y1, x2, y2, [left eye, right eye])` in frame pixels.
     pub faces: Vec<([f32; 4], [[f32; 2]; 2])>,
+    /// What the picture IS by CLIP's reading — "photograph", "painting", "drawing" or "render" — with its share;
+    /// the director converts a painting or a drawing before the medium's pass.
+    pub rendering: Option<(String, f32)>,
     /// What each reader reported (ran, or why not).
     pub sources: Vec<String>,
 }
@@ -465,6 +468,7 @@ impl Aux {
             matte: self.matte.as_ref().map(|m| m.resized(w, h)),
             moving: self.moving.as_ref().map(|m| m.resized(w, h)),
             faces: self.faces.iter().map(|(b, e)| ([b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy], [[e[0][0] * sx, e[0][1] * sy], [e[1][0] * sx, e[1][1] * sy]])).collect(),
+            rendering: self.rendering.clone(),
             sources: self.sources.clone(),
         }
     }

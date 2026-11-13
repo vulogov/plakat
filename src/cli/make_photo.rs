@@ -140,21 +140,39 @@ pub struct FromArgs {
     pub no_mirror: bool,
 
     // ---- the neural stages ----
-    /// The model-backed stages to run, each disclosed: fill (the opened ground inpainted), refine (a whole-frame
-    /// img2img at the plan's `refine` strength with the medium's prompt, the faces protected), relight (IC-Light
-    /// by the plan's `relight` preset).
+    /// The model-backed stages to run, each disclosed: fill (the opened ground inpainted), convert (a drawing or a
+    /// painting re-rendered as a neutral photograph of the same scene at the plan's `convert`, before the medium's
+    /// pass), refine (a whole-frame img2img at the plan's `refine` strength with the medium's prompt, the faces
+    /// protected at 0.4 and under), relight (IC-Light by the plan's `relight` preset). A drawing into a tintype:
+    /// `--neural convert,refine`.
     #[arg(long, help_heading = "The neural stages", value_delimiter = ',', value_name = "STAGE")]
     pub neural: Vec<String>,
-    /// The diffusion model alias for the fill and the refine.
-    #[arg(long, help_heading = "The neural stages", default_value = "sdxl", value_name = "ALIAS")]
-    pub neural_model: String,
-    /// The refine's strength (sets the plan's `refine`): 0.3 refines a photograph (the faces kept), 0.6–0.75
-    /// converts a drawing or a painting into a photograph.
+    /// The diffusion model alias for the fill, the conversion and the refine (sets the plan's `neural_model`;
+    /// `sd35-medium` by the plan): `sd35-large`, `kandinsky5`, `sdxl` (ControlNets), `sd15`.
+    #[arg(long, help_heading = "The neural stages", value_name = "ALIAS")]
+    pub neural_model: Option<String>,
+    /// The conversion's strength (sets the plan's `convert`): 0.6–0.8 re-renders a drawing or a painting as a
+    /// photograph; the director sets it when CLIP reads the source as one.
+    #[arg(long, help_heading = "The neural stages", value_name = "N")]
+    pub convert: Option<f32>,
+    /// The conversion's strength outside the subject (sets `convert_ground`; 0 = the same as the figure's).
+    #[arg(long, help_heading = "The neural stages", value_name = "N")]
+    pub convert_ground: Option<f32>,
+    /// The ControlNets holding the structure through the conversion (sets `convert_control`; repeatable;
+    /// `depth:strength=0.7 softedge:strength=0.5` by the plan; `lineart:…`, `canny:…`; `none`).
+    #[arg(long, help_heading = "The neural stages", value_name = "SPEC", action = clap::ArgAction::Append)]
+    pub convert_control: Vec<String>,
+    /// What the picture shows, for the model's prompts (sets `scene`): "a bearded man in a ragged cloak on a dirt
+    /// path, wooden cottages, the sea coast behind". The director writes CLIP's generic reading without it.
+    #[arg(long, help_heading = "The neural stages", value_name = "TEXT")]
+    pub scene: Option<String>,
+    /// The refine's strength (sets the plan's `refine`): 0.15–0.3 stylises a photograph or a converted picture
+    /// (the faces kept); 0.6–0.75 converts and stylises in one pass (the old way, the content drifts).
     #[arg(long, help_heading = "The neural stages", value_name = "N")]
     pub refine: Option<f32>,
-    /// A ControlNet holding the structure through the refine (`depth:strength=0.5`, `canny:strength=0.4`);
-    /// repeatable; `none` for no control.
-    #[arg(long, help_heading = "The neural stages", value_name = "SPEC", default_value = "depth:strength=0.5", action = clap::ArgAction::Append)]
+    /// A ControlNet holding the structure through the refine (sets `refine_control`; `depth:strength=0.5` by the
+    /// plan, `canny:strength=0.4`); repeatable; `none` for no control.
+    #[arg(long, help_heading = "The neural stages", value_name = "SPEC", action = clap::ArgAction::Append)]
     pub neural_control: Vec<String>,
     /// The relight preset (sets the plan's `relight`): top, key-left, key-right, rim, softbox, golden-hour,
     /// sunset, moonlight, candlelight, overcast, neon.
@@ -261,6 +279,8 @@ fn overrides(a: &FromArgs) -> Result<Vec<(String, String)>> {
     num("age", a.age);
     num("frame", a.frame);
     num("refine", a.refine);
+    num("convert", a.convert);
+    num("convert_ground", a.convert_ground);
     if a.keep_subject {
         o.push(("keep_subject".into(), "1".into()));
     }
@@ -283,6 +303,11 @@ fn overrides(a: &FromArgs) -> Result<Vec<(String, String)>> {
     text("focus", &a.focus);
     text("format", &a.format);
     text("relight", &a.relight);
+    text("scene", &a.scene);
+    text("neural_model", &a.neural_model);
+    let controls = |v: &[String]| -> Option<String> { (!v.is_empty()).then(|| photo::neural::split_controls(&v.join(" ")).join(" ")) };
+    text("refine_control", &controls(&a.neural_control));
+    text("convert_control", &controls(&a.convert_control));
     for s in &a.set {
         let (k, v) = s.split_once('=').with_context(|| format!("--set {s:?}: expected KEY=VALUE"))?;
         let k = k.trim();
@@ -295,6 +320,19 @@ fn overrides(a: &FromArgs) -> Result<Vec<(String, String)>> {
     }
     Ok(o)
 }
+
+/// What a picture can be, for CLIP: the word the director acts on and the prompt scored. Several prompts may
+/// count toward one word.
+const RENDERING_LABELS: &[(&str, &str)] = &[
+    ("photograph", "a photograph"),
+    ("photograph", "a colour photograph of a real scene"),
+    ("painting", "a painting"),
+    ("painting", "a watercolour painting"),
+    ("painting", "an oil painting on canvas"),
+    ("drawing", "a pencil drawing"),
+    ("drawing", "an ink drawing, an illustration"),
+    ("render", "a 3D render, digital art"),
+];
 
 /// Read the picture: the pixel facts, and each vision model in turn (the faces, the subject, the depth, the
 /// genre and the stuff), none fatal. Returns the fields at the picture's size.
@@ -393,6 +431,26 @@ async fn read_scene(path: &Path, img: &image::RgbImage, pixels_only: bool) -> Re
                 let whole = clip.embed_image(path)?;
                 let scores: Vec<(Genre, f32)> = Genre::LABELS.iter().map(|(g, t)| clip.embed_text(t).map(|e| (*g, crate::pipelines::clip_embed::cosine(&whole, &e)))).collect::<Result<_>>()?;
                 f.genre = Genre::from_scores(&scores);
+                // THE RENDERING: what the picture is — a photograph, a painting, a drawing, a render — the
+                // scores softmaxed at CLIP's scale and summed per word; the director converts a painting or a
+                // drawing before the medium's pass.
+                {
+                    let cos: Vec<(&str, f32)> = RENDERING_LABELS.iter().map(|(word, t)| clip.embed_text(t).map(|e| (*word, crate::pipelines::clip_embed::cosine(&whole, &e)))).collect::<Result<_>>()?;
+                    let m = cos.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+                    let ex: Vec<f32> = cos.iter().map(|c| (100.0 * (c.1 - m)).exp()).collect();
+                    let z: f32 = ex.iter().sum::<f32>().max(1e-9);
+                    let mut per: Vec<(&str, f32)> = Vec::new();
+                    for (i, (word, _)) in cos.iter().enumerate() {
+                        match per.iter_mut().find(|p| p.0 == *word) {
+                            Some(p) => p.1 += ex[i] / z,
+                            None => per.push((word, ex[i] / z)),
+                        }
+                    }
+                    if let Some(best) = per.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) {
+                        aux.rendering = Some((best.0.to_string(), best.1));
+                        f.sources.push(format!("rendering: CLIP reads a {} ({:.0}%)", best.0, best.1 * 100.0));
+                    }
+                }
                 let texts: Vec<Vec<f32>> = STUFF_LABELS.iter().map(|(_, t)| clip.embed_text(&format!("a photo of {t}"))).collect::<Result<_>>()?;
                 let side = sw.max(sh) as f32;
                 let crop = (side / 4.0).round().max(32.0) as u32;
@@ -494,10 +552,10 @@ async fn render_once(img: &image::RgbImage, plan: &PhotoPlan, aux: &Aux, seed: u
     let wants = |s: &str| a.neural.iter().any(|n| n.trim().eq_ignore_ascii_case(s));
     if wants("fill") && plan.fill.trim() == "neural" && st.invented > 0.0 {
         if let Some(holes) = st.holes.clone() {
-            match photo::neural::fill(&st.frame, &holes, &plan.prompt, &a.neural_model, seed).await {
+            match photo::neural::fill(&st.frame, &holes, &plan.prompt, &plan.neural_model, seed, plan.neural_px.max(256.0) as u32).await {
                 Ok(f) => {
                     st.frame = f;
-                    neural.push(format!("fill: {:.1}% of the frame inpainted by {} ({})", st.invented * 100.0, a.neural_model, if plan.prompt.is_empty() { "a photograph" } else { plan.prompt.as_str() }));
+                    neural.push(format!("fill: {:.1}% of the frame inpainted by {} ({})", st.invented * 100.0, plan.neural_model, if plan.prompt.is_empty() { "a photograph" } else { plan.prompt.as_str() }));
                 }
                 Err(e) => neural.push(format!("fill: failed ({e:#}) — the ground grown instead")),
             }
@@ -513,6 +571,31 @@ async fn render_once(img: &image::RgbImage, plan: &PhotoPlan, aux: &Aux, seed: u
             photo::camera::propagate(&mut st.frame, &holes, &metric);
             neural.push("fill: the plan says neural but --neural fill was not given — the ground grown instead".into());
         }
+    }
+    if wants("convert") {
+        if plan.convert <= 0.0 {
+            let what = st.aux.rendering.as_ref().map(|(w, c)| format!(" — CLIP reads the source as a {w} ({c:.2})")).unwrap_or_default();
+            neural.push(format!("convert: the plan's `convert` is 0{what} (`--convert 0.7` to force one)"));
+        } else {
+            let fam = photo::neural::family_of(&plan.neural_model);
+            let controls = if fam.takes_controls() { photo::neural::split_controls(&plan.convert_control) } else { Vec::new() };
+            match photo::neural::convert(&st.frame, st.aux.matte.as_ref(), plan.convert, plan.convert_ground, &plan.scene, &plan.negative, &plan.neural_model, seed, &controls, plan.neural_px.max(256.0) as u32, plan.neural_steps, plan.convert_guidance).await {
+                Ok((f, split)) => {
+                    st.frame = f;
+                    neural.push(format!(
+                        "convert: img2img at {:.2}{} by {} as \"{}\"{}",
+                        plan.convert,
+                        if split { format!(" (the ground at {:.2}, blended by the subject's matte)", plan.convert_ground) } else { String::new() },
+                        plan.neural_model,
+                        photo::neural::photo_prompt(&plan.scene),
+                        if controls.is_empty() { format!(", the structure held by {}", if fam.takes_controls() { "nothing".to_string() } else { format!("the flow's init ({} takes no ControlNet)", fam.name()) }) } else { format!(", the structure held by {}", controls.join(", ")) }
+                    ));
+                }
+                Err(e) => neural.push(format!("convert: failed ({e:#})")),
+            }
+        }
+    } else if plan.convert > 0.0 {
+        neural.push(format!("convert: the plan says {:.2} but --neural convert was not given — the picture goes to the medium as it is", plan.convert));
     }
     if wants("relight") {
         if plan.relight.trim().is_empty() {
@@ -531,19 +614,25 @@ async fn render_once(img: &image::RgbImage, plan: &PhotoPlan, aux: &Aux, seed: u
         if plan.refine <= 0.0 {
             neural.push("refine: the plan's `refine` is 0 (`--refine 0.3`)".into());
         } else {
-            let controls: Vec<String> = a.neural_control.iter().filter(|c| !c.trim().eq_ignore_ascii_case("none")).cloned().collect();
-            match photo::neural::refine(&st.frame, plan.refine, &plan.prompt, &a.neural_model, seed, &controls, plan.neural_px.max(256.0) as u32).await {
+            let fam = photo::neural::family_of(&plan.neural_model);
+            let controls = if fam.takes_controls() { photo::neural::split_controls(&plan.refine_control) } else { Vec::new() };
+            let prompt = photo::neural::medium_prompt(&plan.prompt, &plan.scene);
+            // The refine's noise is its own stream: a pass over the conversion's result with the conversion's seed
+            // adds the same noise the latent already carries the imprint of, and the pattern comes up as a
+            // stipple over the sky.
+            let refine_seed = seed ^ 0x9E37_79B9_7F4A_7C15;
+            match photo::neural::refine(&st.frame, plan.refine, &prompt, &plan.negative, &plan.neural_model, refine_seed, &controls, plan.neural_px.max(256.0) as u32, plan.neural_steps, plan.refine_guidance).await {
                 Ok(f) => {
                     st.frame = f;
-                    neural.push(format!("refine: img2img at {:.2} by {} with the medium's prompt{}{}", plan.refine, a.neural_model, if controls.is_empty() { String::new() } else { format!(", the structure held by {}", controls.join(", ")) }, if plan.refine <= 0.4 { ", the faces composited back" } else { "" }));
+                    neural.push(format!("refine: img2img at {:.2} ({} steps of {}, guidance {:.1}) by {} as \"{prompt}\"{}{}", plan.refine, plan.neural_steps.max(1.0) as usize, photo::neural::schedule_steps(plan.neural_steps, plan.refine), plan.refine_guidance, plan.neural_model, if controls.is_empty() { String::new() } else { format!(", the structure held by {}", controls.join(", ")) }, if plan.refine <= 0.4 { ", the faces composited back" } else { "" }));
                 }
                 Err(e) => neural.push(format!("refine: failed ({e:#})")),
             }
         }
     }
     for n in &a.neural {
-        if !["fill", "refine", "relight"].iter().any(|k| n.trim().eq_ignore_ascii_case(k)) {
-            neural.push(format!("{n}: no such neural stage (fill, refine, relight)"));
+        if !["fill", "convert", "refine", "relight"].iter().any(|k| n.trim().eq_ignore_ascii_case(k)) {
+            neural.push(format!("{n}: no such neural stage (fill, convert, refine, relight)"));
         }
     }
     Ok((photo::finish(st, plan), neural))

@@ -107,6 +107,30 @@ fn face_depth(aux: &Aux) -> Option<(f32, f32, f32)> {
     Some((at(0.05), at(0.95), at(0.5)))
 }
 
+/// The picture in words from the facts — the genre, the people, the night — for the model's prompts. Generic
+/// by design: what CLIP can vouch for; the exact description is the user's (`scene`). The stuff is NOT named: a
+/// share says water is in the picture, not where, and "water" put a sea on a sandy path.
+pub fn scene_words(f: &SceneFacts) -> String {
+    let mut w: Vec<String> = Vec::new();
+    match genre(f, 0.3) {
+        Some(Genre::Portrait) => w.push("a person's face, a portrait".into()),
+        Some(Genre::Figure) => w.push(if f.faces > 1 { format!("{} people, full figure", f.faces) } else { "a person, full figure".into() }),
+        Some(Genre::Landscape) => w.push("a landscape".into()),
+        Some(Genre::Townscape) => w.push("a town street with buildings".into()),
+        Some(Genre::StillLife) => w.push("objects on a table".into()),
+        Some(Genre::Interior) => w.push("a room's interior".into()),
+        Some(Genre::Animal) => w.push("an animal".into()),
+        _ => {}
+    }
+    if f.faces > 0 && !matches!(genre(f, 0.3), Some(Genre::Portrait | Genre::Figure)) {
+        w.push(if f.faces > 1 { format!("{} people", f.faces) } else { "a person".into() });
+    }
+    if f.luma_mean < 0.3 {
+        w.push("at night".into());
+    }
+    w.join(", ")
+}
+
 /// The director's rules: the adjustments for the picture over the recipe. `aux` carries the fields the facts
 /// summarise (the depth inside a face box sets the portrait's aperture).
 pub fn rules(f: &SceneFacts, recipe: &PhotoPlan, aux: &Aux) -> Vec<Adjust> {
@@ -130,6 +154,32 @@ pub fn rules(f: &SceneFacts, recipe: &PhotoPlan, aux: &Aux) -> Vec<Adjust> {
         t.num("depth_range", r, format!("{why} ({gname})"));
         r
     };
+    // THE CONVERSION: a painting or a drawing is a picture of a scene, not the scene — the model re-renders it as
+    // a neutral photograph before the medium's pass, which then comes light. A photograph or a render needs no
+    // conversion: the physics is its conversion (`--convert` to force one).
+    if recipe.convert <= 0.0 {
+        if let Some((word, c)) = &aux.rendering {
+            if (word == "painting" || word == "drawing") && *c > 0.4 {
+                let fam = super::neural::family_of(&recipe.neural_model);
+                let held = if fam.takes_controls() { if recipe.convert_control.trim().is_empty() { "nothing".to_string() } else { recipe.convert_control.trim().to_string() } } else { format!("the flow's init ({} takes no ControlNet)", fam.name()) };
+                t.num("convert", 0.7, format!("CLIP reads the source as a {word} ({c:.2}): converted into a neutral photograph of the same scene before the medium's pass (`--neural convert`) by {}, the structure held by {held}", recipe.neural_model));
+                if recipe.refine <= 0.0 {
+                    if fam.takes_controls() {
+                        t.num("refine", 0.0, format!("no refine over the conversion on {}: a light pass of the SD family over its own output stipples every smooth field (`--refine 0.15` at most); the medium is the physical chain's", recipe.neural_model));
+                    } else {
+                        t.num("refine", 0.25, format!("the medium's pass over the converted picture, light — the material, not the content; clean on {} (`--neural refine`)", recipe.neural_model));
+                    }
+                }
+            }
+        }
+    }
+    // THE SCENE for the prompts: what CLIP read, in words; `--scene` says it exactly.
+    if recipe.scene.trim().is_empty() {
+        let words = scene_words(f);
+        if !words.is_empty() {
+            t.set("scene", &words, "the picture in CLIP's words for the model's prompts; `--scene` says it exactly".into());
+        }
+    }
     // The distance: a face sets it in the camera; else the genre.
     if recipe.distance <= 0.0 && f.faces == 0 {
         let d = match g {
@@ -557,6 +607,35 @@ mod tests {
         let m = rules(&f, &recipe, &aux);
         let ap: f32 = m.iter().find(|a| a.key == "aperture").map(|a| a.value.parse().unwrap()).unwrap();
         assert!(ap < recipe.aperture, "a flat face opens the lens: f/{ap}");
+    }
+
+    #[test]
+    fn a_painting_is_converted_before_the_mediums_pass_and_a_photograph_is_not() {
+        let photo = super::super::media::by_name("albumen").unwrap();
+        let recipe = PhotoPlan::parse(photo.recipe).unwrap();
+        let mut f = facts();
+        f.faces = 2;
+        f.genre = Some((Genre::Figure, 0.7));
+        f.foliage_share = Some(0.4);
+        f.sky_share = Some(0.1);
+        let aux = Aux { rendering: Some(("painting".into(), 0.8)), ..Default::default() };
+        let m = rules(&f, &recipe, &aux);
+        let find = |k: &str| m.iter().find(|a| a.key == k).map(|a| a.value.clone());
+        assert_eq!(find("convert").as_deref(), Some("0.7"), "{m:?}");
+        assert_eq!(find("refine").as_deref(), Some("0.25"), "a flow model's light pass is clean: {m:?}");
+        let mut sdxl = recipe.clone();
+        sdxl.neural_model = "sdxl".into();
+        let m2 = rules(&f, &sdxl, &aux);
+        assert_eq!(m2.iter().find(|a| a.key == "refine").map(|a| a.value.as_str()), Some("0"), "the SD family's light pass over a conversion stipples: {m2:?}");
+        let scene = find("scene").expect("the scene is written");
+        assert_eq!(scene, "\"2 people, full figure\"", "the genre and the people, no stuff");
+        let aux = Aux { rendering: Some(("photograph".into(), 0.9)), ..Default::default() };
+        let m = rules(&f, &recipe, &aux);
+        assert!(!m.iter().any(|a| a.key == "convert" || a.key == "refine"), "a photograph is not converted: {m:?}");
+        let mut r2 = recipe.clone();
+        r2.scene = "two boys by a fence".into();
+        let m = rules(&f, &r2, &aux);
+        assert!(!m.iter().any(|a| a.key == "scene"), "the plan's own scene stands: {m:?}");
     }
 
     #[test]
