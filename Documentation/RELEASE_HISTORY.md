@@ -8,6 +8,72 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.21.0 — The photograph — `plakat make-photo`: a picture through the photographic chain of a period and a style, the virtual camera, the director and the critic, the conversion of a drawing by a flow model
+
+A new studio. `plakat make-photo <picture> --media <name>` takes a picture — a render, a drawing, a painting,
+a photograph — and makes it a **photograph of a period and a style**: 32 media from the daguerreotype of 1839
+to a 2023 phone, each a house recipe of the dials of one chain. Everything but the neural options is
+deterministic and weight-free; the painter and every other command are untouched (the ten reference media
+byte-identical or differing exactly by the known SAM fix).
+
+### The chain (`src/photo/`)
+
+The picture is read into linear light and carried **scene → camera → lens → shutter → emulsion or sensor →
+process → digital → carrier → age**, every stage a plan key and every key a recipe's line
+(`assets/photo/<media>.hjson`): the depth of field as a circle of confusion from a metric depth, the
+diffraction of the real aperture, the chromatic fringe, flare, the vignette and the haze; the shutter smearing
+what moves by the exposure's time (the water, the foliage, a street's figures — a sitter is braced); the
+emulsion's spectral response (an orthochromatic plate's blind red), grain and halation; the sensor's demosaic,
+noise and sharpening; the process's curve, sheen and toning; the carrier's texture (a slide's frame, a cabinet
+card's mount, a plate's brass mat) and the age's fade, dirt and scratches. The output's keywords name the
+simulation; no camera EXIF is forged.
+
+### The virtual camera
+
+`--focal`, `--dolly`, `--truck`, `--pedestal`, `--pan`, `--tilt`, `--roll`, `--shift`, `--keep-subject`: a
+35 mm-equivalent lens and a move, the picture re-projected through its depth (Depth-Anything made metric by
+the scene's `distance` and `depth_range`), a forward z-buffer splat and a backward inverse; the holes a move
+opens classified hidden, outside and unseen, the hidden ground grown from behind the component's near side,
+the band past the picture's edge cropped and the frame brought back to size; the invented share reported and
+capped (`fill_cap`). The 24 → 85 portrait: the camera dollies back as the lens lengthens so the subject keeps
+its size and the face loses the wide lens's bulge.
+
+### The director and the critic
+
+The picture's facts (SCRFD, U²-Net, Depth-Anything, CLIP — the paint director's eyes) through rules written
+into the plan with their reasons: the depth range and the distance by the genre, a head shot an 85, a
+portrait's aperture from the face's depth span (N = f²·Δz / 2·c·z², scaled by the format's crop factor — a
+plate at f/64, a phone at f/2), a scene stopped down and hazed, a nocturne's long exposure and pushed ISO,
+the lamps blooming, a sitter braced, the sky held on an emulsion that cannot see it. The critic measures the
+result's camera statistics against the source's and the plan's intent (`--make-plan-iterate`) and moves the
+dials bounded: the clipping to the exposure, the invented share to the move, the subject's softness to the
+focus, a lost face to the fill. `make-photo measure` reads any picture's noise, sharpness, highlights, signed
+fringe, vignette and JPEG grid.
+
+### The neural stages (`--neural fill,convert,refine,relight`)
+
+Each behind the flag, each disclosed, each failing softly. **The conversion of a drawing into a photograph**
+is its own pass: `convert` (0.7, set by the director when CLIP reads the source as a painting or a drawing)
+re-renders the picture as a neutral photograph of what it shows — "a photograph of `scene`" — and the medium's
+`refine` comes light after it. The `scene` is the picture in words: the director writes CLIP's generic reading
+(the genre, the people, the night), `--scene` says it exactly, and the exact words hold the content the depth
+cannot. The **model is a plan key** (`neural_model`, `sd35-medium` by default) run through its family's own
+pipeline: on the verification set the SD family (SDXL) needs a ControlNet to hold a watercolour's composition
+and its light pass over a conversion stipples every smooth field — unfixable by steps, guidance, seed, control,
+prompt or a low-pass — while the flow families (SD3.5, Kandinsky 5) convert the same watercolour with no
+ControlNet at all, keep the house, the path, the boat and the cloak, and their light pass stays clean; SD3.5
+medium in two minutes on Metal, Kandinsky 5 in fourteen. `convert_ground` runs the background at its own
+strength under the subject's matte; `fill` inpaints the ground a move opened; `relight` restages the light by
+an IC-Light preset. The plan keys name every lever: `convert_control`, `refine_control`, `negative`,
+`neural_px`, `neural_steps`, `convert_guidance`, `refine_guidance`.
+
+### The plan
+
+`make-photo plan <picture> --media <name>` writes the recipe, the director's adjustments and the command line
+as one hjson with every line's reason; `--plan <file>` runs it; `make-photo media` lists the catalogue and
+`make-photo keys` the dials. Documented in [`Documentation/MAKE_PHOTO.md`](MAKE_PHOTO.md). 21 tests on the
+photo modules; 2452 lib tests pass.
+
 ## What's new in 7.20.0 — The critic and the measurement — the review's numbers as one command, the director's loop closed with the same eyes, the picture's light as the relief's lamp
 
 7.19.0 gave the painter an art director: the picture read by the crate's vision models, the medium's house
